@@ -16,6 +16,7 @@
 import base64
 import httplib
 import json
+import math
 import random
 import socket
 import string
@@ -27,6 +28,7 @@ from oslo.config import cfg
 from cinder import context
 from cinder import exception
 from cinder.i18n import _
+from cinder.image import image_utils
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import timeutils
 from cinder.openstack.common import units
@@ -52,10 +54,23 @@ sf_opts = [
                     'and will create a prefix using the cinder node hostsname '
                     '(previous default behavior).  The default is NO prefix.'),
 
+    cfg.StrOpt('sf_template_account_name',
+               default='openstack-vtemplate',
+               help='Account name on the SolidFire Cluster to use as owner of '
+                    'template/cache volumes (created if does not exist).'),
+
+    cfg.BoolOpt('sf_allow_template_caching',
+                default=True,
+                help='Create an internal cache of copy of images when '
+                     'a bootable volume is created to eliminate fetch from '
+                     'glance and qemu-conversion on subsequent calls.'),
+
     cfg.IntOpt('sf_api_port',
                default=443,
                help='SolidFire API port. Useful if the device api is behind '
                     'a proxy on a different port.'), ]
+
+
 
 
 CONF = cfg.CONF
@@ -96,10 +111,36 @@ class SolidFireDriver(SanISCSIDriver):
     def __init__(self, *args, **kwargs):
         super(SolidFireDriver, self).__init__(*args, **kwargs)
         self.configuration.append_config_values(sf_opts)
+        self.template_account_id = None
         try:
             self._update_cluster_status()
         except exception.SolidFireAPIException:
             pass
+        if self.configuration.sf_allow_template_caching:
+            account = self.configuration.sf_template_account_name
+            self.template_account_id = self._create_template_account(account)
+
+    def _create_template_account(self, account_name):
+        # We raise an API exception if the account doesn't exist
+
+        # We need to take account_prefix settings into consideration
+        # This just uses the same method to do template account create
+        # as we use for any other OpenStack account
+        account_name = self._get_sf_account_name(account_name)
+        data = self._issue_api_request( 'GetAccountByName',
+                {'username': account_name})
+        if 'error' in data and data['error']['message'] == 'xUnknownAccount':
+            chap_secret = self._generate_random_string(12)
+            params = {'username': account_name,
+                      'initiatorSecret': chap_secret,
+                      'targetSecret': chap_secret,
+                      'attributes': {}}
+            id = self._issue_api_request('AddAccount',
+                                       params)['result']['accountID']
+        else:
+            id = data['result']['account']['accountID']
+        return id
+
 
     def _issue_api_request(self, method_name, params, version='1.0'):
         """All API requests to SolidFire device go through this method.
@@ -325,6 +366,7 @@ class SolidFireDriver(SanISCSIDriver):
         model_update['provider_auth'] = ('CHAP %s %s'
                                          % (sfaccount['username'],
                                             chap_secret))
+        model_update['volumeID'] = sf_volume_id
         if not self.configuration.sf_emulate_512:
             model_update['provider_geometry'] = ('%s %s' % (4096, 4096))
 
@@ -495,6 +537,169 @@ class SolidFireDriver(SanISCSIDriver):
             raise exception.DuplicateSfVolumeNames(vol_name=uuid)
 
         return sf_volref
+
+    def _create_image_volume(self, context,
+                             image_meta, image_service,
+                             image_id):
+        with image_utils.TemporaryImages.fetch(image_service,
+                                               context,
+                                               image_id) as tmp_image:
+            data = image_utils.qemu_img_info(tmp_image)
+            fmt = data.file_format
+            if fmt is None:
+                raise exception.ImageUnacceptable(
+                    reason=_("'qemu-img info' parsing failed."),
+                    image_id=image_id)
+
+            backing_file = data.backing_file
+            if backing_file is not None:
+                raise exception.ImageUnacceptable(
+                    image_id=image_id,
+                    reason=_("fmt=%(fmt)s backed by:%(backing_file)s")
+                    % {'fmt': fmt, 'backing_file': backing_file, })
+
+            virtual_size = int(math.ceil(float(data.virtual_size) / units.Gi))
+            attributes = {}
+            attributes['image_info'] = {}
+            attributes['image_info']['image_updated_at'] = (
+                image_meta['updated_at'].isoformat())
+            attributes['image_info']['image_name'] = (
+                image_meta['name'])
+            attributes['image_info']['image_created_at'] = (
+                image_meta['created_at'].isoformat())
+            attributes['image_info']['image_id'] = image_meta['id']
+            params = {'name': 'OpenStackIMG-%s' % image_id,
+                      'accountID': self.template_account_id,
+                      'sliceCount': 1,
+                      'totalSize': int(virtual_size * units.Gi),
+                      'enable512e': self.configuration.sf_emulate_512,
+                      'attributes': attributes,
+                      'qos': {}}
+
+            sf_account = self._issue_api_request(
+                'GetAccountByID',
+                {'accountID': self.template_account_id})['result']['account']
+            account = self.configuration.sf_template_account_name
+            template_vol = self._do_volume_create(account, params)
+
+            tvol = {}
+            tvol['id'] = image_id
+            tvol['provider_location'] = template_vol['provider_location']
+            tvol['provider_auth'] = template_vol['provider_auth']
+
+            connector = {'multipath': False}
+            conn = self.initialize_connection(tvol, connector)
+            attach_info = super(SolidFireDriver, self)._connect_device(conn)
+
+            params = {'accountID': sf_account['accountID']}
+            properties = 'na'
+            try:
+                image_utils.convert_image(tmp_image,
+                                          attach_info['device']['path'],
+                                          'raw')
+                data = image_utils.qemu_img_info(attach_info['device']['path'])
+                if data.file_format != 'raw':
+                    raise exception.ImageUnacceptable(
+                        image_id=image_id,
+                        reason=_("Converted to %(vol_format)s, but format is "
+                                 "now %(file_format)s") % {'vol_format': 'raw',
+                                                           'file_format': data.
+                                                           file_format})
+            except Exception as exc:
+                params['volumeID'] = self._get_sf_volume(image_id, params)['volumeID']
+                LOG.error(_('Failed image conversion during '
+                              'cache creation: %s'),
+                          exc)
+                LOG.debug('Removing SolidFire Cache Volume (SF ID): %s',
+                          params['volumeID'])
+                self._detach_volume(context, attach_info, tvol, properties)
+                self._issue_api_request('DeleteVolume', params)
+                return
+
+        self._detach_volume(context, attach_info, tvol, properties)
+        sf_vol = self._get_sf_volume(image_id, params)
+        LOG.debug('Successfully created SolidFire Image Template '
+                  'for image-id: %s', image_id)
+        return sf_vol
+
+    def _verify_image_volume(self, context, image_meta, image_service):
+        # This method just verifies that IF we have a cache volume that
+        # it's still up to date and current WRT the image in Glance
+        # ie an image-update hasn't occurred since we grabbed it
+
+        # If it's out of date, just delete it and we'll create a new one
+        # Any other case we don't care and just return without doing anything
+
+        sfaccount = self._get_sfaccount(
+            self.configuration.sf_template_account_name)
+
+        params = {'accountID': sfaccount['accountID']}
+        sf_vol = self._get_sf_volume(image_meta['id'], params)
+        if sf_vol is None:
+            return
+
+        # Check updated_at field, delete copy and update if needed
+        if sf_vol['attributes']['image_info']['image_updated_at'] ==\
+                image_meta['updated_at'].isoformat():
+            return
+        else:
+            # Bummer, it's been updated, delete it
+            params = {'accountID': sfaccount['accountID']}
+            params = {'volumeID': sf_vol['volumeID']}
+            data = self._issue_api_request('DeleteVolume', params)
+            if 'result' not in data:
+                msg = _("Failed to delete SolidFire Image-Volume: %s") % data
+                raise exception.SolidFireAPIException(msg)
+
+            if not self._create_image_volume(context,
+                                             image_meta,
+                                             image_service,
+                                             image_meta['id']):
+                msg = _("Failed to create SolidFire Image-Volume")
+                raise exception.SolidFireAPIException(msg)
+
+    def clone_image(self, volume, image_location, image_id,
+                    image_meta, context, image_service ):
+
+        # Check out pre-requisites:
+        # Is template caching enabled?
+        if not self.configuration.sf_allow_template_caching:
+            return None, False
+
+        # Is the image owned by this tenant or public?
+        if ((not image_meta.get('is_public', False)) and
+                (image_meta.get('visibility', 'private') != 'public') and
+                (image_meta['owner'] != volume['project_id'])):
+                LOG.warning(_("Requested image is not "
+                                "accesible by current Tenant."))
+                return None, False
+
+        try:
+            self._verify_image_volume(context,
+                                      image_meta,
+                                      image_service)
+        except exception.SolidFireAPIException:
+            return None, False
+
+        account = self.configuration.sf_template_account_name
+        try:
+            (data, sfaccount, model) = self._do_clone_volume(image_meta['id'],
+                                                             account,
+                                                             volume)
+        except exception.VolumeNotFound:
+            if self._create_image_volume(context,
+                                         image_meta,
+                                         image_service,
+                                         image_meta['id']) is None:
+                # We failed, dump out
+                return None, False
+
+            # Ok, should be good to go now, try it again
+            (data, sfaccount, model) = self._do_clone_volume(image_meta['id'],
+                                                             account,
+                                                             volume)
+
+        return model, True
 
     def create_volume(self, volume):
         """Create volume on SolidFire device.
