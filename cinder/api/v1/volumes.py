@@ -268,8 +268,7 @@ class VolumeController(wsgi.Controller):
 
         #pop out limit and offset , they are not search_opts
         search_opts = req.GET.copy()
-        search_opts.pop('limit', None)
-        search_opts.pop('offset', None)
+        __, limit, offset = common.get_pagination_params(search_opts)
 
         if 'metadata' in search_opts:
             search_opts['metadata'] = ast.literal_eval(search_opts['metadata'])
@@ -279,19 +278,19 @@ class VolumeController(wsgi.Controller):
                                             search_opts,
                                             self._get_volume_search_options())
 
-        volumes = self.volume_api.get_all(context, marker=None, limit=None,
+        volumes = self.volume_api.get_all(context, marker=None, limit=limit,
                                           sort_key='created_at',
                                           sort_dir='desc', filters=search_opts,
-                                          viewable_admin_meta=True)
+                                          viewable_admin_meta=True,
+                                          offset=offset)
 
         volumes = [dict(vol.iteritems()) for vol in volumes]
 
         for volume in volumes:
             utils.add_visible_admin_metadata(volume)
 
-        limited_list = common.limited(volumes, req)
-        req.cache_resource(limited_list)
-        res = [entity_maker(context, vol) for vol in limited_list]
+        req.cache_resource(volumes)
+        res = [entity_maker(context, vol) for vol in volumes]
         return {'volumes': res}
 
     def _image_uuid_from_href(self, image_href):

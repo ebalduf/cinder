@@ -493,9 +493,10 @@ class VolumeManager(manager.SchedulerDependentManager):
                 reservations = None
                 LOG.exception(_LE("Failed to update usages deleting volume"))
 
-        # If deleting the source volume in a migration, we should skip database
-        # update here. In other cases, continue to update database entries.
-        if not is_migrating or is_migrating_dest:
+        # If deleting the destination volume in a migration, we should skip
+        # database update here. In other cases, continue to update database
+        # entries.
+        if not is_migrating_dest:
 
             # Delete glance metadata if it exists
             self.db.volume_glance_metadata_delete_by_volume(context, volume_id)
@@ -971,6 +972,11 @@ class VolumeManager(manager.SchedulerDependentManager):
                                else 'rw')
             conn_info['data']['access_mode'] = access_mode
 
+        # Add encrypted flag to connection_info if not set in the driver.
+        if conn_info['data'].get('encrypted') is None:
+            encrypted = bool(volume.get('encryption_key_id'))
+            conn_info['data']['encrypted'] = encrypted
+
         return conn_info
 
     def terminate_connection(self, context, volume_id, connector, force=False):
@@ -1180,17 +1186,18 @@ class VolumeManager(manager.SchedulerDependentManager):
         self.db.volume_update(ctxt, volume_id,
                               {'migration_status': 'completing'})
 
-        # Delete the source volume (if it fails, don't fail the migration)
+        # Detach the source volume (if it fails, don't fail the migration)
         try:
             if orig_volume_status == 'in-use':
                 self.detach_volume(ctxt, volume_id)
-            self.delete_volume(ctxt, volume_id)
         except Exception as ex:
-            msg = _("Failed to delete migration source vol %(vol)s: %(err)s")
-            LOG.error(msg % {'vol': volume_id, 'err': ex})
+            LOG.error(_LE("Detach migration source volume failed:  %(err)s"),
+                      {'err': ex}, resource=volume)
 
-        self.db.finish_volume_migration(ctxt, volume_id, new_volume_id)
-        self.db.volume_destroy(ctxt, new_volume_id)
+        # Swap src and dest DB records so we can continue using the src id and
+        # asynchronously delete the destination id
+        __, updated_new = self.db.finish_volume_migration(
+            ctxt, volume_id, new_volume_id)
         if orig_volume_status == 'in-use':
             updates = {'migration_status': 'completing',
                        'status': orig_volume_status}
@@ -1205,6 +1212,18 @@ class VolumeManager(manager.SchedulerDependentManager):
                                  volume['attached_host'],
                                  volume['mountpoint'],
                                  'rw')
+
+        # Asynchronous deletion of the source volume in the back-end (now
+        # pointed by the target volume id)
+        try:
+            rpcapi.delete_volume(ctxt, updated_new)
+        except Exception as ex:
+            LOG.error(_LE('Failed to request async delete of migration source '
+                          'vol %(vol)s: %(err)s'),
+                      {'vol': volume_id, 'err': ex})
+
+        LOG.info(_LI("Complete-Migrate volume completed successfully."),
+                 resource=volume)
         return volume['id']
 
     def migrate_volume(self, ctxt, volume_id, host, force_host_copy=False,

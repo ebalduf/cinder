@@ -210,11 +210,11 @@ def volume_get(context, volume_id):
     return IMPL.volume_get(context, volume_id)
 
 
-def volume_get_all(context, marker, limit, sort_key, sort_dir,
-                   filters=None):
+def volume_get_all(context, marker, limit, sort_key, sort_dir, filters=None,
+                   offset=None):
     """Get all volumes."""
     return IMPL.volume_get_all(context, marker, limit, sort_key, sort_dir,
-                               filters=filters)
+                               filters=filters, offset=offset)
 
 
 def volume_get_all_by_host(context, host):
@@ -228,10 +228,11 @@ def volume_get_all_by_group(context, group_id):
 
 
 def volume_get_all_by_project(context, project_id, marker, limit, sort_key,
-                              sort_dir, filters=None):
+                              sort_dir, filters=None, offset=None):
     """Get all volumes belonging to a project."""
     return IMPL.volume_get_all_by_project(context, project_id, marker, limit,
-                                          sort_key, sort_dir, filters=filters)
+                                          sort_key, sort_dir, filters=filters,
+                                          offset=offset)
 
 
 def volume_get_iscsi_target_num(context, volume_id):
@@ -266,14 +267,18 @@ def snapshot_get(context, snapshot_id):
     return IMPL.snapshot_get(context, snapshot_id)
 
 
-def snapshot_get_all(context):
+def snapshot_get_all(context, filters=None, limit=None, offset=0):
     """Get all snapshots."""
-    return IMPL.snapshot_get_all(context)
+    return IMPL.snapshot_get_all(context, filters=filters, limit=limit,
+                                 offset=offset)
 
 
-def snapshot_get_all_by_project(context, project_id):
+def snapshot_get_all_by_project(context, project_id, filters=None, limit=None,
+                                offset=0):
     """Get all snapshots belonging to a project."""
-    return IMPL.snapshot_get_all_by_project(context, project_id)
+    return IMPL.snapshot_get_all_by_project(context, project_id,
+                                            filters=filters, limit=limit,
+                                            offset=offset)
 
 
 def snapshot_get_all_for_cgsnapshot(context, project_id):
@@ -894,3 +899,12 @@ def cgsnapshot_update(context, cgsnapshot_id, values):
 def cgsnapshot_destroy(context, cgsnapshot_id):
     """Destroy the cgsnapshot or raise if it does not exist."""
     return IMPL.cgsnapshot_destroy(context, cgsnapshot_id)
+
+
+def purge_deleted_rows(context, age_in_days):
+    """Purge deleted rows older than given age from cinder tables
+
+    Raises InvalidParameterValue if age_in_days is incorrect.
+    :returns: number of deleted rows
+    """
+    return IMPL.purge_deleted_rows(context, age_in_days=age_in_days)

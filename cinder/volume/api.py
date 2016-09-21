@@ -291,7 +291,7 @@ class API(base.Base):
             # Volume is still attached, need to detach first
             raise exception.VolumeAttached(volume_id=volume_id)
 
-        if volume['migration_status'] is not None:
+        if volume['migration_status'] not in (None, 'deleting'):
             # Volume is migrating, wait until done
             msg = _("Volume cannot be deleted while migrating")
             raise exception.InvalidVolume(reason=msg)
@@ -355,7 +355,8 @@ class API(base.Base):
         return b
 
     def get_all(self, context, marker=None, limit=None, sort_key='created_at',
-                sort_dir='desc', filters=None, viewable_admin_meta=False):
+                sort_dir='desc', filters=None, viewable_admin_meta=False,
+                offset=None):
         check_policy(context, 'get_all')
 
         if filters is None:
@@ -387,7 +388,8 @@ class API(base.Base):
             # Need to remove all_tenants to pass the filtering below.
             del filters['all_tenants']
             volumes = self.db.volume_get_all(context, marker, limit, sort_key,
-                                             sort_dir, filters=filters)
+                                             sort_dir, filters=filters,
+                                             offset=offset)
         else:
             if viewable_admin_meta:
                 context = context.elevated()
@@ -395,7 +397,8 @@ class API(base.Base):
                                                         context.project_id,
                                                         marker, limit,
                                                         sort_key, sort_dir,
-                                                        filters=filters)
+                                                        filters=filters,
+                                                        offset=offset)
 
         return volumes
 
@@ -409,7 +412,8 @@ class API(base.Base):
         rv = self.db.volume_get(context, volume_id)
         return dict(rv.iteritems())
 
-    def get_all_snapshots(self, context, search_opts=None):
+    def get_all_snapshots(self, context, search_opts=None, limit=None,
+                          offset=0):
         check_policy(context, 'get_all_snapshots')
 
         search_opts = search_opts or {}
@@ -417,23 +421,12 @@ class API(base.Base):
         if (context.is_admin and 'all_tenants' in search_opts):
             # Need to remove all_tenants to pass the filtering below.
             del search_opts['all_tenants']
-            snapshots = self.db.snapshot_get_all(context)
+            snapshots = self.db.snapshot_get_all(context, search_opts, limit,
+                                                 offset)
         else:
             snapshots = self.db.snapshot_get_all_by_project(
-                context, context.project_id)
+                context, context.project_id, search_opts, limit, offset)
 
-        if search_opts:
-            LOG.debug("Searching by: %s" % search_opts)
-
-            results = []
-            not_found = object()
-            for snapshot in snapshots:
-                for opt, value in search_opts.iteritems():
-                    if snapshot.get(opt, not_found) != value:
-                        break
-                else:
-                    results.append(snapshot)
-            snapshots = results
         return snapshots
 
     @wrap_check_policy

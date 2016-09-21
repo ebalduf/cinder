@@ -1281,6 +1281,12 @@ class HP3PARBaseDriver(object):
              'volumeName': self.VOLUME_3PAR_NAME,
              'lun': None, 'type': 0}]
 
+        mock_client.queryHost.return_value = {
+            'members': [{
+                'name': self.FAKE_HOST
+            }]
+        }
+
         self.driver.terminate_connection(
             self.volume,
             self.connector,
@@ -1288,6 +1294,7 @@ class HP3PARBaseDriver(object):
 
         expected = [
             mock.call.login(HP3PAR_USER_NAME, HP3PAR_USER_PASS),
+            mock.call.queryHost(iqns=[self.connector['initiator']]),
             mock.call.getHostVLUNs(self.FAKE_HOST),
             mock.call.deleteVLUN(
                 self.VOLUME_3PAR_NAME,
@@ -2130,8 +2137,15 @@ class TestHP3PARFCDriver(HP3PARBaseDriver, test.TestCase):
 
         mock_client.getHostVLUNs.side_effect = effects
 
+        mock_client.queryHost.return_value = {
+            'members': [{
+                'name': self.FAKE_HOST
+            }]
+        }
+
         expected = [
             mock.call.login(HP3PAR_USER_NAME, HP3PAR_USER_PASS),
+            mock.call.queryHost(wwns=['123456789012345', '123456789054321']),
             mock.call.getHostVLUNs(self.FAKE_HOST),
             mock.call.deleteVLUN(
                 self.VOLUME_3PAR_NAME,
@@ -2190,10 +2204,17 @@ class TestHP3PARFCDriver(HP3PARBaseDriver, test.TestCase):
               'lun': None, 'type': 0}],
             hpexceptions.HTTPNotFound]
 
+        mock_client.queryHost.return_value = {
+            'members': [{
+                'name': self.FAKE_HOST
+            }]
+        }
+
         mock_client.getHostVLUNs.side_effect = effects
 
         expected = [
             mock.call.login(HP3PAR_USER_NAME, HP3PAR_USER_PASS),
+            mock.call.queryHost(wwns=['123456789012345', '123456789054321']),
             mock.call.getHostVLUNs(self.FAKE_HOST),
             mock.call.deleteVLUN(
                 self.VOLUME_3PAR_NAME,
@@ -2244,8 +2265,15 @@ class TestHP3PARFCDriver(HP3PARBaseDriver, test.TestCase):
                  'lun': None, 'type': 0},
             ]
 
+        mock_client.queryHost.return_value = {
+            'members': [{
+                'name': self.FAKE_HOST
+            }]
+        }
+
         expect_less = [
             mock.call.login(HP3PAR_USER_NAME, HP3PAR_USER_PASS),
+            mock.call.queryHost(wwns=['123456789012345', '123456789054321']),
             mock.call.getHostVLUNs(self.FAKE_HOST),
             mock.call.deleteVLUN(
                 self.VOLUME_3PAR_NAME,

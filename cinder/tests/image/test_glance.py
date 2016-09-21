@@ -585,6 +585,95 @@ class TestGlanceImageService(test.TestCase):
         }
         self.assertEqual(actual, expected)
 
+    @mock.patch('cinder.image.glance.CONF')
+    def test_extracting_v2_boot_properties(self, config):
+
+        config.glance_api_version = 2
+        config.glance_num_retries = 0
+
+        metadata = {
+            'id': 1,
+            'size': 2,
+            'min_disk': 2,
+            'min_ram': 2,
+            'kernel_id': 'foo',
+            'ramdisk_id': 'bar',
+        }
+
+        image = glance_stubs.FakeImage(metadata)
+        client = glance_stubs.StubGlanceClient()
+
+        service = self._create_image_service(client)
+        service._image_schema = glance_stubs.FakeSchema()
+
+        actual = service._translate_from_glance('fake_context', image)
+        expected = {
+            'id': 1,
+            'name': None,
+            'is_public': None,
+            'size': 2,
+            'min_disk': 2,
+            'min_ram': 2,
+            'disk_format': None,
+            'container_format': None,
+            'checksum': None,
+            'deleted': None,
+            'status': None,
+            'properties': {'kernel_id': 'foo',
+                           'ramdisk_id': 'bar'},
+            'owner': None,
+            'created_at': None,
+            'updated_at': None
+        }
+
+        self.assertEqual(expected, actual)
+
+    def test_translate_to_glance(self):
+        self.flags(glance_api_version=1)
+        client = glance_stubs.StubGlanceClient()
+        service = self._create_image_service(client)
+
+        metadata = {
+            'id': 1,
+            'size': 2,
+            'min_disk': 2,
+            'min_ram': 2,
+            'properties': {'kernel_id': 'foo',
+                           'ramdisk_id': 'bar',
+                           'x_billinginfo': '123'},
+        }
+
+        actual = service._translate_to_glance(metadata)
+        expected = metadata
+        self.assertEqual(expected, actual)
+
+    def test_translate_to_glance_v2(self):
+        self.flags(glance_api_version=2)
+        client = glance_stubs.StubGlanceClient()
+        service = self._create_image_service(client)
+
+        metadata = {
+            'id': 1,
+            'size': 2,
+            'min_disk': 2,
+            'min_ram': 2,
+            'properties': {'kernel_id': 'foo',
+                           'ramdisk_id': 'bar',
+                           'x_billinginfo': '123'},
+        }
+
+        actual = service._translate_to_glance(metadata)
+        expected = {
+            'id': 1,
+            'size': 2,
+            'min_disk': 2,
+            'min_ram': 2,
+            'kernel_id': 'foo',
+            'ramdisk_id': 'bar',
+            'x_billinginfo': '123',
+        }
+        self.assertEqual(expected, actual)
+
 
 class TestGlanceClientVersion(test.TestCase):
     """Tests the version of the glance client generated."""

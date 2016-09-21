@@ -70,7 +70,8 @@ def stub_snapshot_get(self, context, snapshot_id):
     return param
 
 
-def stub_snapshot_get_all(self, context, search_opts=None):
+def stub_snapshot_get_all(self, context, search_opts=None, limit=None,
+                          offset=0):
     param = _get_default_snapshot_param()
     return [param]
 
@@ -245,92 +246,6 @@ class SnapshotApiTest(test.TestCase):
         resp_snapshot = resp_snapshots.pop()
         self.assertEqual(resp_snapshot['id'], UUID)
 
-    def test_snapshot_list_by_status(self):
-        def stub_snapshot_get_all_by_project(context, project_id):
-            return [
-                stubs.stub_snapshot(1, display_name='backup1',
-                                    status='available'),
-                stubs.stub_snapshot(2, display_name='backup2',
-                                    status='available'),
-                stubs.stub_snapshot(3, display_name='backup3',
-                                    status='creating'),
-            ]
-        self.stubs.Set(db, 'snapshot_get_all_by_project',
-                       stub_snapshot_get_all_by_project)
-
-        # no status filter
-        req = fakes.HTTPRequest.blank('/v2/snapshots')
-        resp = self.controller.index(req)
-        self.assertEqual(len(resp['snapshots']), 3)
-        # single match
-        req = fakes.HTTPRequest.blank('/v2/snapshots?status=creating')
-        resp = self.controller.index(req)
-        self.assertEqual(len(resp['snapshots']), 1)
-        self.assertEqual(resp['snapshots'][0]['status'], 'creating')
-        # multiple match
-        req = fakes.HTTPRequest.blank('/v2/snapshots?status=available')
-        resp = self.controller.index(req)
-        self.assertEqual(len(resp['snapshots']), 2)
-        for snapshot in resp['snapshots']:
-            self.assertEqual(snapshot['status'], 'available')
-        # no match
-        req = fakes.HTTPRequest.blank('/v2/snapshots?status=error')
-        resp = self.controller.index(req)
-        self.assertEqual(len(resp['snapshots']), 0)
-
-    def test_snapshot_list_by_volume(self):
-        def stub_snapshot_get_all_by_project(context, project_id):
-            return [
-                stubs.stub_snapshot(1, volume_id='vol1', status='creating'),
-                stubs.stub_snapshot(2, volume_id='vol1', status='available'),
-                stubs.stub_snapshot(3, volume_id='vol2', status='available'),
-            ]
-        self.stubs.Set(db, 'snapshot_get_all_by_project',
-                       stub_snapshot_get_all_by_project)
-
-        # single match
-        req = fakes.HTTPRequest.blank('/v2/snapshots?volume_id=vol2')
-        resp = self.controller.index(req)
-        self.assertEqual(len(resp['snapshots']), 1)
-        self.assertEqual(resp['snapshots'][0]['volume_id'], 'vol2')
-        # multiple match
-        req = fakes.HTTPRequest.blank('/v2/snapshots?volume_id=vol1')
-        resp = self.controller.index(req)
-        self.assertEqual(len(resp['snapshots']), 2)
-        for snapshot in resp['snapshots']:
-            self.assertEqual(snapshot['volume_id'], 'vol1')
-        # multiple filters
-        req = fakes.HTTPRequest.blank('/v2/snapshots?volume_id=vol1'
-                                      '&status=available')
-        resp = self.controller.index(req)
-        self.assertEqual(len(resp['snapshots']), 1)
-        self.assertEqual(resp['snapshots'][0]['volume_id'], 'vol1')
-        self.assertEqual(resp['snapshots'][0]['status'], 'available')
-
-    def test_snapshot_list_by_name(self):
-        def stub_snapshot_get_all_by_project(context, project_id):
-            return [
-                stubs.stub_snapshot(1, display_name='backup1'),
-                stubs.stub_snapshot(2, display_name='backup2'),
-                stubs.stub_snapshot(3, display_name='backup3'),
-            ]
-        self.stubs.Set(db, 'snapshot_get_all_by_project',
-                       stub_snapshot_get_all_by_project)
-
-        # no name filter
-        req = fakes.HTTPRequest.blank('/v2/snapshots')
-        resp = self.controller.index(req)
-        self.assertEqual(len(resp['snapshots']), 3)
-        # filter by one name
-        req = fakes.HTTPRequest.blank('/v2/snapshots?name=backup2')
-        resp = self.controller.index(req)
-        self.assertEqual(len(resp['snapshots']), 1)
-        self.assertEqual(resp['snapshots'][0]['name'], 'backup2')
-        # filter no match
-        req = fakes.HTTPRequest.blank('/v2/snapshots?name=backup4')
-        resp = self.controller.index(req)
-        self.assertEqual(len(resp['snapshots']), 0)
-
     def test_admin_list_snapshots_limited_to_project(self):
         req = fakes.HTTPRequest.blank('/v2/fake/snapshots',
                                       use_admin_context=True)
@@ -341,12 +256,16 @@ class SnapshotApiTest(test.TestCase):
 
     def test_list_snapshots_with_limit_and_offset(self):
         def list_snapshots_with_limit_and_offset(is_admin):
-            def stub_snapshot_get_all_by_project(context, project_id):
+            def stub_snapshot_get_all_by_project(context, project_id,
+                                                 search_opts,
+                                                 limit=None, offset=0):
+                self.assertEqual(1, limit)
+                self.assertEqual(1, offset)
                 return [
                     stubs.stub_snapshot(1, display_name='backup1'),
                     stubs.stub_snapshot(2, display_name='backup2'),
                     stubs.stub_snapshot(3, display_name='backup3'),
-                ]
+                ][offset:offset + limit]
 
             self.stubs.Set(db, 'snapshot_get_all_by_project',
                            stub_snapshot_get_all_by_project)

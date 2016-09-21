@@ -44,3 +44,10 @@ class FinishVolumeMigrationTestCase(test.TestCase):
         self.assertEqual(src_volume['host'], 'dest')
         self.assertEqual(src_volume['status'], 'available')
         self.assertIsNone(src_volume['migration_status'])
+
+        # Check that we have copied source volume DB data into destination DB
+        # entry and we are setting it to deleting
+        dest_volume = db.volume_get(ctxt, dest_volume['id'])
+        self.assertEqual('src', dest_volume['host'])
+        self.assertEqual('deleting', dest_volume['status'])
+        self.assertEqual('deleting', dest_volume['migration_status'])

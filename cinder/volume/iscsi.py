@@ -18,7 +18,7 @@ import re
 
 from cinder.brick.iscsi import iscsi
 from cinder import exception
-from cinder.i18n import _
+from cinder.i18n import _, _LI, _LW
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import processutils as putils
 from cinder.volume import utils
@@ -61,7 +61,8 @@ class _ExportMixin(object):
                                        conf.iscsi_write_cache)
         data = {}
         data['location'] = self._iscsi_location(
-            conf.iscsi_ip_address, tid, iscsi_name, conf.iscsi_port, lun)
+            conf.iscsi_ip_address, tid, iscsi_name, conf.iscsi_port, lun,
+            conf.iscsi_secondary_ip_addresses)
         data['auth'] = self._iscsi_authentication(
             'CHAP', chap_username, chap_password)
         return data
@@ -153,9 +154,13 @@ class _ExportMixin(object):
     def _iscsi_authentication(self, chap, name, password):
         return "%s %s %s" % (chap, name, password)
 
-    def _iscsi_location(self, ip, target, iqn, port, lun=None):
-        return "%s:%s,%s %s %s" % (ip, port,
-                                   target, iqn, lun)
+    def _iscsi_location(self, ip, target, iqn, port, lun=None,
+                        ip_secondary=None):
+        ip_secondary = ip_secondary or []
+        portals = map(lambda x: "%s:%s" % (x, port), [ip] + ip_secondary)
+        return ("%(portals)s,%(target)s %(iqn)s %(lun)s"
+                % ({'portals': ";".join(portals),
+                    'target': target, 'iqn': iqn, 'lun': lun}))
 
     def _fix_id_migration(self, context, volume, vg_name):
         """Fix provider_location and dev files to address bug 1065702.
@@ -248,37 +253,40 @@ class LioAdm(_ExportMixin, iscsi.LioAdm):
         except exception.NotFound:
             LOG.debug('Failed to get CHAP auth from DB for %s', vol_id)
 
-    def remove_export(self, context, volume):
-        try:
-            iscsi_target = self.db.volume_get_iscsi_target_num(context,
-                                                               volume['id'])
-        except exception.NotFound:
-            LOG.info(_("Skipping remove_export. No iscsi_target "
-                       "provisioned for volume: %s"), volume['id'])
-            return
+    def _get_targets(self):
+        (out, err) = self._execute('cinder-rtstool',
+                                   'get-targets',
+                                   run_as_root=True)
+        return out
 
-        self.remove_iscsi_target(iscsi_target, 0, volume['id'], volume['name'])
+    def _get_iscsi_target(self, context, vol_id):
+        return 0
+
+    def _get_target_and_lun(self, context, volume, max_targets):
+        lun = 0  # For lio, the lun starts at lun 0.
+        iscsi_target = 0  # NOTE: Not used by lio.
+        return iscsi_target, lun
+
+    def _restore_configuration(self):
+        try:
+            self._execute('cinder-rtstool', 'restore', run_as_root=True)
+
+        # On persistence failure we don't raise an exception, as target has
+        # been successfully created.
+        except putils.ProcessExecutionError:
+            LOG.warning(_LW("Failed to restore iscsi LIO configuration."))
 
     def ensure_export(self, context, volume, iscsi_name, volume_path,
                       vg_name, conf, old_name=None):
-        try:
-            volume_info = self.db.volume_get(context, volume['id'])
-        except exception.NotFound:
-            LOG.info(_("Skipping ensure_export. No iscsi_target "
-                       "provision for volume: %s"), volume['id'])
+        """Recreate exports for logical volumes."""
+
+        # Restore saved configuration file if no target exists.
+        if not self._get_targets():
+            LOG.info(_LI('Restoring iSCSI target from configuration file'))
+            self._restore_configuration()
             return
 
-        (auth_method,
-         auth_user,
-         auth_pass) = volume_info['provider_auth'].split(' ', 3)
-        chap_auth = self._iscsi_authentication(auth_method,
-                                               auth_user,
-                                               auth_pass)
-
-        iscsi_target = 1
-
-        self.create_iscsi_target(iscsi_name, iscsi_target, 0, volume_path,
-                                 chap_auth, check_exit_code=False)
+        LOG.info(_LI("Skipping ensure_export. Found existing iSCSI target."))
 
 
 class IetAdm(_ExportMixin, iscsi.IetAdm):

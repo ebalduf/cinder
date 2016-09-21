@@ -1,4 +1,4 @@
-#    (c) Copyright 2013 Hewlett-Packard Development Company, L.P.
+#    (c) Copyright 2013-2016 Hewlett-Packard Development Company, L.P.
 #    All Rights Reserved.
 #
 #    Copyright 2012 OpenStack Foundation
@@ -69,10 +69,11 @@ class HP3PARFCDriver(cinder.volume.driver.FibreChannelDriver):
         2.0.7 - Only one FC port is used when a single FC path
                 is present.  bug #1360001
         2.0.8 - Fixing missing login/logout around attach/detach bug #1367429
+        2.88.9 - Removed usage of host name cache Bug #1398914
 
     """
 
-    VERSION = "2.0.8"
+    VERSION = "2.88.9"
 
     def __init__(self, *args, **kwargs):
         super(HP3PARFCDriver, self).__init__(*args, **kwargs)
@@ -323,7 +324,6 @@ class HP3PARFCDriver(cinder.volume.driver.FibreChannelDriver):
                 break
 
         if host_found is not None:
-            self.common.hosts_naming_dict[hostname] = host_found
             return host_found
         else:
             persona_id = int(persona_id)

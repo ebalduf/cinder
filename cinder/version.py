@@ -12,12 +12,22 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from pbr import version as pbr_version
-
 CINDER_VENDOR = "OpenStack Foundation"
 CINDER_PRODUCT = "OpenStack Cinder"
 CINDER_PACKAGE = None  # OS distro package version suffix
 
 loaded = False
-version_info = pbr_version.VersionInfo('cinder')
+
+
+class VersionInfo:
+    version = "REDHATCINDERVERSION"
+    release = "REDHATCINDERRELEASE"
+
+    def release_string(self):
+        return '%s-%s' % (self.version, self.release)
+
+    def version_string(self):
+        return self.version
+
+version_info = VersionInfo()
 version_string = version_info.version_string

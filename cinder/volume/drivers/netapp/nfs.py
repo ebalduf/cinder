@@ -301,7 +301,7 @@ class NetAppNFSDriver(nfs.NfsDriver):
                 self.configuration.thres_avl_size_perc_stop
             for share in getattr(self, '_mounted_shares', []):
                 try:
-                    total_size, total_avl, total_alc =\
+                    total_size, total_avl =\
                         self._get_capacity_info(share)
                     avl_percent = int((total_avl / total_size) * 100)
                     if avl_percent <= thres_size_perc_start:
@@ -429,7 +429,7 @@ class NetAppNFSDriver(nfs.NfsDriver):
             (share, file_name) = res
             LOG.debug('Cache share: %s', share)
             if (share and
-                    self._is_share_vol_compatible(volume, share)):
+                    self._is_share_clone_compatible(volume, share)):
                 try:
                     self._do_clone_rel_img_cache(
                         file_name, volume['name'], share, file_name)
@@ -447,7 +447,7 @@ class NetAppNFSDriver(nfs.NfsDriver):
         cloned = False
         image_location = self._construct_image_nfs_url(image_location)
         share = self._is_cloneable_share(image_location)
-        if share and self._is_share_vol_compatible(volume, share):
+        if share and self._is_share_clone_compatible(volume, share):
             LOG.debug('Share is cloneable %s', share)
             volume['provider_location'] = share
             (__, ___, img_file) = image_location.rpartition('/')
@@ -624,13 +624,27 @@ class NetAppNFSDriver(nfs.NfsDriver):
         path = self.local_path(volume)
         self._resize_image_file(path, new_size)
 
-    def _is_share_vol_compatible(self, volume, share):
-        """Checks if share is compatible with volume to host it."""
+    def _is_share_clone_compatible(self, volume, share):
+        """Checks if share is compatible with volume to host its clone."""
         raise NotImplementedError()
+
+    def _share_has_space_for_clone(self, share, size_in_gib, thin=True):
+        """Is there space on the share for a clone given the original size?"""
+        requested_size = size_in_gib * units.Gi
+
+        total_size, total_available = self._get_capacity_info(share)
+
+        reserved_ratio = 1.0 - self.configuration.nfs_used_ratio
+        reserved = int(round(total_size * reserved_ratio))
+        available = max(0, total_available - reserved)
+        if thin:
+            available = available * self.configuration.nfs_oversub_ratio
+
+        return available >= requested_size
 
     def _check_share_can_hold_size(self, share, size):
         """Checks if volume can hold image with size."""
-        tot_size, tot_available, tot_allocated = self._get_capacity_info(share)
+        tot_size, tot_available = self._get_capacity_info(share)
         if tot_available < size:
             msg = _("Container size smaller than required file size.")
             raise exception.VolumeDriverException(msg)
@@ -730,22 +744,38 @@ class NetAppDirectNfsDriver (NetAppNFSDriver):
             'file-usage-get', **{'path': path})
         return file_use
 
-    def _get_extended_capacity_info(self, nfs_share):
-        """Returns an extended set of share capacity metrics."""
+    def _get_share_capacity_info(self, nfs_share):
+        """Returns the share capacity metrics needed by the scheduler."""
 
-        total_size, total_available, total_allocated = \
-            self._get_capacity_info(nfs_share)
+        used_ratio = self.configuration.nfs_used_ratio
+        oversub_ratio = self.configuration.nfs_oversub_ratio
 
-        used_ratio = (total_size - total_available) / total_size
-        subscribed_ratio = total_allocated / total_size
-        apparent_size = max(0, total_size * self.configuration.nfs_used_ratio)
-        apparent_available = max(0, apparent_size - total_allocated)
+        # The scheduler's capacity filter will reduce the amount of
+        # free space that we report to it by the reserved percentage.
+        reserved_ratio = 1 - used_ratio
+        reserved_percentage = round(100 * reserved_ratio)
 
-        return {'total_size': total_size, 'total_available': total_available,
-                'total_allocated': total_allocated, 'used_ratio': used_ratio,
-                'subscribed_ratio': subscribed_ratio,
-                'apparent_size': apparent_size,
-                'apparent_available': apparent_available}
+        total_size, total_available = self._get_capacity_info(nfs_share)
+
+        apparent_size = total_size * oversub_ratio
+        apparent_size_gb = na_utils.round_down(
+            apparent_size / units.Gi, '0.01')
+
+        apparent_free_size = total_available * oversub_ratio
+        apparent_free_gb = na_utils.round_down(
+            float(apparent_free_size) / units.Gi, '0.01')
+
+        capacity = dict()
+        capacity['reserved_percentage'] = reserved_percentage
+        capacity['total_capacity_gb'] = apparent_size_gb
+        capacity['free_capacity_gb'] = apparent_free_gb
+
+        return capacity
+
+    def _get_capacity_info(self, nfs_share):
+        """Get total capacity and free capacity in bytes for an nfs share."""
+        export_path = nfs_share.rsplit(':', 1)[1]
+        return self.get_flexvol_capacity(export_path)
 
 
 class NetAppDirectCmodeNfsDriver (NetAppDirectNfsDriver):
@@ -975,28 +1005,12 @@ class NetAppDirectCmodeNfsDriver (NetAppDirectNfsDriver):
 
         for nfs_share in self._mounted_shares:
 
-            capacity = self._get_extended_capacity_info(nfs_share)
+            capacity = self._get_share_capacity_info(nfs_share)
 
             pool = dict()
             pool['pool_name'] = nfs_share
             pool['QoS_support'] = False
-            pool['reserved_percentage'] = 0
-
-            # Report pool as reserved when over the configured used_ratio
-            if capacity['used_ratio'] > self.configuration.nfs_used_ratio:
-                pool['reserved_percentage'] = 100
-
-            # Report pool as reserved when over the subscribed ratio
-            if capacity['subscribed_ratio'] >=\
-                    self.configuration.nfs_oversub_ratio:
-                pool['reserved_percentage'] = 100
-
-            # convert sizes to GB
-            total = float(capacity['apparent_size']) / units.Gi
-            pool['total_capacity_gb'] = na_utils.round_down(total, '0.01')
-
-            free = float(capacity['apparent_available']) / units.Gi
-            pool['free_capacity_gb'] = na_utils.round_down(free, '0.01')
+            pool.update(capacity)
 
             # add SSC content if available
             vol = self._get_vol_for_share(nfs_share)
@@ -1126,13 +1140,23 @@ class NetAppDirectCmodeNfsDriver (NetAppDirectNfsDriver):
                     return vol
         return None
 
-    def _is_share_vol_compatible(self, volume, share):
-        """Checks if share is compatible with volume to host it."""
-        compatible = self._is_share_eligible(share, volume['size'])
+    def _is_share_clone_compatible(self, volume, share):
+        """Checks if share is compatible with volume to host its clone."""
+        thin = self._is_volume_thin_provisioned(volume)
+        compatible = self._share_has_space_for_clone(share,
+                                                     volume['size'],
+                                                     thin)
         if compatible and self.ssc_enabled:
             matched = self._is_share_vol_type_match(volume, share)
             compatible = compatible and matched
         return compatible
+
+    def _is_volume_thin_provisioned(self, volume):
+        if self.configuration.nfs_sparsed_volumes:
+            return True
+        if self.ssc_enabled and volume in self.ssc_vols['thin']:
+            return True
+        return False
 
     def _is_share_vol_type_match(self, volume, share):
         """Checks if share matches volume type."""
@@ -1325,6 +1349,42 @@ class NetAppDirectCmodeNfsDriver (NetAppDirectNfsDriver):
         finally:
             if os.path.exists(dst_img_local):
                 self._delete_file(dst_img_local)
+
+    def get_flexvol_capacity(self, flexvol_path):
+        """Gets total capacity and free capacity, in bytes, of the flexvol."""
+
+        api_args = {
+            'query': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'junction-path': flexvol_path
+                    }
+                }
+            },
+            'desired-attributes': {
+                'volume-attributes': {
+                    'volume-space-attributes': {
+                        'size-available': None,
+                        'size-total': None,
+                    }
+                }
+            },
+        }
+
+        result = self._client.send_request('volume-get-iter', api_args)
+
+        attributes_list = result.get_child_by_name('attributes-list')
+        volume_attributes = attributes_list.get_child_by_name(
+            'volume-attributes')
+        volume_space_attributes = volume_attributes.get_child_by_name(
+            'volume-space-attributes')
+
+        size_available = float(
+            volume_space_attributes.get_child_content('size-available'))
+        size_total = float(
+            volume_space_attributes.get_child_content('size-total'))
+
+        return size_total, size_available
 
 
 class NetAppDirect7modeNfsDriver (NetAppDirectNfsDriver):
@@ -1532,28 +1592,12 @@ class NetAppDirect7modeNfsDriver (NetAppDirectNfsDriver):
 
         for nfs_share in self._mounted_shares:
 
-            capacity = self._get_extended_capacity_info(nfs_share)
+            capacity = self._get_share_capacity_info(nfs_share)
 
             pool = dict()
             pool['pool_name'] = nfs_share
             pool['QoS_support'] = False
-            pool['reserved_percentage'] = 0
-
-            # Report pool as reserved when over the configured used_ratio
-            if capacity['used_ratio'] > self.configuration.nfs_used_ratio:
-                pool['reserved_percentage'] = 100
-
-            # Report pool as reserved when over the subscribed ratio
-            if capacity['subscribed_ratio'] >=\
-                    self.configuration.nfs_oversub_ratio:
-                pool['reserved_percentage'] = 100
-
-            # convert sizes to GB
-            total = float(capacity['apparent_size']) / units.Gi
-            pool['total_capacity_gb'] = na_utils.round_down(total, '0.01')
-
-            free = float(capacity['apparent_available']) / units.Gi
-            pool['free_capacity_gb'] = na_utils.round_down(free, '0.01')
+            pool.update(capacity)
 
             pools.append(pool)
 
@@ -1619,6 +1663,24 @@ class NetAppDirect7modeNfsDriver (NetAppDirectNfsDriver):
         LOG.debug('No share match found for ip %s', ip)
         return None
 
-    def _is_share_vol_compatible(self, volume, share):
-        """Checks if share is compatible with volume to host it."""
-        return self._is_share_eligible(share, volume['size'])
+    def _is_share_clone_compatible(self, volume, share):
+        """Checks if share is compatible with volume to host its clone."""
+        thin = self.configuration.nfs_sparsed_volumes
+        return self._share_has_space_for_clone(share, volume['size'], thin)
+
+    def get_flexvol_capacity(self, flexvol_path):
+        """Gets total capacity and free capacity, in bytes, of the flexvol."""
+
+        api_args = {'volume': flexvol_path, 'verbose': 'false'}
+
+        result = self._client.send_request('volume-list-info', api_args)
+
+        flexvol_info_list = result.get_child_by_name('volumes')
+        flexvol_info = flexvol_info_list.get_children()[0]
+
+        total_bytes = float(
+            flexvol_info.get_child_content('size-total'))
+        available_bytes = float(
+            flexvol_info.get_child_content('size-available'))
+
+        return total_bytes, available_bytes

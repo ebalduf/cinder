@@ -16,7 +16,6 @@
 import datetime
 import hashlib
 import os
-import socket
 import tempfile
 import uuid
 
@@ -26,8 +25,6 @@ import paramiko
 import six
 
 import cinder
-from cinder.brick.initiator import connector
-from cinder.brick.initiator import linuxfc
 from cinder import exception
 from cinder.openstack.common import processutils as putils
 from cinder.openstack.common import timeutils
@@ -1058,66 +1055,28 @@ class BrickUtils(test.TestCase):
     wrapper functions.
     """
 
-    def test_brick_get_connector_properties(self):
+    @mock.patch('cinder.utils.CONF')
+    @mock.patch('cinder.brick.initiator.connector.get_connector_properties')
+    @mock.patch('cinder.utils.get_root_helper')
+    def test_brick_get_connector_properties(self, mock_helper, mock_get,
+                                            mock_conf):
+        mock_conf.my_ip = '1.2.3.4'
+        output = utils.brick_get_connector_properties()
+        mock_helper.assert_called_once_with()
+        mock_get.assert_called_once_with(mock_helper.return_value, '1.2.3.4',
+                                         False, False)
+        self.assertEqual(mock_get.return_value, output)
 
-        self.mox.StubOutWithMock(socket, 'gethostname')
-        socket.gethostname().AndReturn('fakehost')
-
-        self.mox.StubOutWithMock(connector.ISCSIConnector, 'get_initiator')
-        connector.ISCSIConnector.get_initiator().AndReturn('fakeinitiator')
-
-        self.mox.StubOutWithMock(linuxfc.LinuxFibreChannel, 'get_fc_wwpns')
-        linuxfc.LinuxFibreChannel.get_fc_wwpns().AndReturn(None)
-
-        self.mox.StubOutWithMock(linuxfc.LinuxFibreChannel, 'get_fc_wwnns')
-        linuxfc.LinuxFibreChannel.get_fc_wwnns().AndReturn(None)
-
-        props = {'initiator': 'fakeinitiator',
-                 'host': 'fakehost',
-                 'ip': CONF.my_ip,
-                 }
-
-        self.mox.ReplayAll()
-        props_actual = utils.brick_get_connector_properties()
-        self.assertEqual(props, props_actual)
-        self.mox.VerifyAll()
-
-    def test_brick_get_connector(self):
-
-        root_helper = utils.get_root_helper()
-
-        self.mox.StubOutClassWithMocks(connector, 'ISCSIConnector')
-        connector.ISCSIConnector(execute=putils.execute,
-                                 driver=None,
-                                 root_helper=root_helper,
-                                 use_multipath=False,
-                                 device_scan_attempts=3)
-
-        self.mox.StubOutClassWithMocks(connector, 'FibreChannelConnector')
-        connector.FibreChannelConnector(execute=putils.execute,
-                                        driver=None,
-                                        root_helper=root_helper,
-                                        use_multipath=False,
-                                        device_scan_attempts=3)
-
-        self.mox.StubOutClassWithMocks(connector, 'AoEConnector')
-        connector.AoEConnector(execute=putils.execute,
-                               driver=None,
-                               root_helper=root_helper,
-                               device_scan_attempts=3)
-
-        self.mox.StubOutClassWithMocks(connector, 'LocalConnector')
-        connector.LocalConnector(execute=putils.execute,
-                                 driver=None,
-                                 root_helper=root_helper,
-                                 device_scan_attempts=3)
-
-        self.mox.ReplayAll()
-        utils.brick_get_connector('iscsi')
-        utils.brick_get_connector('fibre_channel')
-        utils.brick_get_connector('aoe')
-        utils.brick_get_connector('local')
-        self.mox.VerifyAll()
+    @mock.patch('cinder.brick.initiator.connector.InitiatorConnector.factory')
+    @mock.patch('cinder.utils.get_root_helper')
+    def test_brick_get_connector(self, mock_helper, mock_factory):
+        output = utils.brick_get_connector('protocol')
+        mock_helper.assert_called_once_with()
+        self.assertEqual(mock_factory.return_value, output)
+        mock_factory.assert_called_once_with(
+            'protocol', mock_helper.return_value, driver=None,
+            execute=putils.execute, use_multipath=False,
+            device_scan_attempts=3)
 
 
 class StringLengthTestCase(test.TestCase):

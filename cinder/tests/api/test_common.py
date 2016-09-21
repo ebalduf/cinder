@@ -17,6 +17,8 @@
 Test suites for 'common' code used throughout the OpenStack HTTP API.
 """
 
+import mock
+from oslo.config import cfg
 import webob
 import webob.exc
 
@@ -26,6 +28,7 @@ from cinder import test
 
 NS = "{http://docs.openstack.org/compute/api/v1.1}"
 ATOMNS = "{http://www.w3.org/2005/Atom}"
+CONF = cfg.CONF
 
 
 class LimiterTest(test.TestCase):
@@ -170,37 +173,47 @@ class PaginationParamsTest(test.TestCase):
         """Test nonnumerical limit param."""
         req = webob.Request.blank('/?limit=hello')
         self.assertRaises(
-            webob.exc.HTTPBadRequest, common.get_pagination_params, req)
+            webob.exc.HTTPBadRequest, common.get_pagination_params,
+            req.GET.copy())
 
-    def test_no_params(self):
+    @mock.patch.object(common, 'CONF')
+    def test_no_params(self, mock_cfg):
         """Test no params."""
+        mock_cfg.osapi_max_limit = 100
         req = webob.Request.blank('/')
-        self.assertEqual(common.get_pagination_params(req), {})
+        expected = (None, 100, 0)
+        self.assertEqual(expected,
+                         common.get_pagination_params(req.GET.copy()))
 
     def test_valid_marker(self):
         """Test valid marker param."""
-        req = webob.Request.blank(
-            '/?marker=263abb28-1de6-412f-b00b-f0ee0c4333c2')
-        self.assertEqual(common.get_pagination_params(req),
-                         {'marker': '263abb28-1de6-412f-b00b-f0ee0c4333c2'})
+        marker = '263abb28-1de6-412f-b00b-f0ee0c4333c2'
+        req = webob.Request.blank('/?marker=' + marker)
+        expected = (marker, CONF.osapi_max_limit, 0)
+        self.assertEqual(expected,
+                         common.get_pagination_params(req.GET.copy()))
 
     def test_valid_limit(self):
         """Test valid limit param."""
         req = webob.Request.blank('/?limit=10')
-        self.assertEqual(common.get_pagination_params(req), {'limit': 10})
+        expected = (None, 10, 0)
+        self.assertEqual(expected,
+                         common.get_pagination_params(req.GET.copy()))
 
     def test_invalid_limit(self):
         """Test invalid limit param."""
         req = webob.Request.blank('/?limit=-2')
         self.assertRaises(
-            webob.exc.HTTPBadRequest, common.get_pagination_params, req)
+            webob.exc.HTTPBadRequest, common.get_pagination_params,
+            req.GET.copy())
 
     def test_valid_limit_and_marker(self):
         """Test valid limit and marker parameters."""
         marker = '263abb28-1de6-412f-b00b-f0ee0c4333c2'
         req = webob.Request.blank('/?limit=20&marker=%s' % marker)
-        self.assertEqual(common.get_pagination_params(req),
-                         {'marker': marker, 'limit': 20})
+        expected = (marker, 20, 0)
+        self.assertEqual(expected,
+                         common.get_pagination_params(req.GET.copy()))
 
 
 class MiscFunctionsTest(test.TestCase):

@@ -212,11 +212,9 @@ class VolumeController(wsgi.Controller):
         context = req.environ['cinder.context']
 
         params = req.params.copy()
-        marker = params.pop('marker', None)
-        limit = params.pop('limit', None)
+        marker, limit, offset = common.get_pagination_params(params)
         sort_key = params.pop('sort_key', 'created_at')
         sort_dir = params.pop('sort_dir', 'desc')
-        params.pop('offset', None)
         filters = params
 
         utils.remove_invalid_filter_options(context,
@@ -231,22 +229,24 @@ class VolumeController(wsgi.Controller):
         if 'metadata' in filters:
             filters['metadata'] = ast.literal_eval(filters['metadata'])
 
-        volumes = self.volume_api.get_all(context, marker, limit, sort_key,
-                                          sort_dir, filters,
-                                          viewable_admin_meta=True)
+        volumes = self.volume_api.get_all(context, marker, limit,
+                                          sort_key=sort_key,
+                                          sort_dir=sort_dir,
+                                          filters=filters,
+                                          viewable_admin_meta=True,
+                                          offset=offset)
 
         volumes = [dict(vol.iteritems()) for vol in volumes]
 
         for volume in volumes:
             utils.add_visible_admin_metadata(volume)
 
-        limited_list = common.limited(volumes, req)
+        req.cache_resource(volumes)
 
         if is_detail:
-            volumes = self._view_builder.detail_list(req, limited_list)
+            volumes = self._view_builder.detail_list(req, volumes)
         else:
-            volumes = self._view_builder.summary_list(req, limited_list)
-        req.cache_resource(limited_list)
+            volumes = self._view_builder.summary_list(req, volumes)
         return volumes
 
     def _image_uuid_from_href(self, image_href):

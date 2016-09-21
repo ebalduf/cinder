@@ -816,7 +816,6 @@ class RBDTestCase(test.TestCase):
         # Expect no timeout if default is used
         self.mock_rados.Rados.connect.assert_called_once_with()
         self.assertTrue(self.mock_rados.Rados.open_ioctx.called)
-        self.assertIsInstance(ret[0], self.mock_rados.Rados)
         self.assertEqual(ret[1], self.mock_rados.Rados.ioctx)
         self.mock_rados.Rados.open_ioctx.assert_called_with(self.cfg.rbd_pool)
 
@@ -824,7 +823,6 @@ class RBDTestCase(test.TestCase):
         ret = self.driver._connect_to_rados('alt_pool')
         self.assertTrue(self.mock_rados.Rados.connect.called)
         self.assertTrue(self.mock_rados.Rados.open_ioctx.called)
-        self.assertIsInstance(ret[0], self.mock_rados.Rados)
         self.assertEqual(ret[1], self.mock_rados.Rados.ioctx)
         self.mock_rados.Rados.open_ioctx.assert_called_with('alt_pool')
 

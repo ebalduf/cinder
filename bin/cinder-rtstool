@@ -15,6 +15,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
+import os
 import sys
 
 import rtslib
@@ -150,7 +151,51 @@ def usage():
     print(sys.argv[0] + " get-targets")
     print(sys.argv[0] + " delete [iqn]")
     print(sys.argv[0] + " verify")
+    print(sys.argv[0] + " save [path_to_file]")
     sys.exit(1)
+
+
+def save_to_file(destination_file):
+    rtsroot = rtslib.root.RTSRoot()
+    try:
+        # If default destination use rtslib default save file
+        if not destination_file:
+            destination_file = rtslib.root.default_save_file
+            path_to_file = os.path.dirname(destination_file)
+
+            # NOTE(geguileo): With default file we ensure path exists and
+            # create it if doesn't.
+            # Cinder's LIO target helper runs this as root, so it will have no
+            # problem creating directory /etc/target.
+            # If run manually from the command line without being root you will
+            # get an error, same as when creating and removing targets.
+            if not os.path.exists(path_to_file):
+                os.makedirs(path_to_file, 0o755)
+
+    except OSError as exc:
+        raise RtstoolError(_('targetcli not installed and could not create '
+                             'default directory (%(default_path)s): %(exc)s') %
+                           {'default_path': path_to_file, 'exc': exc})
+    try:
+        rtsroot.save_to_file(destination_file)
+    except (OSError, IOError) as exc:
+        raise RtstoolError(_('Could not save configuration to %(file_path)s: '
+                             '%(exc)s') %
+                           {'file_path': destination_file, 'exc': exc})
+
+
+def restore_from_file(configration_file):
+    rtsroot = rtslib.root.RTSRoot()
+    # If configuration file is None, use rtslib default save file.
+    if not configration_file:
+        configration_file = rtslib.root.default_save_file
+
+    try:
+        rtsroot.restore_from_file(configration_file)
+    except (OSError, IOError) as exc:
+        raise RtstoolError(_('Could not restore configuration file '
+                             '%(file_path)s: %(exc)s'),
+                           {'file_path': configration_file, 'exc': exc})
 
 
 def main(argv=None):
@@ -203,6 +248,22 @@ def main(argv=None):
         # This is used to verify that this script can be called by cinder,
         # and that rtslib is new enough to work.
         verify_rtslib()
+        return 0
+
+    elif argv[1] == 'save':
+        if len(argv) > 3:
+            usage()
+
+        destination_file = argv[2] if len(argv) > 2 else None
+        save_to_file(destination_file)
+        return 0
+
+    elif argv[1] == 'restore':
+        if len(argv) > 3:
+            usage()
+
+        configuration_file = argv[2] if len(argv) > 2 else None
+        restore_from_file(configuration_file)
         return 0
 
     else:

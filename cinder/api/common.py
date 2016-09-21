@@ -66,45 +66,69 @@ def validate_key_names(key_names_list):
     return True
 
 
-def get_pagination_params(request):
-    """Return marker, limit tuple from request.
+def get_pagination_params(params, max_limit=None):
+    """Return marker, limit, offset tuple from request.
 
-    :param request: `wsgi.Request` possibly containing 'marker' and 'limit'
-                    GET variables. 'marker' is the id of the last element
-                    the client has seen, and 'limit' is the maximum number
-                    of items to return. If 'limit' is not specified, 0, or
-                    > max_limit, we default to max_limit. Negative values
-                    for either marker or limit will cause
-                    exc.HTTPBadRequest() exceptions to be raised.
-
+    :param params: `wsgi.Request`'s GET dictionary, possibly containing
+                   'marker',  'limit', and 'offset' variables. 'marker' is the
+                   id of the last element the client has seen, 'limit' is the
+                   maximum number of items to return and 'offset' is the number
+                   of items to skip from the marker or from the first element.
+                   If 'limit' is not specified, or > max_limit, we default to
+                   max_limit. Negative values for either offset or limit will
+                   cause exc.HTTPBadRequest() exceptions to be raised. If no
+                   offset is present we'll default to 0 and if no marker is
+                   present we'll default to None.
+    :max_limit: Max value 'limit' return value can take
+    :returns: Tuple (marker, limit, offset)
     """
-    params = {}
-    if 'limit' in request.GET:
-        params['limit'] = _get_limit_param(request)
-    if 'marker' in request.GET:
-        params['marker'] = _get_marker_param(request)
-    return params
+    max_limit = max_limit or CONF.osapi_max_limit
+    limit = _get_limit_param(params, max_limit)
+    marker = _get_marker_param(params)
+    offset = _get_offset_param(params)
+    return marker, limit, offset
 
 
-def _get_limit_param(request):
-    """Extract integer limit from request or fail."""
+def _get_limit_param(params, max_limit=None):
+    """Extract integer limit from request's dictionary or fail.
+
+   Defaults to max_limit if not present and returns max_limit if present
+   'limit' is greater than max_limit.
+    """
+    max_limit = max_limit or CONF.osapi_max_limit
     try:
-        limit = int(request.GET['limit'])
+        limit = int(params.pop('limit', max_limit))
     except ValueError:
         msg = _('limit param must be an integer')
         raise webob.exc.HTTPBadRequest(explanation=msg)
     if limit < 0:
         msg = _('limit param must be positive')
         raise webob.exc.HTTPBadRequest(explanation=msg)
+    limit = min(limit, max_limit)
     return limit
 
 
-def _get_marker_param(request):
-    """Extract marker id from request or fail."""
-    return request.GET['marker']
+def _get_marker_param(params):
+    """Extract marker id from request's dictionary (defaults to None)."""
+    return params.pop('marker', None)
 
 
-def limited(items, request, max_limit=CONF.osapi_max_limit):
+def _get_offset_param(params):
+    """Extract offset id from request's dictionary (defaults to 0) or fail."""
+    try:
+        offset = int(params.pop('offset', 0))
+    except ValueError:
+        msg = _('offset param must be an integer')
+        raise webob.exc.HTTPBadRequest(explanation=msg)
+
+    if offset < 0:
+        msg = _('offset param must be positive')
+        raise webob.exc.HTTPBadRequest(explanation=msg)
+
+    return offset
+
+
+def limited(items, request, max_limit=None):
     """Return a slice of items according to requested offset and limit.
 
     :param items: A sliceable entity
@@ -116,39 +140,18 @@ def limited(items, request, max_limit=CONF.osapi_max_limit):
                     will cause exc.HTTPBadRequest() exceptions to be raised.
     :kwarg max_limit: The maximum number of items to return from 'items'
     """
-    try:
-        offset = int(request.GET.get('offset', 0))
-    except ValueError:
-        msg = _('offset param must be an integer')
-        raise webob.exc.HTTPBadRequest(explanation=msg)
-
-    try:
-        limit = int(request.GET.get('limit', max_limit))
-    except ValueError:
-        msg = _('limit param must be an integer')
-        raise webob.exc.HTTPBadRequest(explanation=msg)
-
-    if limit < 0:
-        msg = _('limit param must be positive')
-        raise webob.exc.HTTPBadRequest(explanation=msg)
-
-    if offset < 0:
-        msg = _('offset param must be positive')
-        raise webob.exc.HTTPBadRequest(explanation=msg)
-
-    limit = min(max_limit, limit or max_limit)
-    range_end = offset + limit
+    max_limit = max_limit or CONF.osapi_max_limit
+    marker, limit, offset = get_pagination_params(request.GET.copy(),
+                                                  max_limit)
+    range_end = offset + (limit or max_limit)
     return items[offset:range_end]
 
 
-def limited_by_marker(items, request, max_limit=CONF.osapi_max_limit):
+def limited_by_marker(items, request, max_limit=None):
     """Return a slice of items according to the requested marker and limit."""
-    params = get_pagination_params(request)
+    max_limit = max_limit or CONF.osapi_max_limit
+    marker, limit, __ = get_pagination_params(request.GET.copy(), max_limit)
 
-    limit = params.get('limit', max_limit)
-    marker = params.get('marker')
-
-    limit = min(max_limit, limit)
     start_index = 0
     if marker:
         start_index = -1

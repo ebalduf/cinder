@@ -74,10 +74,11 @@ class HP3PARISCSIDriver(cinder.volume.driver.ISCSIDriver):
         2.0.5 - Added CHAP support, requires 3.1.3 MU1 firmware
                 and hp3parclient 3.1.0.
         2.0.6 - Fixing missing login/logout around attach/detach bug #1367429
+        2.88.7 - Removed usage of host name cache Bug #1398914
 
     """
 
-    VERSION = "2.0.6"
+    VERSION = "2.88.7"
 
     def __init__(self, *args, **kwargs):
         super(HP3PARISCSIDriver, self).__init__(*args, **kwargs)
@@ -348,7 +349,6 @@ class HP3PARISCSIDriver(cinder.volume.driver.ISCSIDriver):
         # first search for an existing host
         host_found = self.common.client.findHost(iqn=iscsi_iqn)
         if host_found is not None:
-            self.common.hosts_naming_dict[hostname] = host_found
             return host_found
         else:
             if isinstance(iscsi_iqn, str) or isinstance(iscsi_iqn, unicode):

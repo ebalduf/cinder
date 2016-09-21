@@ -70,7 +70,7 @@ class RequestContext(object):
         self.project_name = project_name
         self.is_admin = is_admin
         if self.is_admin is None:
-            self.is_admin = policy.check_is_admin(self.roles)
+            self.is_admin = policy.check_is_admin(self.roles, self)
         elif self.is_admin and 'admin' not in self.roles:
             self.roles.append('admin')
         self.read_deleted = read_deleted

@@ -13,6 +13,7 @@
 #    under the License.
 #
 
+from datetime import datetime
 
 from cinder import context
 from cinder import db
@@ -59,6 +60,20 @@ def create_volume(ctxt,
     vol['replication_driver_data'] = replication_driver_data
 
     return db.volume_create(ctxt, vol)
+
+
+def attach_volume(ctxt, volume_id, instance_uuid, attached_host,
+                  mountpoint, mode='rw'):
+
+    now = datetime.utcnow()
+    values = {}
+    values['volume_id'] = volume_id
+    values['attached_host'] = attached_host
+    values['mountpoint'] = mountpoint
+    values['attach_time'] = now
+
+    return db.volume_attached(ctxt, volume_id, instance_uuid, attached_host,
+                              mountpoint)
 
 
 def create_snapshot(ctxt,

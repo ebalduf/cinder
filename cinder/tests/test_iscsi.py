@@ -92,8 +92,8 @@ class TargetAdminTestCase(object):
 
     def verify_cmds(self, cmds):
         self.assertEqual(len(cmds), len(self.cmds))
-        for cmd in self.cmds:
-            self.assertTrue(cmd in cmds)
+        for expected, cmd in zip(self.cmds, cmds):
+            self.assertTrue(expected, cmd)
         self.verify_config()
 
     def verify(self):
@@ -146,7 +146,8 @@ class TgtAdmTestCase(test.TestCase, TargetAdminTestCase):
 
     def verify_config(self):
         target_helper = self.driver.get_target_helper(self.db)
-        self.assertEqual(target_helper._get_target_chap_auth(None,
+        context = mock.sentinel.context
+        self.assertEqual(target_helper._get_target_chap_auth(context,
                                                              self.target_name),
                          (self.chap_username, self.chap_password))
 
@@ -232,7 +233,21 @@ class LioAdmTestCase(test.TestCase, TargetAdminTestCase):
         self.script_template = "\n".join([
             'cinder-rtstool create '
             '%(path)s %(target_name)s %(username)s %(password)s',
-            'cinder-rtstool delete %(target_name)s'])
+            'cinder-rtstool save',
+            'cinder-rtstool delete %(target_name)s',
+            'cinder-rtstool save'])
+
+    def verify_config(self):
+        chap_db = {'provider_auth': ' '.join(('name',
+                                              self.chap_username,
+                                              self.chap_password))}
+        db_mock = mock.Mock(**{'volume_get.return_value': chap_db})
+        target_helper = self.driver.get_target_helper(db_mock)
+        context = mock.sentinel.context
+        self.assertEqual(target_helper._get_target_chap_auth(context,
+                                                             self.target_name),
+                         (self.chap_username, self.chap_password))
+        db_mock.volume_get.assert_called_once_with(context, self.vol_id)
 
     # Based on TestLioAdmDriver.test_get_target_chap_auth from
     # change Iea3d94e35a4ced4dafc1b61e2df6b075cf200577

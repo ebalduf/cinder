@@ -142,8 +142,7 @@ class SnapshotsController(wsgi.Controller):
 
         #pop out limit and offset , they are not search_opts
         search_opts = req.GET.copy()
-        search_opts.pop('limit', None)
-        search_opts.pop('offset', None)
+        __, limit, offset = common.get_pagination_params(search_opts)
 
         #filter out invalid option
         allowed_search_options = ('status', 'volume_id', 'display_name')
@@ -151,10 +150,11 @@ class SnapshotsController(wsgi.Controller):
                                             allowed_search_options)
 
         snapshots = self.volume_api.get_all_snapshots(context,
-                                                      search_opts=search_opts)
-        limited_list = common.limited(snapshots, req)
-        req.cache_resource(limited_list)
-        res = [entity_maker(context, snapshot) for snapshot in limited_list]
+                                                      search_opts=search_opts,
+                                                      limit=limit,
+                                                      offset=offset)
+        req.cache_resource(snapshots)
+        res = [entity_maker(context, snapshot) for snapshot in snapshots]
         return {'snapshots': res}
 
     @wsgi.serializers(xml=SnapshotTemplate)

@@ -15,6 +15,7 @@
 
 """The volumes snapshots api."""
 
+from oslo.config import cfg
 import webob
 from webob import exc
 
@@ -29,6 +30,7 @@ from cinder import utils
 from cinder import volume
 
 
+CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 
 
@@ -143,12 +145,11 @@ class SnapshotsController(wsgi.Controller):
         """Returns a list of snapshots, transformed through entity_maker."""
         context = req.environ['cinder.context']
 
-        #pop out limit and offset , they are not search_opts
+        # pop out limit and offset , they are not search_opts
         search_opts = req.GET.copy()
-        search_opts.pop('limit', None)
-        search_opts.pop('offset', None)
+        __, limit, offset = common.get_pagination_params(search_opts)
 
-        #filter out invalid option
+        # filter out invalid option
         allowed_search_options = ('status', 'volume_id', 'name')
         utils.remove_invalid_filter_options(context, search_opts,
                                             allowed_search_options)
@@ -159,10 +160,11 @@ class SnapshotsController(wsgi.Controller):
             del search_opts['name']
 
         snapshots = self.volume_api.get_all_snapshots(context,
-                                                      search_opts=search_opts)
-        limited_list = common.limited(snapshots, req)
-        req.cache_resource(limited_list)
-        res = [entity_maker(context, snapshot) for snapshot in limited_list]
+                                                      search_opts=search_opts,
+                                                      limit=limit,
+                                                      offset=offset)
+        req.cache_resource(snapshots)
+        res = [entity_maker(context, snapshot) for snapshot in snapshots]
         return {'snapshots': res}
 
     @wsgi.response(202)

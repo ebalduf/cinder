@@ -297,7 +297,7 @@ def check_for_odirect_support(src, dest, flag='oflag=direct'):
 
 
 def copy_volume(srcstr, deststr, size_in_m, blocksize, sync=False,
-                execute=utils.execute, ionice=None):
+                execute=utils.execute, ionice=None, sparse=False):
     # Use O_DIRECT to avoid thrashing the system buffer cache
     extra_flags = []
     if check_for_odirect_support(srcstr, deststr, 'iflag=direct'):
@@ -309,8 +309,14 @@ def copy_volume(srcstr, deststr, size_in_m, blocksize, sync=False,
     # If the volume is being unprovisioned then
     # request the data is persisted before returning,
     # so that it's not discarded from the cache.
+    conv = []
     if sync and not extra_flags:
-        extra_flags.append('conv=fdatasync')
+        conv.append('fdatasync')
+    if sparse:
+        conv.append('sparse')
+    if conv:
+        conv_options = 'conv=' + ",".join(conv)
+        extra_flags.append(conv_options)
 
     blocksize, count = _calculate_count(size_in_m, blocksize)
 
@@ -362,11 +368,14 @@ def clear_volume(volume_size, volume_path, volume_clear=None,
 
     LOG.info(_("Performing secure delete on volume: %s") % volume_path)
 
+    # We pass sparse=False explicitly here so that zero blocks are not
+    # skipped in order to clear the volume.
     if volume_clear == 'zero':
         return copy_volume('/dev/zero', volume_path, volume_clear_size,
                            CONF.volume_dd_blocksize,
                            sync=True, execute=utils.execute,
-                           ionice=volume_clear_ionice)
+                           ionice=volume_clear_ionice,
+                           sparse=False)
     elif volume_clear == 'shred':
         clear_cmd = ['shred', '-n3']
         if volume_clear_size:

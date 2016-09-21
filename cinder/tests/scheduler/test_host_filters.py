@@ -1,4 +1,4 @@
-# Copyright 2011 OpenStack Foundation  # All Rights Reserved.
+# Copyright 2012 OpenStack Foundation  # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -51,7 +51,8 @@ class HostFiltersTestCase(test.TestCase):
         filter_properties = {'size': 100}
         service = {'disabled': False}
         host = fakes.FakeHostState('host1',
-                                   {'free_capacity_gb': 200,
+                                   {'total_capacity_gb': 200,
+                                    'free_capacity_gb': 100,
                                     'updated_at': None,
                                     'service': service})
         self.assertTrue(filt_cls.host_passes(host, filter_properties))
@@ -76,6 +77,7 @@ class HostFiltersTestCase(test.TestCase):
         service = {'disabled': False}
         host = fakes.FakeHostState('host1',
                                    {'free_capacity_gb': 120,
+                                    'total_capacity_gb': 200,
                                     'reserved_percentage': 20,
                                     'updated_at': None,
                                     'service': service})
