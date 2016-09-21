@@ -553,7 +553,21 @@ class VolumeDriver(object):
                                                       {'path': host_device}))
         return {'conn': conn, 'device': device, 'connector': connector}
 
-    def clone_image(self, volume, image_location, image_id, image_meta):
+    def _connect_device(self, conn):
+        # Use Brick's code to do attach/detach
+        use_multipath = self.configuration.use_multipath_for_image_xfer
+        device_scan_attempts = self.configuration.num_volume_device_scan_tries
+        protocol = conn['driver_volume_type']
+        connector = utils.brick_get_connector(
+            protocol,
+            use_multipath=use_multipath,
+            device_scan_attempts=device_scan_attempts,
+            conn=conn)
+        device = connector.connect_volume(conn['data'])
+        host_device = device['path']
+        return {'conn': conn, 'device': device, 'connector': connector}
+
+    def clone_image(self, volume, image_location, image_id, image_meta, context, image_service):
         """Create a volume efficiently from an existing image.
 
         image_location is a string whose format depends on the
