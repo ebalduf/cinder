@@ -384,17 +384,19 @@ class VolumeManager(manager.SchedulerDependentManager):
 
         updates, snapshot_updates = self.driver.update_provider_info(
             volumes, snapshots)
-        host_vols = utils.list_of_dicts_to_dict(volumes, 'id')
 
-        for u in updates or []:
-            update = {}
-            # NOTE(JDG): Make sure returned item is in this hosts volumes
-            if host_vols.get(u['id'], None):
-                update['provider_id'] = u['provider_id']
-            if update:
-                self.db.volume_update(ctxt,
-                                      u['id'],
-                                      update)
+        if updates:
+            for volume in volumes:
+                # NOTE(JDG): Make sure returned item is in this hosts volumes
+                update = (
+                    [updt for updt in updates if updt['id'] ==
+                        volume['id']])
+                if update:
+                    update = update[0]
+                    self.db.volume_update(
+                        ctxt,
+                        update['id'],
+                        {'provider_id': update['provider_id']})
 
         # NOTE(jdg): snapshots are slighty harder, because
         # we do not have a host column and of course no get
@@ -411,8 +413,8 @@ class VolumeManager(manager.SchedulerDependentManager):
                     if update:
                         self.db.snapshot_update(
                             ctxt,
-                            updt['id'],
-                            {'provider_id': updt['provider_id']})
+                            update['id'],
+                            {'provider_id': update['provider_id']})
 
     def init_host(self):
         """Perform any required initialization."""
@@ -436,7 +438,7 @@ class VolumeManager(manager.SchedulerDependentManager):
         self.driver.init_capabilities()
 
         volumes = objects.VolumeList.get_all_by_host(ctxt, self.host)
-        snapshots = self.db.snapshot_get_by_host(ctxt, self.host)
+        snapshots = objects.SnapshotList.get_by_host(ctxt, self.host)
         self._sync_provider_info(ctxt, volumes, snapshots)
         # FIXME volume count for exporting is wrong
 
@@ -1536,7 +1538,7 @@ class VolumeManager(manager.SchedulerDependentManager):
         except Exception as err:
             err_msg = (_('Terminate volume connection failed: %(err)s')
                        % {'err': six.text_type(err)})
-            LOG.error(err_msg, resource=volume_ref)
+            LOG.exception(err_msg, resource=volume_ref)
             raise exception.VolumeBackendAPIException(data=err_msg)
         LOG.info(_LI("Terminate volume connection completed successfully."),
                  resource=volume_ref)
@@ -3607,7 +3609,7 @@ class _VolumeV1Proxy(object):
         return self.manager.thaw_host(context)
 
     def manage_existing_snapshot(self, ctxt, snapshot, ref=None):
-        return self.manager.manage_exisiting_snapshot(ctxt, snapshot, ref=ref)
+        return self.manager.manage_existing_snapshot(ctxt, snapshot, ref=ref)
 
     def get_capabilities(self, context, discover):
         return self.manager.get_capabilities(context, discover)

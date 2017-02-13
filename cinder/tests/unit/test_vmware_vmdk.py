@@ -54,7 +54,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
     """Unit tests for VMwareVcVmdkDriver."""
 
     IP = 'localhost'
-    PORT = 443
+    PORT = 2321
     USERNAME = 'username'
     PASSWORD = 'password'
     VOLUME_FOLDER = 'cinder-volumes'
@@ -84,6 +84,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
 
         self._config = mock.Mock(spec=configuration.Configuration)
         self._config.vmware_host_ip = self.IP
+        self._config.vmware_host_port = self.PORT
         self._config.vmware_host_username = self.USERNAME
         self._config.vmware_host_password = self.PASSWORD
         self._config.vmware_wsdl_location = None
@@ -400,12 +401,14 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
     @mock.patch.object(VMDK_DRIVER, '_create_virtual_disk_from_sparse_image')
     @mock.patch.object(VMDK_DRIVER,
                        '_create_virtual_disk_from_preallocated_image')
+    @mock.patch.object(VMDK_DRIVER, '_get_storage_profile_id')
     @mock.patch.object(VMDK_DRIVER, '_select_ds_for_volume')
     @mock.patch.object(VMDK_DRIVER, '_delete_temp_backing')
     def _test_create_volume_from_non_stream_optimized_image(
             self,
             delete_tmp_backing,
             select_ds_for_volume,
+            get_storage_profile_id,
             create_disk_from_preallocated_image,
             create_disk_from_sparse_image,
             vops,
@@ -440,9 +443,12 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         vops.get_host.return_value = host
         vops.get_dc.return_value = dc_ref
 
-        vmdk_path = mock.Mock()
+        vmdk_path = mock.Mock(spec=volumeops.FlatExtentVirtualDiskPath)
         create_disk_from_sparse_image.return_value = vmdk_path
         create_disk_from_preallocated_image.return_value = vmdk_path
+
+        profile_id = mock.sentinel.profile_id
+        get_storage_profile_id.return_value = profile_id
 
         if disk_conversion:
             rp = mock.sentinel.rp
@@ -484,9 +490,10 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
                 context, image_service, image_id, image_size_in_bytes,
                 dc_ref, ds_name, folder_path, disk_name, adapter_type)
 
+        get_storage_profile_id.assert_called_once_with(volume)
         vops.attach_disk_to_backing.assert_called_once_with(
             backing, image_size_in_bytes / units.Ki, disk_type,
-            adapter_type, vmdk_path.get_descriptor_ds_file_path())
+            adapter_type, profile_id, vmdk_path.get_descriptor_ds_file_path())
 
         if disk_conversion:
             select_ds_for_volume.assert_called_once_with(volume)
@@ -780,7 +787,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
 
         select_ds_for_volume.assert_called_once_with(volume)
         vops.get_create_spec.assert_called_once_with(
-            volume['name'], 0, disk_type, summary.name, profileId=profile_id,
+            volume['name'], 0, disk_type, summary.name, profile_id=profile_id,
             adapter_type=adapter_type, extra_config=extra_config)
         self.assertEqual(vm_create_spec, import_spec.configSpec)
         download_image.assert_called_with(
@@ -790,7 +797,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
             image_id,
             session=session,
             host=self._config.vmware_host_ip,
-            port=443,
+            port=self._config.vmware_host_port,
             resource_pool=rp,
             vm_folder=folder,
             vm_import_spec=import_spec,
@@ -849,7 +856,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
             volume['project_id'],
             session=session,
             host=self._config.vmware_host_ip,
-            port=443,
+            port=self._config.vmware_host_port,
             vm=backing,
             vmdk_file_path=vmdk_file_path,
             vmdk_size=volume['size'] * units.Gi,
@@ -1362,9 +1369,11 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
             extra_config=extra_config)
         file_open.assert_called_once_with(tmp_file_path, "rb")
         download_data.assert_called_once_with(
-            context, self.IMG_TX_TIMEOUT, tmp_file, session=session,
-            host=self.IP, port=self.PORT, resource_pool=rp, vm_folder=folder,
-            vm_import_spec=import_spec, image_size=file_size_bytes)
+            context, self._config.vmware_image_transfer_timeout_secs, tmp_file,
+            session=session, host=self._config.vmware_host_ip,
+            port=self._config.vmware_host_port, resource_pool=rp,
+            vm_folder=folder, vm_import_spec=import_spec,
+            image_size=file_size_bytes)
 
         download_data.side_effect = exceptions.VimException("error")
         backing = mock.sentinel.backing
@@ -1599,7 +1608,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         host = mock.sentinel.host
         vops.get_host.return_value = host
 
-        volume = {'name': 'vol-1', 'id': 1}
+        volume = self._create_volume_dict()
         conn_info = self._driver.initialize_connection(volume, connector)
 
         relocate_backing.assert_called_once_with(volume, backing, host)
@@ -1626,7 +1635,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         backing = mock.Mock(value=mock.sentinel.backing_value)
         create_backing.return_value = backing
 
-        volume = {'name': 'vol-1', 'id': 1}
+        volume = self._create_volume_dict()
         conn_info = self._driver.initialize_connection(volume, connector)
 
         create_backing.assert_called_once_with(volume, host)
@@ -1634,8 +1643,8 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
 
         self.assertEqual('vmdk', conn_info['driver_volume_type'])
         self.assertEqual(backing.value, conn_info['data']['volume'])
-        self.assertEqual(volume['id'],
-                         conn_info['data']['volume_id'])
+        self.assertEqual(volume['id'], conn_info['data']['volume_id'])
+        self.assertEqual(volume['name'], conn_info['data']['name'])
 
     @mock.patch.object(VMDK_DRIVER, 'volumeops')
     @mock.patch.object(VMDK_DRIVER, '_relocate_backing')
@@ -2028,10 +2037,18 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         vops.get_entity_name.assert_called_once_with(dc_ref)
         cookies = session.vim.client.options.transport.cookiejar
         download_flat_image.assert_called_once_with(
-            context, self.IMG_TX_TIMEOUT, image_service, image_id,
-            image_size=image_size_in_bytes, host=self.IP, port=self.PORT,
-            data_center_name=dc_name, datastore_name=ds_name, cookies=cookies,
-            file_path=upload_file_path, cacerts=expected_cacerts)
+            context,
+            self._config.vmware_image_transfer_timeout_secs,
+            image_service,
+            image_id,
+            image_size=image_size_in_bytes,
+            host=self._config.vmware_host_ip,
+            port=self._config.vmware_host_port,
+            data_center_name=dc_name,
+            datastore_name=ds_name,
+            cookies=cookies,
+            file_path=upload_file_path,
+            cacerts=expected_cacerts)
 
     @mock.patch.object(VMDK_DRIVER, 'volumeops')
     @mock.patch.object(VMDK_DRIVER, 'session')
@@ -2424,11 +2441,12 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
     @mock.patch.object(VMDK_DRIVER, '_create_backing')
     @mock.patch.object(VMDK_DRIVER, 'volumeops')
     @mock.patch.object(VMDK_DRIVER, '_get_ds_name_folder_path')
+    @mock.patch.object(VMDK_DRIVER, '_get_storage_profile_id')
     @mock.patch('cinder.volume.drivers.vmware.vmdk.VMwareVcVmdkDriver.'
                 '_get_disk_type')
     def test_manage_existing(
-            self, get_disk_type, get_ds_name_folder_path, vops,
-            create_backing, get_existing):
+            self, get_disk_type, get_storage_profile_id,
+            get_ds_name_folder_path, vops, create_backing, get_existing):
 
         vm = mock.sentinel.vm
         src_path = mock.sentinel.src_path
@@ -2448,6 +2466,9 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         folder_path = "%s/" % volume['name']
         get_ds_name_folder_path.return_value = (ds_name, folder_path)
 
+        profile_id = mock.sentinel.profile_id
+        get_storage_profile_id.return_value = profile_id
+
         disk_type = mock.sentinel.disk_type
         get_disk_type.return_value = disk_type
 
@@ -2461,9 +2482,10 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         dest_path = "[%s] %s%s.vmdk" % (ds_name, folder_path, volume['name'])
         vops.move_vmdk_file.assert_called_once_with(
             src_dc, src_path, dest_path, dest_dc_ref=dest_dc)
+        get_storage_profile_id.assert_called_once_with(volume)
         vops.attach_disk_to_backing.assert_called_once_with(
             backing, disk_device.capacityInKB, disk_type, 'lsiLogic',
-            dest_path)
+            profile_id, dest_path)
         vops.update_backing_disk_uuid.assert_called_once_with(backing,
                                                               volume['id'])
 
@@ -2481,6 +2503,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
             self._config.vmware_task_poll_interval,
             wsdl_loc=self._config.safe_get('vmware_wsdl_location'),
             pbm_wsdl_loc=None,
+            port=self._config.vmware_host_port,
             cacert=self._config.vmware_ca_file,
             insecure=self._config.vmware_insecure)
 

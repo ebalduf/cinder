@@ -11,9 +11,9 @@
 # Lucas Palm <lapalm@us.ibm.com>, 2016. #zanata
 msgid ""
 msgstr ""
-"Project-Id-Version: cinder 8.0.0.0rc2.dev32\n"
-"Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2016-03-29 10:44+0000\n"
+"Project-Id-Version: cinder 8.1.1.dev2\n"
+"Report-Msgid-Bugs-To: https://bugs.launchpad.net/openstack-i18n/\n"
+"POT-Creation-Date: 2016-08-18 04:17+0000\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
@@ -862,9 +862,6 @@ msgstr "Невозможно преобразовать %s в целое чис�
 #, python-format
 msgid "Can't access 'scality_sofs_config': %s"
 msgstr "Нет доступа к scality_sofs_config: %s"
-
-msgid "Can't attach snapshot."
-msgstr "Не удается присоединить моментальную копию."
 
 msgid "Can't decode backup record."
 msgstr "Не удалось декодировать запись резервной копии."
@@ -3271,9 +3268,6 @@ msgstr ""
 #, python-format
 msgid "Failed to create IG, %s"
 msgstr "Не удалось создать группу инициаторов, %s"
-
-msgid "Failed to create SolidFire Image-Volume"
-msgstr "Не удалось создать образ-том SolidFire"
 
 #, python-format
 msgid "Failed to create Volume Group: %(vg_name)s"
@@ -6785,10 +6779,6 @@ msgstr ""
 "После '%(total_attempts)r' попыток не выполнена команда SSH: '%(command)s'"
 
 #, python-format
-msgid "SSH Command failed with error: '%(err)s', Command: '%(command)s'"
-msgstr "Сбой команды SSH. Ошибка: '%(err)s'. Команда: '%(command)s'"
-
-#, python-format
 msgid "SSH command injection detected: %(command)s"
 msgstr "Обнаружено внедрение команды SSH: %(command)s"
 
@@ -6855,9 +6845,6 @@ msgstr "Служба устарела и не поддерживает этот 
 
 msgid "Service is unavailable at this time."
 msgstr "В данный момент служба недоступна."
-
-msgid "Service not found."
-msgstr "Служба не найдена."
 
 msgid "Set pair secondary access error."
 msgstr "Ошибка настройки вспомогательного доступа к паре."

@@ -1,4 +1,4 @@
-#    Copyright 2015 Dell Inc.
+#    Copyright 2016 Dell Inc.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -190,6 +190,9 @@ class StorageCenterApiHelper(object):
             # about.
             connection.vfname = self.config.dell_sc_volume_folder
             connection.sfname = self.config.dell_sc_server_folder
+            connection.excluded_domain_ips = self.config.excluded_domain_ip
+            if not connection.excluded_domain_ips:
+                connection.excluded_domain_ips = []
             # Set appropriate ssn and failover state.
             if self.active_backend_id:
                 # active_backend_id is a string.  Convert to int.
@@ -252,6 +255,7 @@ class StorageCenterApi(object):
         self.failed_over = False
         self.vfname = 'openstack'
         self.sfname = 'openstack'
+        self.excluded_domain_ips = []
         self.legacypayloadfilters = False
         self.consisgroups = True
         self.apiversion = apiversion
@@ -414,8 +418,10 @@ class StorageCenterApi(object):
     def _check_version_fail(self, payload, response):
         try:
             # Is it even our error?
-            if response.text.startswith('Invalid API version specified, '
-                                        'the version must be in the range ['):
+            result = self._get_json(response).get('result')
+            if result and result.startswith(
+                    'Invalid API version specified, '
+                    'the version must be in the range ['):
                 # We're looking for something very specific. The except
                 # will catch any errors.
                 # Update our version and update our header.
@@ -1500,27 +1506,28 @@ class StorageCenterApi(object):
                            controller or not.
             :return: Nothing
             """
-            portals.append(address + ':' +
-                           six.text_type(port))
-            iqns.append(iqn)
-            luns.append(lun)
+            if self.excluded_domain_ips.count(address) == 0:
+                portals.append(address + ':' +
+                               six.text_type(port))
+                iqns.append(iqn)
+                luns.append(lun)
 
-            # We've all the information.  We need to find
-            # the best single portal to return.  So check
-            # this one if it is on the right IP, port and
-            # if the access and status are correct.
-            if ((pdata['ip'] is None or pdata['ip'] == address) and
-                    (pdata['port'] is None or pdata['port'] == port)):
+                # We've all the information.  We need to find
+                # the best single portal to return.  So check
+                # this one if it is on the right IP, port and
+                # if the access and status are correct.
+                if ((pdata['ip'] is None or pdata['ip'] == address) and
+                        (pdata['port'] is None or pdata['port'] == port)):
 
-                # We need to point to the best link.
-                # So state active and status up is preferred
-                # but we don't actually need the state to be
-                # up at this point.
-                if pdata['up'] == -1:
-                    if active:
-                        pdata['active'] = len(iqns) - 1
-                        if status == 'Up':
-                            pdata['up'] = pdata['active']
+                    # We need to point to the best link.
+                    # So state active and status up is preferred
+                    # but we don't actually need the state to be
+                    # up at this point.
+                    if pdata['up'] == -1:
+                        if active:
+                            pdata['active'] = len(iqns) - 1
+                            if status == 'Up':
+                                pdata['up'] = pdata['active']
 
         # Start by getting our mappings.
         mappings = self._find_mappings(scvolume)
@@ -2645,7 +2652,12 @@ class StorageCenterApi(object):
         payload['StorageCenter'] = self.find_sc()
         # Have to replicate the active replay.
         payload['ReplicateActiveReplay'] = replicate_active or synchronous
-        payload['Type'] = 'Synchronous' if synchronous else 'Asynchronous'
+        if synchronous:
+            payload['Type'] = 'Synchronous'
+            # If our type is synchronous we prefer high availability be set.
+            payload['SyncMode'] = 'HighAvailability'
+        else:
+            payload['Type'] = 'Asynchronous'
         destinationvolumeattributes = {}
         destinationvolumeattributes['CreateSourceVolumeFolderPath'] = True
         destinationvolumeattributes['Notes'] = self.notes

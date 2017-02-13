@@ -231,10 +231,16 @@ class HPE3PARCommon(object):
         3.0.16 - Use same LUN ID for each VLUN path #1551994
         3.0.17 - Don't fail on clearing 3PAR object volume key. bug #1546392
         3.0.18 - create_cloned_volume account for larger size.  bug #1554740
+        3.0.18.1 - Rework delete_vlun. Bug #1582922 (backported from Newton)
+        3.0.18.2 - Driver no longer fails to initialize if System Reporter
+                   license is missing. bug #1568078 (backported from Newton)
+        3.0.18.3 - Fix delete volume when online clone is active. bug #1349639.
+                   (backported from Newton)
+        3.0.18.4 - Fix concurrent snapshot delete conflict. bug #1600104
 
     """
 
-    VERSION = "3.0.18"
+    VERSION = "3.0.18.4"
 
     stats = {}
 
@@ -267,6 +273,7 @@ class HPE3PARCommon(object):
     PRIORITY_OPT_LIC = "Priority Optimization"
     THIN_PROV_LIC = "Thin Provisioning"
     REMOTE_COPY_LIC = "Remote Copy"
+    SYSTEM_REPORTER_LIC = "System Reporter"
 
     # Valid values for volume type extra specs
     # The first value in the list is the default value
@@ -1221,6 +1228,7 @@ class HPE3PARCommon(object):
         qos_support = True
         thin_support = True
         remotecopy_support = True
+        sr_support = True
         if 'licenseInfo' in info:
             if 'licenses' in info['licenseInfo']:
                 valid_licenses = info['licenseInfo']['licenses']
@@ -1233,25 +1241,34 @@ class HPE3PARCommon(object):
                 remotecopy_support = self._check_license_enabled(
                     valid_licenses, self.REMOTE_COPY_LIC,
                     "Replication")
+                sr_support = self._check_license_enabled(
+                    valid_licenses, self.SYSTEM_REPORTER_LIC,
+                    "System_reporter_support")
 
         for cpg_name in self._client_conf['hpe3par_cpg']:
             try:
+                stat_capabilities = {
+                    THROUGHPUT: None,
+                    BANDWIDTH: None,
+                    LATENCY: None,
+                    IO_SIZE: None,
+                    QUEUE_LENGTH: None,
+                    AVG_BUSY_PERC: None
+                }
                 cpg = self.client.getCPG(cpg_name)
-                if (self.API_VERSION >= SRSTATLD_API_VERSION):
+                if (self.API_VERSION >= SRSTATLD_API_VERSION and sr_support):
                     interval = 'daily'
                     history = '7d'
-                    stat_capabilities = self.client.getCPGStatData(cpg_name,
-                                                                   interval,
-                                                                   history)
-                else:
-                    stat_capabilities = {
-                        THROUGHPUT: None,
-                        BANDWIDTH: None,
-                        LATENCY: None,
-                        IO_SIZE: None,
-                        QUEUE_LENGTH: None,
-                        AVG_BUSY_PERC: None
-                    }
+                    try:
+                        stat_capabilities = self.client.getCPGStatData(
+                            cpg_name,
+                            interval,
+                            history)
+                    except Exception as ex:
+                        LOG.warning(_LW("Exception at getCPGStatData() "
+                                        "for cpg: '%(cpg_name)s' "
+                                        "Reason: '%(reason)s'") %
+                                    {'cpg_name': cpg_name, 'reason': ex})
                 if 'numTDVVs' in cpg:
                     total_volumes = int(
                         cpg['numFPVVs'] + cpg['numTPVVs'] + cpg['numTDVVs']
@@ -1390,26 +1407,17 @@ class HPE3PARCommon(object):
         volume_name = self._get_3par_vol_name(volume['id'])
         vluns = self.client.getHostVLUNs(hostname)
 
-        # Find all the VLUNs associated with the volume. The VLUNs will then
-        # be split into groups based on the active status of the VLUN. If there
-        # are active VLUNs detected a delete will be attempted on them. If
-        # there are no active VLUNs but there are inactive VLUNs, then the
-        # inactive VLUNs will be deleted. The inactive VLUNs are the templates
-        # on the 3PAR backend.
-        active_volume_vluns = []
-        inactive_volume_vluns = []
+        # When deleteing VLUNs, you simply need to remove the template VLUN
+        # and any active VLUNs will be automatically removed.  The template
+        # VLUN are marked as active: False
+
         volume_vluns = []
 
         for vlun in vluns:
             if volume_name in vlun['volumeName']:
-                if vlun['active']:
-                    active_volume_vluns.append(vlun)
-                else:
-                    inactive_volume_vluns.append(vlun)
-        if active_volume_vluns:
-            volume_vluns = active_volume_vluns
-        elif inactive_volume_vluns:
-            volume_vluns = inactive_volume_vluns
+                # template VLUNs are 'active' = False
+                if not vlun['active']:
+                    volume_vluns.append(vlun)
 
         if not volume_vluns:
             msg = (
@@ -1419,17 +1427,14 @@ class HPE3PARCommon(object):
             return
 
         # VLUN Type of MATCHED_SET 4 requires the port to be provided
-        removed_luns = []
         for vlun in volume_vluns:
-            if self.VLUN_TYPE_MATCHED_SET == vlun['type']:
-                self.client.deleteVLUN(volume_name, vlun['lun'], hostname,
-                                       vlun['portPos'])
+            if 'portPos' in vlun:
+                self.client.deleteVLUN(volume_name, vlun['lun'],
+                                       hostname=hostname,
+                                       port=vlun['portPos'])
             else:
-                # This is HOST_SEES or a type that is not MATCHED_SET.
-                # By deleting one VLUN, all the others should be deleted, too.
-                if vlun['lun'] not in removed_luns:
-                    self.client.deleteVLUN(volume_name, vlun['lun'], hostname)
-                    removed_luns.append(vlun['lun'])
+                self.client.deleteVLUN(volume_name, vlun['lun'],
+                                       hostname=hostname)
 
         # Determine if there are other volumes attached to the host.
         # This will determine whether we should try removing host from host set
@@ -2089,16 +2094,24 @@ class HPE3PARCommon(object):
                         self.client.removeVolumeFromVolumeSet(vvset_name,
                                                               volume_name)
                     self.client.deleteVolume(volume_name)
-                elif (ex.get_code() == 151):
-                    # the volume is being operated on in a background
-                    # task on the 3PAR.
-                    # TODO(walter-boring) do a retry a few times.
-                    # for now lets log a better message
-                    msg = _("The volume is currently busy on the 3PAR"
-                            " and cannot be deleted at this time. "
-                            "You can try again later.")
-                    LOG.error(msg)
-                    raise exception.VolumeIsBusy(message=msg)
+                elif ex.get_code() == 151:
+                    if self.client.isOnlinePhysicalCopy(volume_name):
+                        LOG.debug("Found an online copy for %(volume)s",
+                                  {'volume': volume_name})
+                        # the volume is in process of being cloned.
+                        # stopOnlinePhysicalCopy will also delete
+                        # the volume once it stops the copy.
+                        self.client.stopOnlinePhysicalCopy(volume_name)
+                    else:
+                        # the volume is being operated on in a background
+                        # task on the 3PAR.
+                        # TODO(walter-boring) do a retry a few times.
+                        # for now lets log a better message
+                        msg = _("The volume is currently busy on the 3PAR"
+                                " and cannot be deleted at this time. "
+                                "You can try again later.")
+                        LOG.error(msg)
+                        raise exception.VolumeIsBusy(message=msg)
                 elif (ex.get_code() == 32):
                     # Error 32 means that the volume has children
 
@@ -2525,8 +2538,34 @@ class HPE3PARCommon(object):
                             "cinder: %(id)s Ex: %(msg)s"),
                         {'id': snapshot['id'], 'msg': ex})
         except hpeexceptions.HTTPConflict as ex:
-            LOG.error(_LE("Exception: %s"), ex)
-            raise exception.SnapshotIsBusy(snapshot_name=snapshot['id'])
+            if (ex.get_code() == 32):
+                # Error 32 means that the snapshot has children
+                # see if we have any temp snapshots
+                snaps = self.client.getVolumeSnapshots(snap_name)
+                for snap in snaps:
+                    if snap.startswith('tss-'):
+                        LOG.info(
+                            _LI("Found a temporary snapshot %(name)s"),
+                            {'name': snap})
+                        try:
+                            self.client.deleteVolume(snap)
+                        except hpeexceptions.HTTPNotFound:
+                            # if the volume is gone, it's as good as a
+                            # successful delete
+                            pass
+                        except Exception:
+                            msg = _("Snapshot has a temporary snapshot that "
+                                    "can't be deleted at this time.")
+                            raise exception.SnapshotIsBusy(message=msg)
+
+                try:
+                    self.client.deleteVolume(snap_name)
+                except Exception:
+                    msg = _("Snapshot has children and cannot be deleted!")
+                    raise exception.SnapshotIsBusy(message=msg)
+            else:
+                LOG.error(_LE("Exception: %s"), ex)
+                raise exception.SnapshotIsBusy(message=ex.get_description())
 
     def _get_3par_hostname_from_wwn_iqn(self, wwns, iqns):
         if wwns is not None and not isinstance(wwns, list):

@@ -6012,6 +6012,7 @@ class DellSCSanAPITestCase(test.TestCase):
         self.assertDictEqual(self.SCREPL[0], ret)
         payload['Type'] = 'Synchronous'
         payload['ReplicateActiveReplay'] = True
+        payload['SyncMode'] = 'HighAvailability'
         ret = self.scapi.create_replication(self.VOLUME,
                                             str(destssn),
                                             qosnode,
@@ -6078,6 +6079,7 @@ class DellSCSanAPITestCase(test.TestCase):
 
         payload['Type'] = 'Synchronous'
         payload['ReplicateActiveReplay'] = True
+        payload['SyncMode'] = 'HighAvailability'
         ret = self.scapi.create_replication(self.VOLUME,
                                             str(destssn),
                                             qosnode,

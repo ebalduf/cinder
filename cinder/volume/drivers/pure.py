@@ -1101,7 +1101,7 @@ class PureBaseVolumeDriver(san.SanDriver):
             self._disable_replication(volume)
         elif not previous_vol_replicated and new_vol_replicated:
             # Add to protection group.
-            self._enable_replication(volume)
+            self._enable_replication(self._get_current_array(), volume)
 
         return True, None
 
@@ -1401,14 +1401,16 @@ class PureBaseVolumeDriver(san.SanDriver):
 
     def _is_volume_replicated_type(self, volume):
         ctxt = context.get_admin_context()
-        volume_type = volume_types.get_volume_type(ctxt,
-                                                   volume["volume_type_id"])
         replication_flag = False
-        specs = volume_type.get("extra_specs")
-        if specs and EXTRA_SPECS_REPL_ENABLED in specs:
-            replication_capability = specs[EXTRA_SPECS_REPL_ENABLED]
-            # Do not validate settings, ignore invalid.
-            replication_flag = (replication_capability == "<is> True")
+        if volume["volume_type_id"]:
+            volume_type = volume_types.get_volume_type(
+                ctxt, volume["volume_type_id"])
+
+            specs = volume_type.get("extra_specs")
+            if specs and EXTRA_SPECS_REPL_ENABLED in specs:
+                replication_capability = specs[EXTRA_SPECS_REPL_ENABLED]
+                # Do not validate settings, ignore invalid.
+                replication_flag = (replication_capability == "<is> True")
         return replication_flag
 
     def _find_failover_target(self, secondary):
@@ -1652,7 +1654,7 @@ class PureFCDriver(PureBaseVolumeDriver, driver.FibreChannelDriver):
         hosts = array.list_hosts()
         for host in hosts:
             for wwn in connector["wwpns"]:
-                if wwn in str(host["wwn"]).lower():
+                if wwn.lower() in str(host["wwn"]).lower():
                     return host
 
     @staticmethod

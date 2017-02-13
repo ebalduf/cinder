@@ -33,11 +33,12 @@ POOL_NAME = 'aggr1'
 SHARE_IP = '192.168.99.24'
 EXPORT_PATH = '/fake/export/path'
 NFS_SHARE = '%s:%s' % (SHARE_IP, EXPORT_PATH)
-HOST_STRING = '%s@%s#%s' % (HOST_NAME, BACKEND_NAME, POOL_NAME)
+HOST_STRING = '%s@%s#%s' % (HOST_NAME, BACKEND_NAME, NFS_SHARE)
 NFS_HOST_STRING = '%s@%s#%s' % (HOST_NAME, BACKEND_NAME, NFS_SHARE)
 FLEXVOL = 'openstack-flexvol'
 NFS_FILE_PATH = 'nfsvol'
 PATH = '/vol/%s/%s' % (POOL_NAME, LUN_NAME)
+IMAGE_FILE_ID = 'img-cache-imgid'
 LUN_METADATA = {
     'OsType': None,
     'SpaceReserved': 'true',

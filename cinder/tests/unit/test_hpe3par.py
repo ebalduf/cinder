@@ -78,6 +78,8 @@ HPE3PAR_CPG_MAP = 'OpenStackCPG:DestOpenStackCPG fakepool:destfakepool'
 SYNC_MODE = 1
 PERIODIC_MODE = 2
 SYNC_PERIOD = 900
+# EXISTENT_PATH error code returned from hpe3parclient
+EXISTENT_PATH = 73
 
 
 class Comment(object):
@@ -121,11 +123,13 @@ class HPE3PARBaseDriver(object):
     VOLUME_ID_SNAP = '761fc5e5-5191-4ec7-aeba-33e36de44156'
     FAKE_DESC = 'test description name'
     FAKE_FC_PORTS = [{'portPos': {'node': 7, 'slot': 1, 'cardPort': 1},
+                      'type': 1,
                       'portWWN': '0987654321234',
                       'protocol': 1,
                       'mode': 2,
                       'linkState': 4},
                      {'portPos': {'node': 6, 'slot': 1, 'cardPort': 1},
+                      'type': 1,
                       'portWWN': '123456789000987',
                       'protocol': 1,
                       'mode': 2,
@@ -334,6 +338,7 @@ class HPE3PARBaseDriver(object):
         'PORT_STATE_READY': 4,
         'PORT_PROTO_ISCSI': 2,
         'PORT_PROTO_FC': 1,
+        'PORT_TYPE_HOST': 1,
         'TASK_DONE': TASK_DONE,
         'TASK_ACTIVE': TASK_ACTIVE,
         'HOST_EDIT_ADD': 1,
@@ -1683,6 +1688,29 @@ class HPE3PARBaseDriver(object):
                 expected +
                 self.standard_logout)
 
+    def test_delete_volume_online_clone_active(self):
+        # setup_mock_client drive with default configuration
+        # and return the mock HTTP 3PAR client
+        mock_client = self.setup_driver()
+        with mock.patch.object(hpecommon.HPE3PARCommon,
+                               '_create_client') as mock_create_client:
+            mock_create_client.return_value = mock_client
+            ex = hpeexceptions.HTTPConflict("Online clone is active.")
+            ex._error_code = 151
+            mock_client.deleteVolume = mock.Mock(side_effect=ex)
+            mock_client.isOnlinePhysicalCopy.return_value = True
+            self.driver.delete_volume(self.volume)
+
+            expected = [
+                mock.call.deleteVolume(self.VOLUME_3PAR_NAME),
+                mock.call.isOnlinePhysicalCopy(self.VOLUME_3PAR_NAME),
+                mock.call.stopOnlinePhysicalCopy(self.VOLUME_3PAR_NAME)]
+
+            mock_client.assert_has_calls(
+                self.standard_login +
+                expected +
+                self.standard_logout)
+
     @mock.patch.object(volume_types, 'get_volume_type')
     def test_delete_volume_replicated(self, _mock_volume_types):
         # setup_mock_client drive with default configuration
@@ -2322,6 +2350,7 @@ class HPE3PARBaseDriver(object):
             self.driver.create_volume_from_snapshot(self.volume, self.snapshot)
 
             ex = hpeexceptions.HTTPConflict("In use")
+            ex._error_code = 32
             mock_client.deleteVolume = mock.Mock(side_effect=ex)
 
             # Deleting the snapshot that a volume is dependent on should fail
@@ -2577,7 +2606,7 @@ class HPE3PARBaseDriver(object):
         # and return the mock HTTP 3PAR client
         mock_client = self.setup_driver()
         mock_client.getHostVLUNs.return_value = [
-            {'active': True,
+            {'active': False,
              'volumeName': self.VOLUME_3PAR_NAME,
              'lun': None, 'type': 0}]
 
@@ -2601,7 +2630,7 @@ class HPE3PARBaseDriver(object):
                 mock.call.deleteVLUN(
                     self.VOLUME_3PAR_NAME,
                     None,
-                    self.FAKE_HOST),
+                    hostname=self.FAKE_HOST),
                 mock.call.getHostVLUNs(self.FAKE_HOST),
                 mock.call.deleteHost(self.FAKE_HOST),
                 mock.call.removeVolumeMetaData(
@@ -4458,16 +4487,16 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
                              'firmwareVersion': None,
                              'hostSpeed': 0,
                              'model': None,
-                             'portPos': {'cardPort': 1, 'node': 1,
-                                         'slot': 2},
+                             'portPos': {'cardPort': 1, 'node': 7,
+                                         'slot': 1},
                              'vendor': None,
                              'wwn': self.wwn[0]},
                             {'driverVersion': None,
                              'firmwareVersion': None,
                              'hostSpeed': 0,
                              'model': None,
-                             'portPos': {'cardPort': 1, 'node': 0,
-                                         'slot': 2},
+                             'portPos': {'cardPort': 1, 'node': 6,
+                                         'slot': 1},
                              'vendor': None,
                              'wwn': self.wwn[1]}]}]
         mock_client.queryHost.return_value = {
@@ -4480,6 +4509,13 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
             hpeexceptions.HTTPNotFound('fake'),
             [{'active': True,
               'volumeName': self.VOLUME_3PAR_NAME,
+              'portPos': {'node': 7, 'slot': 1, 'cardPort': 1},
+              'remoteName': self.wwn[1],
+              'lun': 90, 'type': 0}],
+            [{'active': True,
+              'volumeName': self.VOLUME_3PAR_NAME,
+              'portPos': {'node': 6, 'slot': 1, 'cardPort': 1},
+              'remoteName': self.wwn[0],
               'lun': 90, 'type': 0}]]
 
         location = ("%(volume_name)s,%(lun_id)s,%(host)s,%(nsp)s" %
@@ -4488,6 +4524,16 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
                      'host': self.FAKE_HOST,
                      'nsp': 'something'})
         mock_client.createVLUN.return_value = location
+        expected_properties = {
+            'driver_volume_type': 'fibre_channel',
+            'data': {
+                'encrypted': False,
+                'target_lun': 90,
+                'target_wwn': ['0987654321234', '123456789000987'],
+                'target_discovered': True,
+                'initiator_target_map':
+                    {'123456789012345': ['123456789000987'],
+                     '123456789054321': ['0987654321234']}}}
 
         with mock.patch.object(hpecommon.HPE3PARCommon,
                                '_create_client') as mock_create_client:
@@ -4505,11 +4551,20 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
                 mock.call.getHost(self.FAKE_HOST),
                 mock.call.getPorts(),
                 mock.call.getHostVLUNs(self.FAKE_HOST),
+                mock.call.getPorts(),
                 mock.call.createVLUN(
                     self.VOLUME_3PAR_NAME,
                     auto=True,
                     hostname=self.FAKE_HOST,
-                    lun=None),
+                    lun=None,
+                    portPos={'node': 7, 'slot': 1, 'cardPort': 1}),
+                mock.call.getHostVLUNs(self.FAKE_HOST),
+                mock.call.createVLUN(
+                    self.VOLUME_3PAR_NAME,
+                    auto=False,
+                    hostname=self.FAKE_HOST,
+                    lun=90,
+                    portPos={'node': 6, 'slot': 1, 'cardPort': 1}),
                 mock.call.getHostVLUNs(self.FAKE_HOST)]
 
             mock_client.assert_has_calls(
@@ -4517,7 +4572,7 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
                 expected +
                 self.standard_logout)
 
-            self.assertDictMatch(self.properties, result)
+            self.assertDictMatch(expected_properties, result)
 
     @mock.patch('cinder.zonemanager.utils.create_lookup_service')
     def test_initialize_connection_with_lookup_single_nsp(self, mock_lookup):
@@ -4558,7 +4613,7 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
             [{'active': True,
               'volumeName': self.VOLUME_3PAR_NAME,
               'lun': 90, 'type': 0,
-              'portPos': {'cardPort': 1, 'node': 7, 'slot': 1}, }]]
+              'portPos': {'cardPort': 1, 'node': 7, 'slot': 1}}]]
 
         location = ("%(volume_name)s,%(lun_id)s,%(host)s,%(nsp)s" %
                     {'volume_name': self.VOLUME_3PAR_NAME,
@@ -4626,16 +4681,16 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
                              'firmwareVersion': None,
                              'hostSpeed': 0,
                              'model': None,
-                             'portPos': {'cardPort': 1, 'node': 1,
-                                         'slot': 2},
+                             'portPos': {'cardPort': 1, 'node': 7,
+                                         'slot': 1},
                              'vendor': None,
                              'wwn': self.wwn[0]},
                             {'driverVersion': None,
                              'firmwareVersion': None,
                              'hostSpeed': 0,
                              'model': None,
-                             'portPos': {'cardPort': 1, 'node': 0,
-                                         'slot': 2},
+                             'portPos': {'cardPort': 1, 'node': 6,
+                                         'slot': 1},
                              'vendor': None,
                              'wwn': self.wwn[1]}]}]
         mock_client.queryHost.return_value = {
@@ -4648,6 +4703,13 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
             hpeexceptions.HTTPNotFound('fake'),
             [{'active': True,
               'volumeName': self.VOLUME_3PAR_NAME,
+              'lun': 90, 'type': 0,
+              'remoteName': self.wwn[1],
+              'portPos': {'cardPort': 1, 'node': 7, 'slot': 1}}],
+            [{'active': True,
+              'volumeName': self.VOLUME_3PAR_NAME,
+              'portPos': {'node': 6, 'slot': 1, 'cardPort': 1},
+              'remoteName': self.wwn[0],
               'lun': 90, 'type': 0}]]
 
         location = ("%(volume_name)s,%(lun_id)s,%(host)s,%(nsp)s" %
@@ -4656,6 +4718,16 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
                      'host': self.FAKE_HOST,
                      'nsp': 'something'})
         mock_client.createVLUN.return_value = location
+        expected_properties = {
+            'driver_volume_type': 'fibre_channel',
+            'data': {
+                'encrypted': True,
+                'target_lun': 90,
+                'target_wwn': ['0987654321234', '123456789000987'],
+                'target_discovered': True,
+                'initiator_target_map':
+                    {'123456789012345': ['123456789000987'],
+                     '123456789054321': ['0987654321234']}}}
 
         with mock.patch.object(hpecommon.HPE3PARCommon,
                                '_create_client') as mock_create_client:
@@ -4673,11 +4745,20 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
                 mock.call.getHost(self.FAKE_HOST),
                 mock.call.getPorts(),
                 mock.call.getHostVLUNs(self.FAKE_HOST),
+                mock.call.getPorts(),
                 mock.call.createVLUN(
                     self.VOLUME_3PAR_NAME,
                     auto=True,
                     hostname=self.FAKE_HOST,
-                    lun=None),
+                    lun=None,
+                    portPos={'node': 7, 'slot': 1, 'cardPort': 1}),
+                mock.call.getHostVLUNs(self.FAKE_HOST),
+                mock.call.createVLUN(
+                    self.VOLUME_3PAR_NAME,
+                    auto=False,
+                    hostname=self.FAKE_HOST,
+                    lun=90,
+                    portPos={'node': 6, 'slot': 1, 'cardPort': 1}),
                 mock.call.getHostVLUNs(self.FAKE_HOST)]
 
             mock_client.assert_has_calls(
@@ -4685,8 +4766,6 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
                 expected +
                 self.standard_logout)
 
-            expected_properties = self.properties
-            expected_properties['data']['encrypted'] = True
             self.assertDictMatch(expected_properties, result)
 
     def test_terminate_connection(self):
@@ -4695,7 +4774,7 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
         mock_client = self.setup_driver()
 
         effects = [
-            [{'active': True, 'volumeName': self.VOLUME_3PAR_NAME,
+            [{'active': False, 'volumeName': self.VOLUME_3PAR_NAME,
               'lun': None, 'type': 0}],
             hpeexceptions.HTTPNotFound,
             hpeexceptions.HTTPNotFound]
@@ -4714,7 +4793,7 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
             mock.call.deleteVLUN(
                 self.VOLUME_3PAR_NAME,
                 None,
-                self.FAKE_HOST),
+                hostname=self.FAKE_HOST),
             mock.call.getHostVLUNs(self.FAKE_HOST),
             mock.call.deleteHost(self.FAKE_HOST),
             mock.call.getHostVLUNs(self.FAKE_HOST),
@@ -4776,7 +4855,7 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
         mock_client = self.setup_driver()
 
         effects = [
-            [{'active': True, 'volumeName': self.VOLUME_3PAR_NAME,
+            [{'active': False, 'volumeName': self.VOLUME_3PAR_NAME,
               'lun': None, 'type': 0}],
             hpeexceptions.HTTPNotFound,
             hpeexceptions.HTTPNotFound]
@@ -4795,7 +4874,7 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
             mock.call.deleteVLUN(
                 self.VOLUME_3PAR_NAME,
                 None,
-                self.FAKE_HOST),
+                hostname=self.FAKE_HOST),
             mock.call.getHostVLUNs(self.FAKE_HOST),
             mock.call.deleteHost(self.FAKE_HOST),
             mock.call.getHostVLUNs(self.FAKE_HOST),
@@ -4845,7 +4924,7 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
         # mock more than one vlun on the host (don't even try to remove host)
         mock_client.getHostVLUNs.return_value = \
             [
-                {'active': True,
+                {'active': False,
                  'volumeName': self.VOLUME_3PAR_NAME,
                  'lun': None, 'type': 0},
                 {'active': True,
@@ -4865,7 +4944,7 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
             mock.call.deleteVLUN(
                 self.VOLUME_3PAR_NAME,
                 None,
-                self.FAKE_HOST),
+                hostname=self.FAKE_HOST),
             mock.call.getHostVLUNs(self.FAKE_HOST),
             mock.call.getHostVLUNs(self.FAKE_HOST)]
 
@@ -4915,7 +4994,8 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
             'serialNumber': '1234',
             'licenseInfo': {
                 'licenses': [{'name': 'Remote Copy'},
-                             {'name': 'Thin Provisioning (102400G)'}]
+                             {'name': 'Thin Provisioning (102400G)'},
+                             {'name': 'System Reporter'}]
             }
         }
 
@@ -5190,6 +5270,72 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
                 expected +
                 self.standard_logout)
 
+    def test_get_volume_stats4(self):
+        # Testing get_volume_stats() when System Reporter license is not active
+        # setup_mock_client drive with the configuration
+        # and return the mock HTTP 3PAR client
+        config = self.setup_configuration()
+        config.filter_function = FILTER_FUNCTION
+        config.goodness_function = GOODNESS_FUNCTION
+        mock_client = self.setup_driver(config=config)
+        mock_client.getCPG.return_value = self.cpgs[0]
+        # Purposely left out the System Reporter license in
+        # getStorageSystemInfo to test sr_support
+        mock_client.getStorageSystemInfo.return_value = {
+            'id': self.CLIENT_ID,
+            'serialNumber': '1234',
+            'licenseInfo': {
+                'licenses': [{'name': 'Remote Copy'},
+                             {'name': 'Priority Optimization'},
+                             {'name': 'Thin Provisioning'}]
+            }
+        }
+
+        # cpg has no limit
+        mock_client.getCPGAvailableSpace.return_value = {
+            "capacityEfficiency": {u'compaction': 594.4},
+            "rawFreeMiB": 1024.0 * 6,
+            "usableFreeMiB": 1024.0 * 3
+        }
+
+        with mock.patch.object(hpecommon.HPE3PARCommon,
+                               '_create_client') as mock_create_client:
+            mock_create_client.return_value = mock_client
+
+            stats = self.driver.get_volume_stats(True)
+            self.assertEqual('FC', stats['storage_protocol'])
+            self.assertEqual('12345', stats['array_id'])
+            self.assertTrue(stats['pools'][0]['thin_provisioning_support'])
+            self.assertTrue(stats['pools'][0]['QoS_support'])
+            self.assertEqual(24.0, stats['pools'][0]['total_capacity_gb'])
+            self.assertEqual(3.0, stats['pools'][0]['free_capacity_gb'])
+            self.assertEqual(87.5, stats['pools'][0]['capacity_utilization'])
+            self.assertEqual(3, stats['pools'][0]['total_volumes'])
+            self.assertEqual(GOODNESS_FUNCTION,
+                             stats['pools'][0]['goodness_function'])
+            self.assertEqual(FILTER_FUNCTION,
+                             stats['pools'][0]['filter_function'])
+            self.assertIsNone(stats['pools'][0][THROUGHPUT])
+            self.assertIsNone(stats['pools'][0][BANDWIDTH])
+            self.assertIsNone(stats['pools'][0][LATENCY])
+            self.assertIsNone(stats['pools'][0][IO_SIZE])
+            self.assertIsNone(stats['pools'][0][QUEUE_LENGTH])
+            self.assertIsNone(stats['pools'][0][AVG_BUSY_PERC])
+
+            expected = [
+                mock.call.getStorageSystemInfo(),
+                mock.call.getCPG(HPE3PAR_CPG),
+                mock.call.getCPGAvailableSpace(HPE3PAR_CPG),
+                mock.call.getCPG(HPE3PAR_CPG2),
+                mock.call.getCPGAvailableSpace(HPE3PAR_CPG2)]
+
+            mock_client.assert_has_calls(
+                self.get_id_login +
+                self.standard_logout +
+                self.standard_login +
+                expected +
+                self.standard_logout)
+
     def test_create_host(self):
         # setup_mock_client drive with default configuration
         # and return the mock HTTP 3PAR client
@@ -5279,6 +5425,67 @@ class TestHPE3PARFCDriver(HPE3PARBaseDriver, test.TestCase):
             mock_client.assert_has_calls(expected)
 
             self.assertEqual('fakehost.foo', host['name'])
+
+    def test_concurrent_create_host(self):
+        # tests concurrent requests to create host
+        # setup_mock_client driver with default configuration
+        # and return the mock HTTP 3PAR client
+        mock_client = self.setup_driver()
+        mock_client.getVolume.return_value = {'userCPG': HPE3PAR_CPG}
+        mock_client.getCPG.return_value = {}
+        mock_client.queryHost.side_effect = [
+            None,
+            {'members': [{'name': self.FAKE_HOST}]
+             }]
+        mock_client.createHost.side_effect = [
+            hpeexceptions.HTTPConflict(
+                {'code': EXISTENT_PATH,
+                 'desc': 'host WWN/iSCSI name already used by another host'})]
+        mock_client.getHost.side_effect = [
+            hpeexceptions.HTTPNotFound('fake'),
+            {'name': self.FAKE_HOST,
+                'FCPaths': [{'driverVersion': None,
+                             'firmwareVersion': None,
+                             'hostSpeed': 0,
+                             'model': None,
+                             'portPos': {'cardPort': 1, 'node': 1,
+                                         'slot': 2},
+                             'vendor': None,
+                             'wwn': self.wwn[0]},
+                            {'driverVersion': None,
+                             'firmwareVersion': None,
+                             'hostSpeed': 0,
+                             'model': None,
+                             'portPos': {'cardPort': 1, 'node': 0,
+                                         'slot': 2},
+                             'vendor': None,
+                             'wwn': self.wwn[1]}]}]
+
+        with mock.patch.object(hpecommon.HPE3PARCommon,
+                               '_create_client') as mock_create_client:
+            mock_create_client.return_value = mock_client
+            common = self.driver._login()
+            host = self.driver._create_host(
+                common,
+                self.volume,
+                self.connector)
+            expected = [
+                mock.call.getVolume('osv-0DM4qZEVSKON-DXN-NwVpw'),
+                mock.call.getCPG(HPE3PAR_CPG),
+                mock.call.getHost(self.FAKE_HOST),
+                mock.call.queryHost(wwns=['123456789012345',
+                                          '123456789054321']),
+                mock.call.createHost(
+                    self.FAKE_HOST,
+                    FCWwns=['123456789012345', '123456789054321'],
+                    optional={'domain': None, 'persona': 2}),
+                mock.call.queryHost(wwns=['123456789012345',
+                                          '123456789054321']),
+                mock.call.getHost(self.FAKE_HOST)]
+
+            mock_client.assert_has_calls(expected)
+
+            self.assertEqual(self.FAKE_HOST, host['name'])
 
     def test_create_modify_host(self):
         # setup_mock_client drive with default configuration
@@ -5887,6 +6094,72 @@ class TestHPE3PARISCSIDriver(HPE3PARBaseDriver, test.TestCase):
             stats = self.driver.get_volume_stats(True)
             self.assertEqual('iSCSI', stats['storage_protocol'])
             self.assertEqual('12345', stats['array_id'])
+            self.assertEqual(24.0, stats['pools'][0]['total_capacity_gb'])
+            self.assertEqual(3.0, stats['pools'][0]['free_capacity_gb'])
+            self.assertEqual(87.5, stats['pools'][0]['capacity_utilization'])
+            self.assertEqual(3, stats['pools'][0]['total_volumes'])
+            self.assertEqual(GOODNESS_FUNCTION,
+                             stats['pools'][0]['goodness_function'])
+            self.assertEqual(FILTER_FUNCTION,
+                             stats['pools'][0]['filter_function'])
+            self.assertIsNone(stats['pools'][0][THROUGHPUT])
+            self.assertIsNone(stats['pools'][0][BANDWIDTH])
+            self.assertIsNone(stats['pools'][0][LATENCY])
+            self.assertIsNone(stats['pools'][0][IO_SIZE])
+            self.assertIsNone(stats['pools'][0][QUEUE_LENGTH])
+            self.assertIsNone(stats['pools'][0][AVG_BUSY_PERC])
+
+            expected = [
+                mock.call.getStorageSystemInfo(),
+                mock.call.getCPG(HPE3PAR_CPG),
+                mock.call.getCPGAvailableSpace(HPE3PAR_CPG),
+                mock.call.getCPG(HPE3PAR_CPG2),
+                mock.call.getCPGAvailableSpace(HPE3PAR_CPG2)]
+
+            mock_client.assert_has_calls(
+                self.get_id_login +
+                self.standard_logout +
+                self.standard_login +
+                expected +
+                self.standard_logout)
+
+    def test_get_volume_stats4(self):
+        # Testing get_volume_stats() when System Reporter license is not active
+        # setup_mock_client drive with the configuration
+        # and return the mock HTTP 3PAR client
+        config = self.setup_configuration()
+        config.filter_function = FILTER_FUNCTION
+        config.goodness_function = GOODNESS_FUNCTION
+        mock_client = self.setup_driver(config=config)
+        mock_client.getCPG.return_value = self.cpgs[0]
+        # Purposely left out the System Reporter license in
+        # getStorageSystemInfo to test sr_support
+        mock_client.getStorageSystemInfo.return_value = {
+            'id': self.CLIENT_ID,
+            'serialNumber': '1234',
+            'licenseInfo': {
+                'licenses': [{'name': 'Remote Copy'},
+                             {'name': 'Priority Optimization'},
+                             {'name': 'Thin Provisioning'}]
+            }
+        }
+
+        # cpg has no limit
+        mock_client.getCPGAvailableSpace.return_value = {
+            "capacityEfficiency": {u'compaction': 594.4},
+            "rawFreeMiB": 1024.0 * 6,
+            "usableFreeMiB": 1024.0 * 3
+        }
+
+        with mock.patch.object(hpecommon.HPE3PARCommon,
+                               '_create_client') as mock_create_client:
+            mock_create_client.return_value = mock_client
+
+            stats = self.driver.get_volume_stats(True)
+            self.assertEqual('iSCSI', stats['storage_protocol'])
+            self.assertEqual('12345', stats['array_id'])
+            self.assertTrue(stats['pools'][0]['thin_provisioning_support'])
+            self.assertTrue(stats['pools'][0]['QoS_support'])
             self.assertEqual(24.0, stats['pools'][0]['total_capacity_gb'])
             self.assertEqual(3.0, stats['pools'][0]['free_capacity_gb'])
             self.assertEqual(87.5, stats['pools'][0]['capacity_utilization'])

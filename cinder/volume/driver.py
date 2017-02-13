@@ -212,6 +212,7 @@ volume_opts = [
                      'developers. Valid values are method and api.'),
     cfg.MultiOpt('replication_device',
                  item_type=types.Dict(),
+                 secret=True,
                  help="Multi opt of dictionaries to represent a replication "
                       "target device.  This option may be specified multiple "
                       "times in a single config section to specify multiple "
@@ -276,6 +277,7 @@ iser_opts = [
 CONF = cfg.CONF
 CONF.register_opts(volume_opts)
 CONF.register_opts(iser_opts)
+CONF.import_opt('backup_use_same_host', 'cinder.backup.api')
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -979,7 +981,7 @@ class BaseVD(object):
                     LOG.error(err_msg)
                     raise exception.VolumeBackendAPIException(data=ex_msg)
                 raise exception.VolumeBackendAPIException(data=err_msg)
-        return (self._connect_device(conn), snapshot)
+        return self._connect_device(conn)
 
     def _connect_device(self, conn):
         # Use Brick's code to do attach/detach
@@ -1036,8 +1038,7 @@ class BaseVD(object):
         """
         backup_device = None
         is_snapshot = False
-        if (self.backup_use_temp_snapshot() and
-                self.snapshot_remote_attachable()):
+        if self.backup_use_temp_snapshot() and CONF.backup_use_same_host:
             (backup_device, is_snapshot) = (
                 self._get_backup_volume_temp_snapshot(context, backup))
         else:
@@ -1252,6 +1253,9 @@ class BaseVD(object):
         enforce_multipath = self.configuration.enforce_multipath_for_image_xfer
         properties = utils.brick_get_connector_properties(use_multipath,
                                                           enforce_multipath)
+        # TODO(xyang): Lots of code including this function is no longer used
+        # by the backup code path since Mitaka. We will need to do a code
+        # cleanup to avoid confusion. (Bug #1599629)
         if is_snapshot:
             attach_info, device = self._attach_snapshot(context, device,
                                                         properties)
@@ -1323,7 +1327,9 @@ class BaseVD(object):
         temp_snap_ref = objects.Snapshot(context=context, **kwargs)
         temp_snap_ref.create()
         try:
-            self.create_snapshot(temp_snap_ref)
+            model_update = self.create_snapshot(temp_snap_ref)
+            if model_update:
+                temp_snap_ref.update(model_update)
         except Exception:
             with excutils.save_and_reraise_exception():
                 with temp_snap_ref.obj_as_admin():
@@ -1345,18 +1351,23 @@ class BaseVD(object):
             'status': 'creating',
             'attach_status': 'detached',
             'availability_zone': volume.availability_zone,
+            'volume_type_id': volume.volume_type_id,
         }
         temp_vol_ref = self.db.volume_create(context, temp_volume)
         try:
-            self.create_cloned_volume(temp_vol_ref, volume)
+            # Some drivers return None, because they do not need to update the
+            # model for the volume. For those cases we set the model_update to
+            # an empty dictionary.
+            model_update = self.create_cloned_volume(temp_vol_ref,
+                                                     volume) or {}
         except Exception:
             with excutils.save_and_reraise_exception():
                 self.db.volume_destroy(context.elevated(),
                                        temp_vol_ref['id'])
 
-        self.db.volume_update(context, temp_vol_ref['id'],
-                              {'status': 'available'})
-        return temp_vol_ref
+        model_update['status'] = 'available'
+        self.db.volume_update(context, temp_vol_ref['id'], model_update)
+        return self.db.volume_get(context, temp_vol_ref['id'])
 
     def _create_temp_volume_from_snapshot(self, context, volume, snapshot):
         temp_volume = {
@@ -1368,18 +1379,20 @@ class BaseVD(object):
             'status': 'creating',
             'attach_status': 'detached',
             'availability_zone': volume.availability_zone,
+            'volume_type_id': volume.volume_type_id,
         }
         temp_vol_ref = self.db.volume_create(context, temp_volume)
         try:
-            self.create_volume_from_snapshot(temp_vol_ref, snapshot)
+            model_update = self.create_volume_from_snapshot(temp_vol_ref,
+                                                            snapshot) or {}
         except Exception:
             with excutils.save_and_reraise_exception():
                 self.db.volume_destroy(context.elevated(),
                                        temp_vol_ref['id'])
 
-        self.db.volume_update(context, temp_vol_ref['id'],
-                              {'status': 'available'})
-        return temp_vol_ref
+        model_update['status'] = 'available'
+        self.db.volume_update(context, temp_vol_ref['id'], model_update)
+        return self.db.volume_get(context, temp_vol_ref['id'])
 
     def _delete_temp_snapshot(self, context, snapshot):
         self.delete_snapshot(snapshot)

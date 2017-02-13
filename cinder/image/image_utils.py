@@ -54,13 +54,28 @@ image_helper_opts = [cfg.StrOpt('image_conversion_dir',
 CONF = cfg.CONF
 CONF.register_opts(image_helper_opts)
 
+QEMU_IMG_LIMITS = processutils.ProcessLimits(
+    cpu_time=2,
+    address_space=1 * units.Gi)
+
+# NOTE(abhishekk): qemu-img convert command supports raw, qcow2, qed,
+# vdi, vmdk, vhd and vhdx disk-formats but glance doesn't support qed
+# and vhdx disk-formats.
+# Ref: http://docs.openstack.org/image-guide/convert-images.html
+VALID_DISK_FORMATS = ('raw', 'vmdk', 'vdi', 'qcow2', 'vhd')
+
+
+def validate_disk_format(disk_format):
+    return disk_format in VALID_DISK_FORMATS
+
 
 def qemu_img_info(path, run_as_root=True):
     """Return an object containing the parsed output from qemu-img info."""
     cmd = ('env', 'LC_ALL=C', 'qemu-img', 'info', path)
     if os.name == 'nt':
         cmd = cmd[2:]
-    out, _err = utils.execute(*cmd, run_as_root=run_as_root)
+    out, _err = utils.execute(*cmd, run_as_root=run_as_root,
+                              prlimit=QEMU_IMG_LIMITS)
     return imageutils.QemuImgInfo(out)
 
 
@@ -384,15 +399,20 @@ def upload_volume(context, image_service, image_meta, volume_path,
                 reason=_("fmt=%(fmt)s backed by:%(backing_file)s")
                 % {'fmt': fmt, 'backing_file': backing_file})
 
-        convert_image(volume_path, tmp, image_meta['disk_format'],
+        out_format = image_meta['disk_format']
+        # qemu-img accepts 'vpc' as argument for vhd format
+        if out_format == 'vhd':
+            out_format = 'vpc'
+
+        convert_image(volume_path, tmp, out_format,
                       run_as_root=run_as_root)
 
         data = qemu_img_info(tmp, run_as_root=run_as_root)
-        if data.file_format != image_meta['disk_format']:
+        if data.file_format != out_format:
             raise exception.ImageUnacceptable(
                 image_id=image_id,
                 reason=_("Converted to %(f1)s, but format is now %(f2)s") %
-                {'f1': image_meta['disk_format'], 'f2': data.file_format})
+                {'f1': out_format, 'f2': data.file_format})
 
         with open(tmp, 'rb') as image_file:
             image_service.update(context, image_id, {}, image_file)

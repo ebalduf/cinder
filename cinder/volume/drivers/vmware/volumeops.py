@@ -183,6 +183,7 @@ class VirtualDiskAdapterType(object):
     LSI_LOGIC = "lsiLogic"
     BUS_LOGIC = "busLogic"
     LSI_LOGIC_SAS = "lsiLogicsas"
+    PARA_VIRTUAL = "paraVirtual"
     IDE = "ide"
 
     @staticmethod
@@ -195,6 +196,7 @@ class VirtualDiskAdapterType(object):
         return adapter_type in [VirtualDiskAdapterType.LSI_LOGIC,
                                 VirtualDiskAdapterType.BUS_LOGIC,
                                 VirtualDiskAdapterType.LSI_LOGIC_SAS,
+                                VirtualDiskAdapterType.PARA_VIRTUAL,
                                 VirtualDiskAdapterType.IDE]
 
     @staticmethod
@@ -212,20 +214,23 @@ class VirtualDiskAdapterType(object):
                 invalid_type=extra_spec_adapter_type)
 
     @staticmethod
-    def get_adapter_type(extra_spec_adapter_type):
+    def get_adapter_type(extra_spec_adapter):
         """Get the adapter type to be used in VirtualDiskSpec.
 
-        :param extra_spec_adapter_type: adapter type in the extra_spec
+        :param extra_spec_adapter: adapter type in the extra_spec
         :return: adapter type to be used in VirtualDiskSpec
         """
-        VirtualDiskAdapterType.validate(extra_spec_adapter_type)
-        # We set the adapter type as lsiLogic for lsiLogicsas since it is not
-        # supported by VirtualDiskManager APIs. This won't be a problem because
-        # we attach the virtual disk to the correct controller type and the
-        # disk adapter type is always resolved using its controller key.
-        if extra_spec_adapter_type == VirtualDiskAdapterType.LSI_LOGIC_SAS:
+        VirtualDiskAdapterType.validate(extra_spec_adapter)
+        # We set the adapter type as lsiLogic for lsiLogicsas/paraVirtual
+        # since it is not supported by VirtualDiskManager APIs. This won't
+        # be a problem because we attach the virtual disk to the correct
+        # controller type and the disk adapter type is always resolved using
+        # its controller key.
+        if (extra_spec_adapter == VirtualDiskAdapterType.LSI_LOGIC_SAS or
+                extra_spec_adapter == VirtualDiskAdapterType.PARA_VIRTUAL):
             return VirtualDiskAdapterType.LSI_LOGIC
-        return extra_spec_adapter_type
+        else:
+            return extra_spec_adapter
 
 
 class ControllerType(object):
@@ -234,12 +239,14 @@ class ControllerType(object):
     LSI_LOGIC = 'VirtualLsiLogicController'
     BUS_LOGIC = 'VirtualBusLogicController'
     LSI_LOGIC_SAS = 'VirtualLsiLogicSASController'
+    PARA_VIRTUAL = 'ParaVirtualSCSIController'
     IDE = 'VirtualIDEController'
 
     CONTROLLER_TYPE_DICT = {
         VirtualDiskAdapterType.LSI_LOGIC: LSI_LOGIC,
         VirtualDiskAdapterType.BUS_LOGIC: BUS_LOGIC,
         VirtualDiskAdapterType.LSI_LOGIC_SAS: LSI_LOGIC_SAS,
+        VirtualDiskAdapterType.PARA_VIRTUAL: PARA_VIRTUAL,
         VirtualDiskAdapterType.IDE: IDE}
 
     @staticmethod
@@ -264,7 +271,8 @@ class ControllerType(object):
         """
         return controller_type in [ControllerType.LSI_LOGIC,
                                    ControllerType.BUS_LOGIC,
-                                   ControllerType.LSI_LOGIC_SAS]
+                                   ControllerType.LSI_LOGIC_SAS,
+                                   ControllerType.PARA_VIRTUAL]
 
 
 class VMwareVolumeOps(object):
@@ -678,7 +686,8 @@ class VMwareVolumeOps(object):
         return disk_device_bkng
 
     def _create_virtual_disk_config_spec(self, size_kb, disk_type,
-                                         controller_key, vmdk_ds_file_path):
+                                         controller_key, profile_id,
+                                         vmdk_ds_file_path):
         """Returns config spec for adding a virtual disk."""
         cf = self._session.vim.client.factory
 
@@ -699,15 +708,21 @@ class VMwareVolumeOps(object):
         if vmdk_ds_file_path is None:
             disk_spec.fileOperation = 'create'
         disk_spec.device = disk_device
+        if profile_id:
+            disk_profile = cf.create('ns0:VirtualMachineDefinedProfileSpec')
+            disk_profile.profileId = profile_id
+            disk_spec.profile = [disk_profile]
+
         return disk_spec
 
     def _create_specs_for_disk_add(self, size_kb, disk_type, adapter_type,
-                                   vmdk_ds_file_path=None):
+                                   profile_id, vmdk_ds_file_path=None):
         """Create controller and disk config specs for adding a new disk.
 
         :param size_kb: disk size in KB
         :param disk_type: disk provisioning type
         :param adapter_type: disk adapter type
+        :param profile_id: storage policy profile identification
         :param vmdk_ds_file_path: Optional datastore file path of an existing
                                   virtual disk. If specified, file backing is
                                   not created for the virtual disk.
@@ -725,6 +740,7 @@ class VMwareVolumeOps(object):
         disk_spec = self._create_virtual_disk_config_spec(size_kb,
                                                           disk_type,
                                                           controller_key,
+                                                          profile_id,
                                                           vmdk_ds_file_path)
         specs = [disk_spec]
         if controller_spec is not None:
@@ -783,7 +799,7 @@ class VMwareVolumeOps(object):
         return create_spec
 
     def get_create_spec(self, name, size_kb, disk_type, ds_name,
-                        profileId=None, adapter_type='lsiLogic',
+                        profile_id=None, adapter_type='lsiLogic',
                         extra_config=None):
         """Return spec for creating backing with a single disk.
 
@@ -791,16 +807,16 @@ class VMwareVolumeOps(object):
         :param size_kb: disk size in KB
         :param disk_type: disk provisioning type
         :param ds_name: datastore name where the disk is to be provisioned
-        :param profileId: storage profile ID for the backing
+        :param profile_id: storage policy profile identification
         :param adapter_type: disk adapter type
         :param extra_config: key-value pairs to be written to backing's
                              extra-config
         :return: spec for creation
         """
         create_spec = self._get_create_spec_disk_less(
-            name, ds_name, profileId=profileId, extra_config=extra_config)
+            name, ds_name, profileId=profile_id, extra_config=extra_config)
         create_spec.deviceChange = self._create_specs_for_disk_add(
-            size_kb, disk_type, adapter_type)
+            size_kb, disk_type, adapter_type, profile_id)
         return create_spec
 
     def _create_backing_int(self, folder, resource_pool, host, create_spec):
@@ -845,7 +861,7 @@ class VMwareVolumeOps(object):
                    'adapter_type': adapter_type})
 
         create_spec = self.get_create_spec(
-            name, size_kb, disk_type, ds_name, profileId=profileId,
+            name, size_kb, disk_type, ds_name, profile_id=profileId,
             adapter_type=adapter_type, extra_config=extra_config)
         return self._create_backing_int(folder, resource_pool, host,
                                         create_spec)
@@ -1206,13 +1222,14 @@ class VMwareVolumeOps(object):
         self._session.wait_for_task(reconfig_task)
 
     def attach_disk_to_backing(self, backing, size_in_kb, disk_type,
-                               adapter_type, vmdk_ds_file_path):
+                               adapter_type, profile_id, vmdk_ds_file_path):
         """Attach an existing virtual disk to the backing VM.
 
         :param backing: reference to the backing VM
         :param size_in_kb: disk size in KB
         :param disk_type: virtual disk type
         :param adapter_type: disk adapter type
+        :param profile_id: storage policy profile identification
         :param vmdk_ds_file_path: datastore file path of the virtual disk to
                                   be attached
         """
@@ -1225,10 +1242,12 @@ class VMwareVolumeOps(object):
                    'adapter_type': adapter_type})
         cf = self._session.vim.client.factory
         reconfig_spec = cf.create('ns0:VirtualMachineConfigSpec')
-        specs = self._create_specs_for_disk_add(size_in_kb,
-                                                disk_type,
-                                                adapter_type,
-                                                vmdk_ds_file_path)
+        specs = self._create_specs_for_disk_add(
+            size_in_kb,
+            disk_type,
+            adapter_type,
+            profile_id,
+            vmdk_ds_file_path=vmdk_ds_file_path)
         reconfig_spec.deviceChange = specs
         self._reconfigure_backing(backing, reconfig_spec)
         LOG.debug("Backing VM: %s reconfigured with new disk.", backing)

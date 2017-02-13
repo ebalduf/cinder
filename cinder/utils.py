@@ -275,24 +275,6 @@ def last_completed_audit_period(unit=None):
     return (begin, end)
 
 
-def list_of_dicts_to_dict(seq, key):
-    """Convert list of dicts to an indexed dict.
-
-    Takes a list of dicts, and converts it to a nested dict
-    indexed by <key>
-
-    :param seq: list of dicts
-    :parm key: key in dicts to index by
-
-    example:
-      lst = [{'id': 1, ...}, {'id': 2, ...}...]
-      key = 'id'
-      returns {1:{'id': 1, ...}, 2:{'id':2, ...}
-
-    """
-    return {d[key]: dict(d, index=d[key]) for (i, d) in enumerate(seq)}
-
-
 class ProtectedExpatParser(expatreader.ExpatParser):
     """An expat parser which disables DTD's and entities by default."""
 
@@ -854,7 +836,7 @@ def convert_str(text):
     * convert to Unicode on Python 3: decode bytes from UTF-8
     """
     if six.PY2:
-        return encodeutils.safe_encode(text)
+        return encodeutils.to_utf8(text)
     else:
         if isinstance(text, bytes):
             return text.decode('utf-8')

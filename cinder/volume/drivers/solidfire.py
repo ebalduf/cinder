@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import inspect
 import json
 import math
 import random
@@ -35,6 +36,7 @@ from cinder import exception
 from cinder.i18n import _, _LE, _LW
 from cinder.image import image_utils
 from cinder.objects import fields
+from cinder import utils
 from cinder.volume.drivers.san import san
 from cinder.volume import qos_specs
 from cinder.volume.targets import iscsi as iscsi_driver
@@ -144,10 +146,11 @@ class SolidFireDriver(san.SanISCSIDriver):
         2.0.0 - Move from httplib to requests
         2.0.1 - Implement SolidFire Snapshots
         2.0.2 - Implement secondary account
-
+        2.0.2.a - Backport lock decorator for SolidFire clone_image
     """
 
-    VERSION = '2.0.2'
+    VERSION = '2.0.2.a'
+    driver_prefix = 'solidfire'
 
     sf_qos_dict = {'slow': {'minIOPS': 100,
                             'maxIOPS': 200,
@@ -172,6 +175,7 @@ class SolidFireDriver(san.SanISCSIDriver):
                         'xMaxClonesPerVolumeExceeded',
                         'xMaxSnapshotsPerNodeExceeded',
                         'xMaxClonesPerNodeExceeded',
+                        'xSliceNotRegistered',
                         'xNotReadyForIO']
 
     def __init__(self, *args, **kwargs):
@@ -408,9 +412,16 @@ class SolidFireDriver(san.SanISCSIDriver):
         """Gets the connection info for specified account and volume."""
         cluster_info = self._get_cluster_info()
         if self.configuration.sf_svip is None:
-            iscsi_portal = cluster_info['clusterInfo']['svip'] + ':3260'
+            iscsi_portal = cluster_info['clusterInfo']['svip']
         else:
             iscsi_portal = self.configuration.sf_svip
+
+        # NOTE(jdg): some systems get irritated if there's no
+        # port indicated, and we don't enforce it on the config
+        # option so add the default here if it's missing
+        if ':' not in iscsi_portal:
+            iscsi_portal += ':3260'
+
         chap_secret = sfaccount['targetSecret']
 
         found_volume = False
@@ -503,7 +514,10 @@ class SolidFireDriver(san.SanISCSIDriver):
 
         # NOTE(jdg): all attributes are copied via clone, need to do an update
         # to set any that were provided
+        qos = self._retrieve_qos_setting(vref)
         params = {'volumeID': sf_volume_id}
+        if qos:
+            params['qos'] = qos
         create_time = vref['created_at'].isoformat()
         attributes = {'uuid': vref['id'],
                       'is_clone': 'True',
@@ -641,6 +655,24 @@ class SolidFireDriver(san.SanISCSIDriver):
         return self._issue_api_request(
             'ListSnapshots', params, version='6.0')['result']['snapshots']
 
+    def locked_image_id_operation(f, external=False):
+        def lvo_inner1(inst, *args, **kwargs):
+            lock_tag = inst.driver_prefix
+            call_args = inspect.getcallargs(f, inst, *args, **kwargs)
+
+            if call_args.get('image_meta'):
+                image_id = call_args['image_meta']['id']
+            else:
+                err_msg = _('The decorated method must accept image_meta.')
+                raise exception.VolumeBackendAPIException(data=err_msg)
+
+            @utils.synchronized('%s-%s' % (lock_tag, image_id),
+                                external=external)
+            def lvo_inner2():
+                return f(inst, *args, **kwargs)
+            return lvo_inner2()
+        return lvo_inner1
+
     def _create_image_volume(self, context,
                              image_meta, image_service,
                              image_id):
@@ -734,24 +766,22 @@ class SolidFireDriver(san.SanISCSIDriver):
 
         params = {'accountID': self.template_account_id}
         sf_vol = self._get_sf_volume(image_meta['id'], params)
-        if sf_vol is None:
+        if not sf_vol:
+            self._create_image_volume(context,
+                                      image_meta,
+                                      image_service,
+                                      image_meta['id'])
             return
 
-        # Check updated_at field, delete copy and update if needed
-        if sf_vol['attributes']['image_info']['image_updated_at'] == (
+        if sf_vol['attributes']['image_info']['image_updated_at'] != (
                 image_meta['updated_at'].isoformat()):
-            return
-        else:
-            # Bummer, it's been updated, delete it
             params = {'accountID': self.template_account_id}
             params['volumeID'] = sf_vol['volumeID']
             self._issue_api_request('DeleteVolume', params)
-            if not self._create_image_volume(context,
-                                             image_meta,
-                                             image_service,
-                                             image_meta['id']):
-                msg = _("Failed to create SolidFire Image-Volume")
-                raise exception.SolidFireAPIException(msg)
+            self._create_image_volume(context,
+                                      image_meta,
+                                      image_service,
+                                      image_meta['id'])
 
     def _get_sfaccounts_for_tenant(self, cinder_project_id):
         accounts = self._issue_api_request(
@@ -978,6 +1008,7 @@ class SolidFireDriver(san.SanISCSIDriver):
         for vag in sorted_targets[:limit]:
             self._remove_vag(vag['volumeAccessGroupID'])
 
+    @locked_image_id_operation
     def clone_image(self, context,
                     volume, image_location,
                     image_meta, image_service):
@@ -1012,21 +1043,9 @@ class SolidFireDriver(san.SanISCSIDriver):
         except exception.SolidFireAPIException:
             return None, False
 
-        try:
-            (data, sfaccount, model) = self._do_clone_volume(image_meta['id'],
-                                                             volume)
-        except exception.VolumeNotFound:
-            if self._create_image_volume(context,
-                                         image_meta,
-                                         image_service,
-                                         image_meta['id']) is None:
-                # We failed, dump out
-                return None, False
-
-            # Ok, should be good to go now, try it again
-            (data, sfaccount, model) = self._do_clone_volume(image_meta['id'],
-                                                             volume)
-
+        # Ok, should be good to go now, try it again
+        (data, sfaccount, model) = self._do_clone_volume(image_meta['id'],
+                                                         volume)
         return model, True
 
     def _retrieve_qos_setting(self, volume):
@@ -1113,7 +1132,7 @@ class SolidFireDriver(san.SanISCSIDriver):
 
         for acc in accounts:
             vols = self._get_volumes_for_account(acc['accountID'],
-                                                 volume['id'])
+                                                 volume['name_id'])
             if vols:
                 sf_vol = vols[0]
                 break

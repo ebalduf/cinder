@@ -122,7 +122,7 @@ SNAPSHOT_WITH_CGROUP = SNAPSHOT.copy()
 SNAPSHOT_WITH_CGROUP['cgsnapshot_id'] = \
     "4a2f7e3a-312a-40c5-96a8-536b8a0fe075"
 INITIATOR_IQN = "iqn.1993-08.org.debian:01:222"
-INITIATOR_WWN = "5001500150015081"
+INITIATOR_WWN = "5001500150015081abc"
 ISCSI_CONNECTOR = {"initiator": INITIATOR_IQN, "host": HOSTNAME}
 FC_CONNECTOR = {"wwpns": {INITIATOR_WWN}, "host": HOSTNAME}
 TARGET_IQN = "iqn.2010-06.com.purestorage:flasharray.12345abc"
@@ -132,7 +132,7 @@ INITIATOR_TARGET_MAP =\
     {
         # _build_initiator_target_map() calls list(set()) on the list,
         # we must also call list(set()) to get the exact same order
-        '5001500150015081': list(set(FC_WWNS)),
+        '5001500150015081abc': list(set(FC_WWNS)),
     }
 DEVICE_MAPPING =\
     {
@@ -1510,10 +1510,13 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
                           self.driver.unmanage_snapshot,
                           SNAPSHOT)
 
-    def _test_retype_repl(self, mock_is_repl, is_vol_repl, repl_cabability):
+    def _test_retype_repl(self, mock_is_repl, is_vol_repl,
+                          repl_cabability, volume_id=None):
         mock_is_repl.return_value = is_vol_repl
         context = mock.MagicMock()
         volume = fake_volume.fake_volume_obj(context)
+        if volume_id:
+            volume.id = volume_id
         new_type = {
             'extra_specs': {
                 pure.EXTRA_SPECS_REPL_ENABLED:
@@ -1534,32 +1537,28 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
     def test_retype_non_repl_to_non_repl(self, mock_is_replicated_type):
         self._test_retype_repl(mock_is_replicated_type, False, False)
 
-    @mock.patch(BASE_DRIVER_OBJ + '._enable_replication')
-    @mock.patch(BASE_DRIVER_OBJ + '._disable_replication')
     @mock.patch(BASE_DRIVER_OBJ + '._is_volume_replicated_type', autospec=True)
-    def test_retype_non_repl_to_repl(self,
-                                     mock_is_replicated_type,
-                                     mock_replication_disable,
-                                     mock_replication_enable):
+    def test_retype_non_repl_to_repl(self, mock_is_replicated_type):
 
         context, volume = self._test_retype_repl(mock_is_replicated_type,
                                                  False,
-                                                 True)
-        self.assertFalse(mock_replication_disable.called)
-        mock_replication_enable.assert_called_with(volume)
+                                                 True,
+                                                 volume_id=VOLUME_ID)
+        self.array.set_pgroup.assert_called_once_with(
+            pure.REPLICATION_CG_NAME,
+            addvollist=[VOLUME_PURITY_NAME]
+        )
 
-    @mock.patch(BASE_DRIVER_OBJ + '._enable_replication')
-    @mock.patch(BASE_DRIVER_OBJ + '._disable_replication')
     @mock.patch(BASE_DRIVER_OBJ + '._is_volume_replicated_type', autospec=True)
-    def test_retype_repl_to_non_repl(self,
-                                     mock_is_replicated_type,
-                                     mock_replication_disable,
-                                     mock_replication_enable):
+    def test_retype_repl_to_non_repl(self, mock_is_replicated_type,):
         context, volume = self._test_retype_repl(mock_is_replicated_type,
                                                  True,
-                                                 False)
-        self.assertFalse(mock_replication_enable.called)
-        mock_replication_disable.assert_called_with(volume)
+                                                 False,
+                                                 volume_id=VOLUME_ID)
+        self.array.set_pgroup.assert_called_once_with(
+            pure.REPLICATION_CG_NAME,
+            remvollist=[VOLUME_PURITY_NAME]
+        )
 
     @mock.patch('cinder.volume.volume_types.get_volume_type')
     def test_is_vol_replicated_no_extra_specs(self, mock_get_vol_type):
@@ -1572,8 +1571,18 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
     def test_is_vol_replicated_has_repl_extra_specs(self, mock_get_vol_type):
         mock_get_vol_type.return_value = REPLICATED_VOL_TYPE
         volume = fake_volume.fake_volume_obj(mock.MagicMock())
+        volume.volume_type_id = REPLICATED_VOL_TYPE['id']
         actual = self.driver._is_volume_replicated_type(volume)
         self.assertTrue(actual)
+
+    @mock.patch('cinder.volume.volume_types.get_volume_type')
+    def test_is_vol_replicated_none_type(self, mock_get_vol_type):
+        mock_get_vol_type.side_effect = exception.InvalidVolumeType(reason='')
+        volume = fake_volume.fake_volume_obj(mock.MagicMock())
+        volume.volume_type = None
+        volume.volume_type_id = None
+        actual = self.driver._is_volume_replicated_type(volume)
+        self.assertFalse(actual)
 
     @mock.patch('cinder.volume.volume_types.get_volume_type')
     def test_is_vol_replicated_has_other_extra_specs(self, mock_get_vol_type):
@@ -2211,6 +2220,16 @@ class PureFCDriverTestCase(PureDriverTestCase):
                                      self.driver._get_host,
                                      self.array,
                                      FC_CONNECTOR)
+
+    def test_get_host_uppercase_wwpn(self):
+        expected_host = PURE_HOST.copy()
+        expected_host['wwn'] = [INITIATOR_WWN]
+        self.array.list_hosts.return_value = [expected_host]
+        connector = FC_CONNECTOR.copy()
+        connector['wwpns'] = [wwpn.upper() for wwpn in FC_CONNECTOR['wwpns']]
+
+        actual_result = self.driver._get_host(self.array, connector)
+        self.assertEqual(expected_host, actual_result)
 
     @mock.patch(FC_DRIVER_OBJ + "._connect")
     def test_initialize_connection(self, mock_connection):

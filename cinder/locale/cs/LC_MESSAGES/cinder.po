@@ -10,9 +10,9 @@
 # Zbyněk Schwarz <zbynek.schwarz@gmail.com>, 2016. #zanata
 msgid ""
 msgstr ""
-"Project-Id-Version: cinder 8.0.0.0rc2.dev10\n"
-"Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2016-03-17 18:05+0000\n"
+"Project-Id-Version: cinder 8.1.1.dev2\n"
+"Report-Msgid-Bugs-To: https://bugs.launchpad.net/openstack-i18n/\n"
+"POT-Creation-Date: 2016-08-18 04:17+0000\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
@@ -2718,9 +2718,6 @@ msgstr ""
 #, python-format
 msgid "Failed to create IG, %s"
 msgstr "Nelze vytvořit IG, %s"
-
-msgid "Failed to create SolidFire Image-Volume"
-msgstr "Nelze vytvořit obraz-svazek SolidFire"
 
 #, python-format
 msgid "Failed to create Volume Group: %(vg_name)s"
@@ -5725,10 +5722,6 @@ msgid "SSH Command failed after '%(total_attempts)r' attempts : '%(command)s'"
 msgstr "Příkaz SSH selhal po '%(total_attempts)r' pokusech : '%(command)s'"
 
 #, python-format
-msgid "SSH Command failed with error: '%(err)s', Command: '%(command)s'"
-msgstr "Příkaz SSH selhal s chybou: '%(err)s', příkaz: '%(command)s'"
-
-#, python-format
 msgid "SSH command injection detected: %(command)s"
 msgstr "Zjištěno vložení příkazů SSH: %(command)s"
 
@@ -5778,9 +5771,6 @@ msgstr "Služba %s nenalezena."
 
 msgid "Service is unavailable at this time."
 msgstr "Služba je v tuto chvíli nedostupná."
-
-msgid "Service not found."
-msgstr "Služba nenalezena."
 
 msgid "Sets thin provisioning."
 msgstr "Nastaví mělké poskytování."
