@@ -27,7 +27,6 @@ from cinder import objects
 from cinder.scheduler import rpcapi as scheduler_rpcapi
 from cinder import test
 from cinder.tests.unit import fake_constants
-from cinder.tests.unit import fake_group
 from cinder.tests.unit import fake_volume
 
 
@@ -41,7 +40,6 @@ class SchedulerRPCAPITestCase(test.RPCAPITestCase):
         self.fake_volume = fake_volume.fake_volume_obj(
             self.context, expected_attrs=['metadata', 'admin_metadata',
                                           'glance_metadata'])
-        self.fake_consistencygroup = fake_group
         self.fake_rs_obj = objects.RequestSpec.from_primitives({})
         self.fake_rs_dict = {'volume_id': self.volume_id}
         self.fake_fp_dict = {'availability_zone': 'fake_az'}
@@ -184,13 +182,6 @@ class SchedulerRPCAPITestCase(test.RPCAPITestCase):
                                'capabilities': {},
                            }])
 
-    def test_create_consistencygroup(self):
-        self._test_rpc_api('create_consistencygroup',
-                           rpc_method='cast',
-                           group='group',
-                           request_spec_list=[self.fake_rs_dict],
-                           filter_properties_list=[self.fake_fp_dict])
-
     def test_create_group(self):
         self._test_rpc_api('create_group',
                            rpc_method='cast',
@@ -232,3 +223,23 @@ class SchedulerRPCAPITestCase(test.RPCAPITestCase):
                               self.context,
                               cleanup_request)
             can_send_mock.assert_called_once_with('3.4')
+
+    @mock.patch('oslo_messaging.RPCClient.can_send_version', mock.Mock())
+    def test_set_log_levels(self):
+        service = objects.Service(self.context, host='host1')
+        self._test_rpc_api('set_log_levels',
+                           rpc_method='cast',
+                           server=service.host,
+                           service=service,
+                           log_request='log_request',
+                           version='3.7')
+
+    @mock.patch('oslo_messaging.RPCClient.can_send_version', mock.Mock())
+    def test_get_log_levels(self):
+        service = objects.Service(self.context, host='host1')
+        self._test_rpc_api('get_log_levels',
+                           rpc_method='call',
+                           server=service.host,
+                           service=service,
+                           log_request='log_request',
+                           version='3.7')

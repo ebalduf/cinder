@@ -92,7 +92,9 @@ class TestCase(testtools.TestCase):
     """Test case base class for all unit tests."""
 
     POLICY_PATH = 'cinder/tests/unit/policy.json'
+    RESOURCE_FILTER_PATH = 'etc/cinder/resource_filters.json'
     MOCK_WORKER = True
+    MOCK_TOOZ = True
 
     def _get_joined_notifier(self, *args, **kwargs):
         # We create a new fake notifier but we join the notifications with
@@ -118,6 +120,11 @@ class TestCase(testtools.TestCase):
             clean_path = 'cinder.objects.cleanable.CinderCleanableObject.%s'
             for method in ('create_worker', 'set_worker', 'unset_worker'):
                 self.patch(clean_path % method, return_value=None)
+
+        if self.MOCK_TOOZ:
+            self.patch('cinder.coordination.Coordinator.start')
+            self.patch('cinder.coordination.Coordinator.stop')
+            self.patch('cinder.coordination.Coordinator.get_lock')
 
         # Unit tests do not need to use lazy gettext
         i18n.enable_lazy(False)
@@ -226,7 +233,15 @@ class TestCase(testtools.TestCase):
                                  ),
                                  self.POLICY_PATH),
                              group='oslo_policy')
-
+        self.override_config('resource_query_filters_file',
+                             os.path.join(
+                                 os.path.abspath(
+                                     os.path.join(
+                                         os.path.dirname(__file__),
+                                         '..',
+                                     )
+                                 ),
+                                 self.RESOURCE_FILTER_PATH))
         self._disable_osprofiler()
         self._disallow_invalid_uuids()
 
@@ -302,7 +317,7 @@ class TestCase(testtools.TestCase):
             self.override_config(k, v)
 
     def start_service(self, name, host=None, **kwargs):
-        host = host and host or uuid.uuid4().hex
+        host = host if host else uuid.uuid4().hex
         kwargs.setdefault('host', host)
         kwargs.setdefault('binary', 'cinder-%s' % name)
         svc = service.Service.create(**kwargs)
@@ -339,6 +354,13 @@ class TestCase(testtools.TestCase):
 
             self.assertEqual(call[0], posargs[0])
             self.assertEqual(call[1], posargs[2])
+
+    def assertTrue(self, x, *args, **kwargs):
+        if isinstance(x, six.string_types):
+            raise AssertionError("%s (%s) is a string. Use a more "
+                                 "specific assertion such as assertEqual." %
+                                 (x, type(x)))
+        super(TestCase, self).assertTrue(x, *args, **kwargs)
 
 
 class ModelsObjectComparatorMixin(object):
@@ -399,7 +421,7 @@ class RPCAPITestCase(TestCase, ModelsObjectComparatorMixin):
         :param server: Expected hostname.
         :param fanout: True if expected call/cast should be fanout.
         :param version: Expected autocalculated RPC API version.
-        :param epected_method: Expected RPC method name.
+        :param expected_method: Expected RPC method name.
         :param expected_kwargs_diff: Map of expected changes between keyword
                                      arguments passed into the method and sent
                                      over RPC.

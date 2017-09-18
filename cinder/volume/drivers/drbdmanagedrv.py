@@ -37,8 +37,9 @@ from oslo_utils import units
 
 
 from cinder import exception
-from cinder.i18n import _, _LW, _LI, _LE
+from cinder.i18n import _
 from cinder import interface
+from cinder.volume import configuration
 from cinder.volume import driver
 
 try:
@@ -108,7 +109,7 @@ drbd_opts = [
 
 
 CONF = cfg.CONF
-CONF.register_opts(drbd_opts)
+CONF.register_opts(drbd_opts, group=configuration.SHARED_CONF_GROUP)
 
 
 AUX_PROP_CINDER_VOL_ID = "cinder-id"
@@ -194,7 +195,7 @@ class DrbdManageBaseDriver(driver.VolumeDriver):
         try:
             return fn(*args)
         except dbus.DBusException as e:
-            LOG.warning(_LW("Got disconnected; trying to reconnect. (%s)"), e)
+            LOG.warning("Got disconnected; trying to reconnect. (%s)", e)
             self.dbus_connect()
             # Old function object is invalid, get new one.
             return getattr(self.odm, fn._method_name)(*args)
@@ -354,8 +355,8 @@ class DrbdManageBaseDriver(driver.VolumeDriver):
 
             retry += 1
             # Not yet
-            LOG.warning(_LW('Try #%(try)d: Volume "%(res)s"/%(vol)d '
-                            'not yet deployed on "%(host)s", waiting.'),
+            LOG.warning('Try #%(try)d: Volume "%(res)s"/%(vol)d '
+                        'not yet deployed on "%(host)s", waiting.',
                         {'try': retry, 'host': nodenames,
                          'res': res_name, 'vol': vol_nr})
 
@@ -398,7 +399,7 @@ class DrbdManageBaseDriver(driver.VolumeDriver):
                                          self.empty_dict)
         self._check_result(res)
 
-        if (not rl) or (len(rl) == 0):
+        if not rl:
             if empty_ok:
                 LOG.debug("No volume %s found.", v_uuid)
                 return None, None, None, None
@@ -435,7 +436,7 @@ class DrbdManageBaseDriver(driver.VolumeDriver):
                                          self.empty_dict)
         self._check_result(res)
 
-        if (not rs) or (len(rs) == 0):
+        if not rs:
             if empty_ok:
                 return None
             else:
@@ -596,7 +597,7 @@ class DrbdManageBaseDriver(driver.VolumeDriver):
             raise exception.VolumeBackendAPIException(data=message)
 
         # Delete resource, if empty
-        if (not rl) or (not rl[0]) or (len(rl[0][2]) == 0):
+        if (not rl) or (not rl[0]) or not rl[0][2]:
             res = self.call_or_reconnect(self.odm.remove_resource,
                                          d_res_name, False)
             self._check_result(res, ignore=[dm_exc.DM_ENOENT])
@@ -771,9 +772,9 @@ class DrbdManageBaseDriver(driver.VolumeDriver):
 
         if not d_res_name:
             # resource already gone?
-            LOG.warning(_LW("snapshot: %s not found, "
-                            "skipping delete operation"), snapshot['id'])
-            LOG.info(_LI('Successfully deleted snapshot: %s'), snapshot['id'])
+            LOG.warning("snapshot: %s not found, "
+                        "skipping delete operation", snapshot['id'])
+            LOG.info('Successfully deleted snapshot: %s', snapshot['id'])
             return True
 
         res = self.call_or_reconnect(self.odm.remove_snapshot,
@@ -1035,7 +1036,7 @@ class DrbdManageDrbdDriver(DrbdManageBaseDriver):
 
         if len(data) < 1:
             # already removed?!
-            LOG.info(_LI('DRBD connection for %s already removed'),
+            LOG.info('DRBD connection for %s already removed',
                      volume['id'])
         elif len(data) == 1:
             __, __, props, __ = data[0]
@@ -1062,7 +1063,7 @@ class DrbdManageDrbdDriver(DrbdManageBaseDriver):
                 self._check_result(res, ignore=[dm_exc.DM_ENOENT])
         else:
             # more than one assignment?
-            LOG.error(_LE("DRBDmanage: too many assignments returned."))
+            LOG.error("DRBDmanage: too many assignments returned.")
         return
 
     def remove_export(self, context, volume):

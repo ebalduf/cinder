@@ -29,6 +29,8 @@ from oslo_db.sqlalchemy import test_base
 from oslo_db.sqlalchemy import test_migrations
 from oslo_db.sqlalchemy import utils as db_utils
 import sqlalchemy
+from sqlalchemy.engine import reflection
+from sqlalchemy import func, select
 
 from cinder.db import migration
 import cinder.db.sqlalchemy.migrate_repo
@@ -42,6 +44,7 @@ class MigrationsMixin(test_migrations.WalkVersionsMixin):
     TIME_TYPE = sqlalchemy.types.DATETIME
     INTEGER_TYPE = sqlalchemy.types.INTEGER
     VARCHAR_TYPE = sqlalchemy.types.VARCHAR
+    TEXT_TYPE = sqlalchemy.types.Text
 
     @property
     def INIT_VERSION(self):
@@ -117,6 +120,9 @@ class MigrationsMixin(test_migrations.WalkVersionsMixin):
             # NOTE(ameade): 87 sets messages.request_id to nullable. This
             # should be safe for the same reason as migration 66.
             87,
+            # NOTE : 104 modifies size of messages.project_id to 255.
+            # This should be safe for the same reason as migration 87.
+            104,
         ]
 
         # NOTE(dulek): We only started requiring things be additive in
@@ -683,7 +689,7 @@ class MigrationsMixin(test_migrations.WalkVersionsMixin):
         self.assertIsInstance(backups.c.parent_id.type,
                               self.VARCHAR_TYPE)
 
-    def _check_40(self, engine, data):
+    def _check_040(self, engine, data):
         volumes = db_utils.get_table(engine, 'volumes')
         self.assertNotIn('instance_uuid', volumes.c)
         self.assertNotIn('attached_host', volumes.c)
@@ -1002,8 +1008,8 @@ class MigrationsMixin(test_migrations.WalkVersionsMixin):
                               self.VARCHAR_TYPE)
 
         quota_classes = db_utils.get_table(engine, 'quota_classes')
-        rows = quota_classes.count().\
-            where(quota_classes.c.resource == 'groups').\
+        rows = select([func.count()]).select_from(
+            quota_classes).where(quota_classes.c.resource == 'groups').\
             execute().scalar()
         self.assertEqual(1, rows)
 
@@ -1098,13 +1104,203 @@ class MigrationsMixin(test_migrations.WalkVersionsMixin):
         self.assertIsInstance(workers.c.race_preventer.type,
                               self.INTEGER_TYPE)
 
+    def _check_091(self, engine, data):
+        self.assertTrue(engine.dialect.has_table(engine.connect(),
+                                                 "attachment_specs"))
+        attachment = db_utils.get_table(engine, 'attachment_specs')
+
+        self.assertIsInstance(attachment.c.created_at.type,
+                              self.TIME_TYPE)
+        self.assertIsInstance(attachment.c.updated_at.type,
+                              self.TIME_TYPE)
+        self.assertIsInstance(attachment.c.deleted_at.type,
+                              self.TIME_TYPE)
+        self.assertIsInstance(attachment.c.deleted.type,
+                              self.BOOL_TYPE)
+        self.assertIsInstance(attachment.c.id.type,
+                              self.INTEGER_TYPE)
+        self.assertIsInstance(attachment.c.key.type,
+                              self.VARCHAR_TYPE)
+        self.assertIsInstance(attachment.c.value.type,
+                              self.VARCHAR_TYPE)
+        self.assertIsInstance(attachment.c.attachment_id.type,
+                              self.VARCHAR_TYPE)
+        f_keys = self.get_foreign_key_columns(engine, 'attachment_specs')
+        self.assertEqual({'attachment_id'}, f_keys)
+
+    def _check_098(self, engine, data):
+        self.assertTrue(engine.dialect.has_table(engine.connect(),
+                                                 "messages"))
+        ids = self.get_indexed_columns(engine, 'messages')
+        self.assertTrue('expires_at' in ids)
+
+    def _check_099(self, engine, data):
+        self.assertTrue(engine.dialect.has_table(engine.connect(),
+                                                 "volume_attachment"))
+        attachment = db_utils.get_table(engine, 'volume_attachment')
+
+        self.assertIsInstance(attachment.c.connection_info.type,
+                              self.TEXT_TYPE)
+
+    def get_table_names(self, engine):
+        inspector = reflection.Inspector.from_engine(engine)
+        return inspector.get_table_names()
+
+    def get_foreign_key_columns(self, engine, table_name):
+        foreign_keys = set()
+        table = db_utils.get_table(engine, table_name)
+        inspector = reflection.Inspector.from_engine(engine)
+        for column_dict in inspector.get_columns(table_name):
+            column_name = column_dict['name']
+            column = getattr(table.c, column_name)
+            if column.foreign_keys:
+                foreign_keys.add(column_name)
+        return foreign_keys
+
+    def get_indexed_columns(self, engine, table_name):
+        indexed_columns = set()
+        for index in db_utils.get_indexes(engine, table_name):
+            for column_name in index['column_names']:
+                indexed_columns.add(column_name)
+        return indexed_columns
+
+    def assert_each_foreign_key_is_part_of_an_index(self):
+        engine = self.migrate_engine
+
+        non_indexed_foreign_keys = set()
+
+        for table_name in self.get_table_names(engine):
+            indexed_columns = self.get_indexed_columns(engine, table_name)
+            foreign_key_columns = self.get_foreign_key_columns(
+                engine, table_name
+            )
+            for column_name in foreign_key_columns - indexed_columns:
+                non_indexed_foreign_keys.add(table_name + '.' + column_name)
+
+        self.assertSetEqual(set(), non_indexed_foreign_keys)
+
+    def _pre_upgrade_101(self, engine):
+        """Add data to test the SQL migration."""
+        types_table = db_utils.get_table(engine, 'volume_types')
+        for i in range(1, 5):
+            types_table.insert().execute({'id': str(i)})
+
+        specs_table = db_utils.get_table(engine, 'volume_type_extra_specs')
+        specs = [
+            {'volume_type_id': '1', 'key': 'key', 'value': '<is> False'},
+            {'volume_type_id': '2', 'key': 'replication_enabled',
+             'value': '<is> False'},
+            {'volume_type_id': '3', 'key': 'replication_enabled',
+             'value': '<is> True', 'deleted': True},
+            {'volume_type_id': '3', 'key': 'key', 'value': '<is> True'},
+            {'volume_type_id': '4', 'key': 'replication_enabled',
+             'value': '<is> True'},
+            {'volume_type_id': '4', 'key': 'key', 'value': '<is> True'},
+        ]
+        for spec in specs:
+            specs_table.insert().execute(spec)
+
+        volumes_table = db_utils.get_table(engine, 'volumes')
+        volumes = [
+            {'id': '1', 'replication_status': 'disabled',
+             'volume_type_id': None},
+            {'id': '2', 'replication_status': 'disabled',
+             'volume_type_id': ''},
+            {'id': '3', 'replication_status': 'disabled',
+             'volume_type_id': '1'},
+            {'id': '4', 'replication_status': 'disabled',
+             'volume_type_id': '2'},
+            {'id': '5', 'replication_status': 'disabled',
+             'volume_type_id': '2'},
+            {'id': '6', 'replication_status': 'disabled',
+             'volume_type_id': '3'},
+            {'id': '7', 'replication_status': 'error', 'volume_type_id': '4'},
+            {'id': '8', 'deleted': True, 'replication_status': 'disabled',
+             'volume_type_id': '4'},
+            {'id': '9', 'replication_status': 'disabled', 'deleted': None,
+             'volume_type_id': '4'},
+            {'id': '10', 'replication_status': 'disabled', 'deleted': False,
+             'volume_type_id': '4'},
+        ]
+        for volume in volumes:
+            volumes_table.insert().execute(volume)
+
+        # Only the last volume should be changed to enabled
+        expected = {v['id']: v['replication_status'] for v in volumes}
+        expected['9'] = 'enabled'
+        expected['10'] = 'enabled'
+        return expected
+
+    def _check_101(self, engine, data):
+        # Get existing volumes after the migration
+        volumes_table = db_utils.get_table(engine, 'volumes')
+        volumes = volumes_table.select().execute()
+        # Check that the replication_status is the one we expect according to
+        # _pre_upgrade_098
+        for volume in volumes:
+            self.assertEqual(data[volume.id], volume.replication_status,
+                             'id %s' % volume.id)
+
+    def _check_102(self, engine, data):
+        """Test adding replication_status to groups table."""
+        groups = db_utils.get_table(engine, 'groups')
+        self.assertIsInstance(groups.c.replication_status.type,
+                              self.VARCHAR_TYPE)
+
+    def _check_103(self, engine, data):
+        self.assertTrue(engine.dialect.has_table(engine.connect(),
+                                                 "messages"))
+        attachment = db_utils.get_table(engine, 'messages')
+
+        self.assertIsInstance(attachment.c.detail_id.type,
+                              self.VARCHAR_TYPE)
+        self.assertIsInstance(attachment.c.action_id.type,
+                              self.VARCHAR_TYPE)
+
+    def _check_104(self, engine, data):
+        messages = db_utils.get_table(engine, 'messages')
+        self.assertEqual(255, messages.c.project_id.type.length)
+
+    def _check_105(self, engine, data):
+        self.assertTrue(engine.dialect.has_table(engine.connect(),
+                                                 "backup_metadata"))
+        backup_metadata = db_utils.get_table(engine, 'backup_metadata')
+
+        self.assertIsInstance(backup_metadata.c.created_at.type,
+                              self.TIME_TYPE)
+        self.assertIsInstance(backup_metadata.c.updated_at.type,
+                              self.TIME_TYPE)
+        self.assertIsInstance(backup_metadata.c.deleted_at.type,
+                              self.TIME_TYPE)
+        self.assertIsInstance(backup_metadata.c.deleted.type,
+                              self.BOOL_TYPE)
+        self.assertIsInstance(backup_metadata.c.id.type,
+                              self.INTEGER_TYPE)
+        self.assertIsInstance(backup_metadata.c.key.type,
+                              self.VARCHAR_TYPE)
+        self.assertIsInstance(backup_metadata.c.value.type,
+                              self.VARCHAR_TYPE)
+        self.assertIsInstance(backup_metadata.c.backup_id.type,
+                              self.VARCHAR_TYPE)
+        f_keys = self.get_foreign_key_columns(engine, 'backup_metadata')
+        self.assertEqual({'backup_id'}, f_keys)
+
+    def _check_111(self, engine, data):
+        self.assertTrue(db_utils.index_exists_on_columns(
+            engine, 'quota_usages', ['project_id', 'resource']))
+
     def test_walk_versions(self):
         self.walk_versions(False, False)
+        self.assert_each_foreign_key_is_part_of_an_index()
 
 
 class TestSqliteMigrations(test_base.DbTestCase,
                            MigrationsMixin):
-    pass
+    def assert_each_foreign_key_is_part_of_an_index(self):
+        # Skip the test for SQLite because SQLite does not list
+        # UniqueConstraints as indexes, which makes this test fail.
+        # Given that SQLite is only for testing purposes, it is safe to skip
+        pass
 
 
 class TestMysqlMigrations(test_base.MySQLOpportunisticTestCase,

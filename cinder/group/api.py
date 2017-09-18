@@ -29,7 +29,7 @@ from oslo_utils import uuidutils
 from cinder import db
 from cinder.db import base
 from cinder import exception
-from cinder.i18n import _, _LE, _LI, _LW
+from cinder.i18n import _
 from cinder import objects
 from cinder.objects import base as objects_base
 from cinder.objects import fields as c_fields
@@ -117,9 +117,8 @@ class API(base.Base):
                 availability_zone = (
                     CONF.default_availability_zone or
                     CONF.storage_availability_zone)
-                LOG.warning(_LW("Availability zone '%(s_az)s' "
-                                "not found, falling back to "
-                                "'%(s_fallback_az)s'."),
+                LOG.warning("Availability zone '%(s_az)s' not found, falling "
+                            "back to '%(s_fallback_az)s'.",
                             {'s_az': original_az,
                              's_fallback_az': availability_zone})
             else:
@@ -152,15 +151,24 @@ class API(base.Base):
                   'name': name,
                   'description': description,
                   'volume_type_ids': [t['id'] for t in req_volume_types],
-                  'group_type_id': req_group_type['id']}
+                  'group_type_id': req_group_type['id'],
+                  'replication_status': c_fields.ReplicationStatus.DISABLED}
+        try:
+            reservations = GROUP_QUOTAS.reserve(context,
+                                                project_id=context.project_id,
+                                                groups=1)
+        except exception.OverQuota as e:
+            quota_utils.process_reserve_over_quota(context, e,
+                                                   resource='groups')
         group = None
         try:
             group = objects.Group(context=context, **kwargs)
             group.create()
         except Exception:
             with excutils.save_and_reraise_exception():
-                LOG.error(_LE("Error occurred when creating group"
-                              " %s."), name)
+                LOG.error("Error occurred when creating group"
+                          " %s.", name)
+                GROUP_QUOTAS.rollback(context, reservations)
 
         request_spec_list = []
         filter_properties_list = []
@@ -176,7 +184,7 @@ class API(base.Base):
         group_filter_properties = {}
 
         # Update quota for groups
-        self.update_quota(context, group, 1)
+        GROUP_QUOTAS.commit(context, reservations)
 
         self._cast_create_group(context, group,
                                 group_spec,
@@ -213,8 +221,15 @@ class API(base.Base):
             'source_group_id': source_group_id,
             'group_type_id': group_type_id,
             'volume_type_ids': volume_type_ids,
+            'replication_status': c_fields.ReplicationStatus.DISABLED
         }
-
+        try:
+            reservations = GROUP_QUOTAS.reserve(context,
+                                                project_id=context.project_id,
+                                                groups=1)
+        except exception.OverQuota as e:
+            quota_utils.process_reserve_over_quota(context, e,
+                                                   resource='groups')
         group = None
         try:
             group = objects.Group(context=context, **kwargs)
@@ -222,23 +237,25 @@ class API(base.Base):
                          source_group_id=source_group_id)
         except exception.GroupNotFound:
             with excutils.save_and_reraise_exception():
-                LOG.error(_LE("Source Group %(source_group)s not found when "
-                              "creating group %(group)s from "
-                              "source."),
+                LOG.error("Source Group %(source_group)s not found when "
+                          "creating group %(group)s from source.",
                           {'group': name, 'source_group': source_group_id})
+                GROUP_QUOTAS.rollback(context, reservations)
         except exception.GroupSnapshotNotFound:
             with excutils.save_and_reraise_exception():
-                LOG.error(_LE("Group snapshot %(group_snap)s not found when "
-                              "creating group %(group)s from source."),
+                LOG.error("Group snapshot %(group_snap)s not found when "
+                          "creating group %(group)s from source.",
                           {'group': name, 'group_snap': group_snapshot_id})
+                GROUP_QUOTAS.rollback(context, reservations)
         except Exception:
             with excutils.save_and_reraise_exception():
-                LOG.error(_LE("Error occurred when creating group"
-                              " %(group)s from group_snapshot %(grp_snap)s."),
+                LOG.error("Error occurred when creating group"
+                          " %(group)s from group_snapshot %(grp_snap)s.",
                           {'group': name, 'grp_snap': group_snapshot_id})
+                GROUP_QUOTAS.rollback(context, reservations)
 
         # Update quota for groups
-        self.update_quota(context, group, 1)
+        GROUP_QUOTAS.commit(context, reservations)
 
         if not group.host:
             msg = _("No host to create group %s.") % group.id
@@ -276,8 +293,9 @@ class API(base.Base):
                 kwargs['snapshot'] = snapshot
                 volume_type_id = snapshot.volume_type_id
                 if volume_type_id:
-                    kwargs['volume_type'] = volume_types.get_volume_type(
-                        context, volume_type_id)
+                    kwargs['volume_type'] = (
+                        objects.VolumeType.get_by_name_or_id(
+                            context, volume_type_id))
                     # Create group volume_type mapping entries
                     try:
                         db.group_volume_type_mapping_create(context, group.id,
@@ -285,9 +303,9 @@ class API(base.Base):
                     except exception.GroupVolumeTypeMappingExists:
                         # Only need to create one group volume_type mapping
                         # entry for the same combination, skipping.
-                        LOG.info(_LI("A mapping entry already exists for group"
-                                     " %(grp)s and volume type %(vol_type)s. "
-                                     "Do not need to create again."),
+                        LOG.info("A mapping entry already exists for group"
+                                 " %(grp)s and volume type %(vol_type)s. "
+                                 "Do not need to create again.",
                                  {'grp': group.id,
                                   'vol_type': volume_type_id})
                         pass
@@ -305,10 +323,10 @@ class API(base.Base):
                                            **kwargs)
                 except exception.CinderException:
                     with excutils.save_and_reraise_exception():
-                        LOG.error(_LE("Error occurred when creating volume "
-                                      "entry from snapshot in the process of "
-                                      "creating group %(group)s "
-                                      "from group snapshot %(group_snap)s."),
+                        LOG.error("Error occurred when creating volume "
+                                  "entry from snapshot in the process of "
+                                  "creating group %(group)s "
+                                  "from group snapshot %(group_snap)s.",
                                   {'group': group.id,
                                    'group_snap': group_snapshot.id})
         except Exception:
@@ -316,9 +334,8 @@ class API(base.Base):
                 try:
                     group.destroy()
                 finally:
-                    LOG.error(_LE("Error occurred when creating group "
-                                  "%(group)s from group snapshot "
-                                  "%(group_snap)s."),
+                    LOG.error("Error occurred when creating group "
+                              "%(group)s from group snapshot %(group_snap)s.",
                               {'group': group.id,
                                'group_snap': group_snapshot.id})
 
@@ -353,8 +370,9 @@ class API(base.Base):
                 kwargs['source_volume'] = source_vol
                 volume_type_id = source_vol.volume_type_id
                 if volume_type_id:
-                    kwargs['volume_type'] = volume_types.get_volume_type(
-                        context, volume_type_id)
+                    kwargs['volume_type'] = (
+                        objects.VolumeType.get_by_name_or_id(
+                            context, volume_type_id))
                     # Create group volume_type mapping entries
                     try:
                         db.group_volume_type_mapping_create(context, group.id,
@@ -362,9 +380,9 @@ class API(base.Base):
                     except exception.GroupVolumeTypeMappingExists:
                         # Only need to create one group volume_type mapping
                         # entry for the same combination, skipping.
-                        LOG.info(_LI("A mapping entry already exists for group"
-                                     " %(grp)s and volume type %(vol_type)s. "
-                                     "Do not need to create again."),
+                        LOG.info("A mapping entry already exists for group"
+                                 " %(grp)s and volume type %(vol_type)s. "
+                                 "Do not need to create again.",
                                  {'grp': group.id,
                                   'vol_type': volume_type_id})
                         pass
@@ -382,10 +400,10 @@ class API(base.Base):
                                            **kwargs)
                 except exception.CinderException:
                     with excutils.save_and_reraise_exception():
-                        LOG.error(_LE("Error occurred when creating cloned "
-                                      "volume in the process of creating "
-                                      "group %(group)s from "
-                                      "source group %(source_group)s."),
+                        LOG.error("Error occurred when creating cloned "
+                                  "volume in the process of creating "
+                                  "group %(group)s from "
+                                  "source group %(source_group)s.",
                                   {'group': group.id,
                                    'source_group': source_group.id})
         except Exception:
@@ -393,9 +411,9 @@ class API(base.Base):
                 try:
                     group.destroy()
                 finally:
-                    LOG.error(_LE("Error occurred when creating "
-                                  "group %(group)s from source group "
-                                  "%(source_group)s."),
+                    LOG.error("Error occurred when creating "
+                              "group %(group)s from source group "
+                              "%(source_group)s.",
                               {'group': group.id,
                                'source_group': source_group.id})
 
@@ -465,9 +483,8 @@ class API(base.Base):
                 try:
                     group.destroy()
                 finally:
-                    LOG.error(_LE("Error occurred when building "
-                                  "request spec list for group "
-                                  "%s."), group.id)
+                    LOG.error("Error occurred when building request spec "
+                              "list for group %s.", group.id)
 
         # Cast to the scheduler and let it handle whatever is needed
         # to select the target host for this group.
@@ -495,11 +512,11 @@ class API(base.Base):
                         quota_utils.process_reserve_over_quota(
                             context, e, resource='groups')
                 finally:
-                    LOG.error(_LE("Failed to update quota for "
-                                  "group %s."), group.id)
+                    LOG.error("Failed to update quota for group %s.", group.id)
 
     @wrap_check_policy
     def delete(self, context, group, delete_volumes=False):
+
         if not group.host:
             self.update_quota(context, group, -1, group.project_id)
 
@@ -518,6 +535,15 @@ class API(base.Base):
                     "but current status is: %s") % group.status
             raise exception.InvalidGroup(reason=msg)
 
+        # NOTE(tommylikehu): Admin context is required to load group snapshots.
+        with group.obj_as_admin():
+            if group.group_snapshots:
+                raise exception.InvalidGroup(
+                    reason=_("Group has existing snapshots."))
+
+        # TODO(smcginnis): Add conditional update handling for volumes
+        # Should probably utilize the volume_api.delete code to handle
+        # cascade snapshot deletion and force delete.
         volumes = self.db.volume_get_all_by_generic_group(context.elevated(),
                                                           group.id)
         if volumes and not delete_volumes:
@@ -548,19 +574,45 @@ class API(base.Base):
 
         self.db.volumes_update(context, volumes_model_update)
 
-        group.status = c_fields.GroupStatus.DELETING
-        group.terminated_at = timeutils.utcnow()
-        group.save()
+        if delete_volumes:
+            # We're overloading the term "delete_volumes" somewhat to also
+            # mean to delete the group regardless of the state.
+            expected = {}
+        else:
+            expected = {'status': (c_fields.GroupStatus.AVAILABLE,
+                                   c_fields.GroupStatus.ERROR)}
+        filters = [~db.group_has_group_snapshot_filter(),
+                   ~db.group_has_volumes_filter(
+                       attached_or_with_snapshots=delete_volumes),
+                   ~db.group_creating_from_src(group_id=group.id)]
+        values = {'status': c_fields.GroupStatus.DELETING}
+
+        if not group.conditional_update(values, expected, filters):
+            if delete_volumes:
+                reason = _('Group status must be available or error and must '
+                           'not have dependent group snapshots')
+            else:
+                reason = _('Group must not have attached volumes, volumes '
+                           'with snapshots, or dependent group snapshots')
+            msg = _('Cannot delete group %(id)s. %(reason)s, and '
+                    'it cannot be the source for an ongoing group or group '
+                    'snapshot creation.') % {
+                'id': group.id, 'reason': reason}
+            raise exception.InvalidGroup(reason=msg)
 
         self.volume_rpcapi.delete_group(context, group)
 
+    @wrap_check_policy
     def update(self, context, group, name, description,
                add_volumes, remove_volumes):
         """Update group."""
-        if group.status != c_fields.GroupStatus.AVAILABLE:
-            msg = _("Group status must be available, "
-                    "but current status is: %s.") % group.status
-            raise exception.InvalidGroup(reason=msg)
+        # Validate name.
+        if name == group.name:
+            name = None
+
+        # Validate description.
+        if description == group.description:
+            description = None
 
         add_volumes_list = []
         remove_volumes_list = []
@@ -582,14 +634,6 @@ class API(base.Base):
 
         volumes = self.db.volume_get_all_by_generic_group(context, group.id)
 
-        # Validate name.
-        if name == group.name:
-            name = None
-
-        # Validate description.
-        if description == group.description:
-            description = None
-
         # Validate volumes in add_volumes and remove_volumes.
         add_volumes_new = ""
         remove_volumes_new = ""
@@ -608,6 +652,7 @@ class API(base.Base):
                    {'group_id': group.id})
             raise exception.InvalidGroup(reason=msg)
 
+        expected = {}
         fields = {'updated_at': timeutils.utcnow()}
 
         # Update name and description in db now. No need to
@@ -618,12 +663,14 @@ class API(base.Base):
             fields['description'] = description
         if not add_volumes_new and not remove_volumes_new:
             # Only update name or description. Set status to available.
-            fields['status'] = 'available'
+            fields['status'] = c_fields.GroupStatus.AVAILABLE
         else:
-            fields['status'] = 'updating'
+            expected['status'] = c_fields.GroupStatus.AVAILABLE
+            fields['status'] = c_fields.GroupStatus.UPDATING
 
-        group.update(fields)
-        group.save()
+        if not group.conditional_update(fields, expected):
+            msg = _("Group status must be available.")
+            raise exception.InvalidGroup(reason=msg)
 
         # Do an RPC call only if the update request includes
         # adding/removing volumes. add_volumes_new and remove_volumes_new
@@ -697,6 +744,13 @@ class API(base.Base):
                         'orig_group': orig_group})
                 raise exception.InvalidVolume(reason=msg)
             if add_vol_ref:
+                if add_vol_ref.project_id != group.project_id:
+                    msg = (_("Cannot add volume %(volume_id)s to group "
+                             "%(group_id)s as they belong to different "
+                             "projects.") %
+                           {'volume_id': add_vol_ref['id'],
+                            'group_id': group.id})
+                    raise exception.InvalidVolume(reason=msg)
                 add_vol_type_id = add_vol_ref.get('volume_type_id', None)
                 if not add_vol_type_id:
                     msg = (_("Cannot add volume %(volume_id)s to group "
@@ -776,10 +830,10 @@ class API(base.Base):
                 sort_dirs=sort_dirs)
         return groups
 
+    @wrap_check_policy
     def reset_status(self, context, group, status):
         """Reset status of generic group"""
 
-        check_policy(context, 'reset_status')
         if status not in c_fields.GroupStatus.ALL:
             msg = _("Group status: %(status)s is invalid, valid status "
                     "are: %(valid)s.") % {'status': status,
@@ -790,6 +844,7 @@ class API(base.Base):
         group.update(field)
         group.save()
 
+    @wrap_check_policy
     def create_group_snapshot(self, context, group, name, description):
         group.assert_not_frozen()
         options = {'group_id': group.id,
@@ -821,8 +876,8 @@ class API(base.Base):
                     if group_snapshot.obj_attr_is_set('id'):
                         group_snapshot.destroy()
                 finally:
-                    LOG.error(_LE("Error occurred when creating group_snapshot"
-                                  " %s."), group_snapshot_id)
+                    LOG.error("Error occurred when creating group_snapshot"
+                              " %s.", group_snapshot_id)
 
         self.volume_rpcapi.create_group_snapshot(context, group_snapshot)
 
@@ -866,18 +921,23 @@ class API(base.Base):
                                                           group_snapshot_id)
         return group_snapshots
 
-    def get_all_group_snapshots(self, context, search_opts=None):
+    def get_all_group_snapshots(self, context, filters=None, marker=None,
+                                limit=None, offset=None, sort_keys=None,
+                                sort_dirs=None):
         check_policy(context, 'get_all_group_snapshots')
-        search_opts = search_opts or {}
+        filters = filters or {}
 
-        if context.is_admin and 'all_tenants' in search_opts:
+        if context.is_admin and 'all_tenants' in filters:
             # Need to remove all_tenants to pass the filtering below.
-            del search_opts['all_tenants']
-            group_snapshots = objects.GroupSnapshotList.get_all(context,
-                                                                search_opts)
+            del filters['all_tenants']
+            group_snapshots = objects.GroupSnapshotList.get_all(
+                context, filters=filters, marker=marker, limit=limit,
+                offset=offset, sort_keys=sort_keys, sort_dirs=sort_dirs)
         else:
             group_snapshots = objects.GroupSnapshotList.get_all_by_project(
-                context.elevated(), context.project_id, search_opts)
+                context.elevated(), context.project_id, filters=filters,
+                marker=marker, limit=limit, offset=offset, sort_keys=sort_keys,
+                sort_dirs=sort_dirs)
         return group_snapshots
 
     def reset_group_snapshot_status(self, context, gsnapshot, status):
@@ -894,3 +954,202 @@ class API(base.Base):
                  'status': status}
         gsnapshot.update(field)
         gsnapshot.save()
+
+    def _check_type(self, group):
+        if not group.is_replicated:
+            msg = _("Group %s is not a replication group type.") % group.id
+            LOG.error(msg)
+            raise exception.InvalidGroupType(reason=msg)
+
+        for vol_type in group.volume_types:
+            if not vol_utils.is_replicated_spec(vol_type.extra_specs):
+                msg = _("Volume type %s does not have 'replication_enabled' "
+                        "spec key set to '<is> True'.") % vol_type.id
+                LOG.error(msg)
+                raise exception.InvalidVolumeType(reason=msg)
+
+    # Replication group API (Tiramisu)
+    @wrap_check_policy
+    def enable_replication(self, context, group):
+        self._check_type(group)
+
+        valid_status = [c_fields.GroupStatus.AVAILABLE]
+        if group.status not in valid_status:
+            params = {'valid': valid_status,
+                      'current': group.status,
+                      'id': group.id}
+            msg = _("Group %(id)s status must be %(valid)s, "
+                    "but current status is: %(current)s. "
+                    "Cannot enable replication.") % params
+            LOG.error(msg)
+            raise exception.InvalidGroup(reason=msg)
+
+        valid_rep_status = [c_fields.ReplicationStatus.DISABLED,
+                            c_fields.ReplicationStatus.ENABLED]
+        if group.replication_status not in valid_rep_status:
+            params = {'valid': valid_rep_status,
+                      'current': group.replication_status,
+                      'id': group.id}
+            msg = _("Group %(id)s replication status must be %(valid)s, "
+                    "but current status is: %(current)s. "
+                    "Cannot enable replication.") % params
+            LOG.error(msg)
+            raise exception.InvalidGroup(reason=msg)
+
+        volumes = objects.VolumeList.get_all_by_generic_group(
+            context.elevated(), group.id)
+
+        valid_status = ['available', 'in-use']
+        for vol in volumes:
+            if vol.status not in valid_status:
+                params = {'valid': valid_status,
+                          'current': vol.status,
+                          'id': vol.id}
+                msg = _("Volume %(id)s status must be %(valid)s, "
+                        "but current status is: %(current)s. "
+                        "Cannot enable replication.") % params
+                LOG.error(msg)
+                raise exception.InvalidVolume(reason=msg)
+                # replication_status could be set to enabled when volume is
+                # created and the mirror is built.
+            if vol.replication_status not in valid_rep_status:
+                params = {'valid': valid_rep_status,
+                          'current': vol.replication_status,
+                          'id': vol.id}
+                msg = _("Volume %(id)s replication status must be %(valid)s, "
+                        "but current status is: %(current)s. "
+                        "Cannot enable replication.") % params
+                LOG.error(msg)
+                raise exception.InvalidVolume(reason=msg)
+
+            vol.replication_status = c_fields.ReplicationStatus.ENABLING
+            vol.save()
+
+        group.replication_status = c_fields.ReplicationStatus.ENABLING
+        group.save()
+
+        self.volume_rpcapi.enable_replication(context, group)
+
+    @wrap_check_policy
+    def disable_replication(self, context, group):
+        self._check_type(group)
+
+        valid_status = [c_fields.GroupStatus.AVAILABLE,
+                        c_fields.GroupStatus.ERROR]
+        if group.status not in valid_status:
+            params = {'valid': valid_status,
+                      'current': group.status,
+                      'id': group.id}
+            msg = _("Group %(id)s status must be %(valid)s, "
+                    "but current status is: %(current)s. "
+                    "Cannot disable replication.") % params
+            LOG.error(msg)
+            raise exception.InvalidGroup(reason=msg)
+
+        valid_rep_status = [c_fields.ReplicationStatus.ENABLED,
+                            c_fields.ReplicationStatus.ERROR]
+        if group.replication_status not in valid_rep_status:
+            params = {'valid': valid_rep_status,
+                      'current': group.replication_status,
+                      'id': group.id}
+            msg = _("Group %(id)s replication status must be %(valid)s, "
+                    "but current status is: %(current)s. "
+                    "Cannot disable replication.") % params
+            LOG.error(msg)
+            raise exception.InvalidGroup(reason=msg)
+
+        volumes = objects.VolumeList.get_all_by_generic_group(
+            context.elevated(), group.id)
+
+        for vol in volumes:
+            if vol.replication_status not in valid_rep_status:
+                params = {'valid': valid_rep_status,
+                          'current': vol.replication_status,
+                          'id': vol.id}
+                msg = _("Volume %(id)s replication status must be %(valid)s, "
+                        "but current status is: %(current)s. "
+                        "Cannot disable replication.") % params
+                LOG.error(msg)
+                raise exception.InvalidVolume(reason=msg)
+
+            vol.replication_status = c_fields.ReplicationStatus.DISABLING
+            vol.save()
+
+        group.replication_status = c_fields.ReplicationStatus.DISABLING
+        group.save()
+
+        self.volume_rpcapi.disable_replication(context, group)
+
+    @wrap_check_policy
+    def failover_replication(self, context, group,
+                             allow_attached_volume=False,
+                             secondary_backend_id=None):
+        self._check_type(group)
+
+        valid_status = [c_fields.GroupStatus.AVAILABLE]
+        if group.status not in valid_status:
+            params = {'valid': valid_status,
+                      'current': group.status,
+                      'id': group.id}
+            msg = _("Group %(id)s status must be %(valid)s, "
+                    "but current status is: %(current)s. "
+                    "Cannot failover replication.") % params
+            LOG.error(msg)
+            raise exception.InvalidGroup(reason=msg)
+
+        valid_rep_status = [c_fields.ReplicationStatus.ENABLED,
+                            c_fields.ReplicationStatus.FAILED_OVER]
+        if group.replication_status not in valid_rep_status:
+            params = {'valid': valid_rep_status,
+                      'current': group.replication_status,
+                      'id': group.id}
+            msg = _("Group %(id)s replication status must be %(valid)s, "
+                    "but current status is: %(current)s. "
+                    "Cannot failover replication.") % params
+            LOG.error(msg)
+            raise exception.InvalidGroup(reason=msg)
+
+        volumes = objects.VolumeList.get_all_by_generic_group(
+            context.elevated(), group.id)
+
+        valid_status = ['available', 'in-use']
+        for vol in volumes:
+            if vol.status not in valid_status:
+                params = {'valid': valid_status,
+                          'current': vol.status,
+                          'id': vol.id}
+                msg = _("Volume %(id)s status must be %(valid)s, "
+                        "but current status is: %(current)s. "
+                        "Cannot failover replication.") % params
+                LOG.error(msg)
+                raise exception.InvalidVolume(reason=msg)
+            if vol.status == 'in-use' and not allow_attached_volume:
+                msg = _("Volume %s is attached but allow_attached_volume flag "
+                        "is False. Cannot failover replication.") % vol.id
+                LOG.error(msg)
+                raise exception.InvalidVolume(reason=msg)
+            if vol.replication_status not in valid_rep_status:
+                params = {'valid': valid_rep_status,
+                          'current': vol.replication_status,
+                          'id': vol.id}
+                msg = _("Volume %(id)s replication status must be %(valid)s, "
+                        "but current status is: %(current)s. "
+                        "Cannot failover replication.") % params
+                LOG.error(msg)
+                raise exception.InvalidVolume(reason=msg)
+
+            vol.replication_status = c_fields.ReplicationStatus.FAILING_OVER
+            vol.save()
+
+        group.replication_status = c_fields.ReplicationStatus.FAILING_OVER
+        group.save()
+
+        self.volume_rpcapi.failover_replication(context, group,
+                                                allow_attached_volume,
+                                                secondary_backend_id)
+
+    @wrap_check_policy
+    def list_replication_targets(self, context, group):
+        self._check_type(group)
+
+        return self.volume_rpcapi.list_replication_targets(context, group)

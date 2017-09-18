@@ -50,7 +50,7 @@ class VolumeDriverCore(base.CinderInterface):
         credentials can be used to log in the storage backend, and whether any
         external dependencies are present and working.
 
-        :raises: VolumeBackendAPIException in case of setup error.
+        :raises VolumeBackendAPIException: in case of setup error.
         """
 
     def get_volume_stats(self, refresh=False):
@@ -148,10 +148,11 @@ class VolumeDriverCore(base.CinderInterface):
         It should not export a LUN or actually make this storage available for
         use, this is done in a later call.
 
-        # TODO(smcginnis) - Add example data structure of volume object.
+        TODO(smcginnis): Add example data structure of volume object.
+
         :param volume: Volume object containing specifics to create.
         :returns: (Optional) dict of database updates for the new volume.
-        :raises: VolumeBackendAPIException if creation failed.
+        :raises VolumeBackendAPIException: if creation failed.
         """
 
     def delete_volume(self, volume):
@@ -162,7 +163,7 @@ class VolumeDriverCore(base.CinderInterface):
         the process of deleting the volume.
 
         :param volume: The volume to delete.
-        :raises: VolumeIsBusy if the volume is still attached or has snapshots.
+        :raises VolumeIsBusy: if the volume is still attached or has snapshots.
                  VolumeBackendAPIException on error.
         """
 
@@ -205,7 +206,8 @@ class VolumeDriverCore(base.CinderInterface):
 
         :param volume: The volume to remove.
         :param connector: The Dictionary containing information about the
-                          connection.
+                          connection. This is optional when doing a
+                          force-detach and can be None.
         """
 
     def detach_volume(self, context, volume, attachment=None):

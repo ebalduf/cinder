@@ -97,7 +97,8 @@ class NotifyUsageTestCase(test.TestCase):
             mock.sentinel.snapshot,
             'test_suffix')
         self.assertIsNone(output)
-        mock_usage.assert_called_once_with(mock.sentinel.snapshot)
+        mock_usage.assert_called_once_with(mock.sentinel.snapshot,
+                                           mock.sentinel.context)
         mock_rpc.get_notifier.assert_called_once_with('snapshot', 'host1')
         mock_rpc.get_notifier.return_value.info.assert_called_once_with(
             mock.sentinel.context,
@@ -118,6 +119,7 @@ class NotifyUsageTestCase(test.TestCase):
             host='host2')
         self.assertIsNone(output)
         mock_usage.assert_called_once_with(mock.sentinel.snapshot,
+                                           mock.sentinel.context,
                                            a='b', c='d')
         mock_rpc.get_notifier.assert_called_once_with('snapshot', 'host2')
         mock_rpc.get_notifier.return_value.info.assert_called_once_with(
@@ -125,15 +127,15 @@ class NotifyUsageTestCase(test.TestCase):
             'snapshot.test_suffix',
             mock_usage.return_value)
 
-    @mock.patch('cinder.objects.Volume.get_by_id')
-    def test_usage_from_snapshot(self, volume_get_by_id):
+    @mock.patch('cinder.db.volume_get')
+    def test_usage_from_snapshot(self, volume_get):
         raw_volume = {
             'id': fake.VOLUME_ID,
             'availability_zone': 'nova'
         }
         ctxt = context.get_admin_context()
         volume_obj = fake_volume.fake_volume_obj(ctxt, **raw_volume)
-        volume_get_by_id.return_value = volume_obj
+        volume_get.return_value = volume_obj
         raw_snapshot = {
             'project_id': fake.PROJECT_ID,
             'user_id': fake.USER_ID,
@@ -151,7 +153,7 @@ class NotifyUsageTestCase(test.TestCase):
         }
 
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctxt, **raw_snapshot)
-        usage_info = volume_utils._usage_from_snapshot(snapshot_obj)
+        usage_info = volume_utils._usage_from_snapshot(snapshot_obj, ctxt)
         expected_snapshot = {
             'tenant_id': fake.PROJECT_ID,
             'user_id': fake.USER_ID,
@@ -168,8 +170,8 @@ class NotifyUsageTestCase(test.TestCase):
         }
         self.assertDictEqual(expected_snapshot, usage_info)
 
-    @mock.patch('cinder.objects.Volume.get_by_id')
-    def test_usage_from_deleted_snapshot(self, volume_get_by_id):
+    @mock.patch('cinder.db.volume_get')
+    def test_usage_from_deleted_snapshot(self, volume_get):
         raw_volume = {
             'id': fake.VOLUME_ID,
             'availability_zone': 'nova',
@@ -177,8 +179,7 @@ class NotifyUsageTestCase(test.TestCase):
         }
         ctxt = context.get_admin_context()
         volume_obj = fake_volume.fake_volume_obj(ctxt, **raw_volume)
-        volume_get_by_id.side_effect = exception.VolumeNotFound(
-            volume_id=fake.VOLUME_ID)
+        volume_get.return_value = volume_obj
 
         raw_snapshot = {
             'project_id': fake.PROJECT_ID,
@@ -197,7 +198,7 @@ class NotifyUsageTestCase(test.TestCase):
         }
 
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctxt, **raw_snapshot)
-        usage_info = volume_utils._usage_from_snapshot(snapshot_obj)
+        usage_info = volume_utils._usage_from_snapshot(snapshot_obj, ctxt)
         expected_snapshot = {
             'tenant_id': fake.PROJECT_ID,
             'user_id': fake.USER_ID,
@@ -910,7 +911,8 @@ class VolumeUtilsTestCase(test.TestCase):
         result = volume_utils.extract_id_from_snapshot_name(snap_name)
         self.assertIsNone(result)
 
-    def test_paginate_entries_list_with_marker(self):
+    @ddt.data({"name": "vol02"}, '{"name": "vol02"}')
+    def test_paginate_entries_list_with_marker(self, marker):
         entries = [{'reference': {'name': 'vol03'}, 'size': 1},
                    {'reference': {'name': 'vol01'}, 'size': 3},
                    {'reference': {'name': 'vol02'}, 'size': 3},
@@ -921,7 +923,7 @@ class VolumeUtilsTestCase(test.TestCase):
         expected = [{'reference': {'name': 'vol04'}, 'size': 2},
                     {'reference': {'name': 'vol03'}, 'size': 1},
                     {'reference': {'name': 'vol05'}, 'size': 1}]
-        res = volume_utils.paginate_entries_list(entries, {'name': 'vol02'}, 3,
+        res = volume_utils.paginate_entries_list(entries, marker, 3,
                                                  1, ['size', 'reference'],
                                                  ['desc', 'asc'])
         self.assertEqual(expected, res)
@@ -940,6 +942,14 @@ class VolumeUtilsTestCase(test.TestCase):
         res = volume_utils.paginate_entries_list(entries, None, 3, None,
                                                  ['reference'], ['desc'])
         self.assertEqual(expected, res)
+
+    def test_paginate_entries_list_marker_invalid_format(self):
+        entries = [{'reference': {'name': 'vol03'}, 'size': 1},
+                   {'reference': {'name': 'vol01'}, 'size': 3}]
+        self.assertRaises(exception.InvalidInput,
+                          volume_utils.paginate_entries_list,
+                          entries, "invalid_format", 3, None,
+                          ['size', 'reference'], ['desc', 'asc'])
 
     def test_paginate_entries_list_marker_not_found(self):
         entries = [{'reference': {'name': 'vol03'}, 'size': 1},

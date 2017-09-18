@@ -58,7 +58,7 @@ from six.moves import range
 
 from cinder.backup import driver
 from cinder import exception
-from cinder.i18n import _, _LE, _LI, _LW
+from cinder.i18n import _
 from cinder import interface
 from cinder import utils
 import cinder.volume.drivers.rbd as rbd_driver
@@ -88,6 +88,9 @@ service_opts = [
                help='RBD stripe unit to use when creating a backup image.'),
     cfg.IntOpt('backup_ceph_stripe_count', default=0,
                help='RBD stripe count to use when creating a backup image.'),
+    cfg.BoolOpt('backup_ceph_image_journals', default=False,
+                help='If True, apply JOURNALING and EXCLUSIVE_LOCK feature '
+                     'bits to the backup RBD objects to allow mirroring'),
     cfg.BoolOpt('restore_discard_excess_bytes', default=True,
                 help='If True, always discard excess bytes when restoring '
                      'volumes i.e. pad with zeroes.')
@@ -167,8 +170,8 @@ class CephBackupDriver(driver.BackupDriver):
     gain.
     """
 
-    def __init__(self, context, db_driver=None, execute=None):
-        super(CephBackupDriver, self).__init__(context, db_driver)
+    def __init__(self, context, db=None, execute=None):
+        super(CephBackupDriver, self).__init__(context, db)
         self.rbd = rbd
         self.rados = rados
         self.chunk_size = CONF.backup_ceph_chunk_size
@@ -178,8 +181,8 @@ class CephBackupDriver(driver.BackupDriver):
             self.rbd_stripe_unit = CONF.backup_ceph_stripe_unit
             self.rbd_stripe_count = CONF.backup_ceph_stripe_count
         else:
-            LOG.info(_LI("RBD striping not supported - ignoring configuration "
-                         "settings for rbd striping"))
+            LOG.info("RBD striping not supported - ignoring configuration "
+                     "settings for rbd striping.")
             self.rbd_stripe_count = 0
             self.rbd_stripe_unit = 0
 
@@ -222,6 +225,16 @@ class CephBackupDriver(driver.BackupDriver):
         """Determine if striping is supported by our version of librbd."""
         return hasattr(self.rbd, 'RBD_FEATURE_STRIPINGV2')
 
+    @property
+    def _supports_exclusive_lock(self):
+        """Determine if exclusive-lock is supported by librbd."""
+        return hasattr(self.rbd, 'RBD_FEATURE_EXCLUSIVE_LOCK')
+
+    @property
+    def _supports_journaling(self):
+        """Determine if journaling is supported by our version of librbd."""
+        return hasattr(self.rbd, 'RBD_FEATURE_JOURNALING')
+
     def _get_rbd_support(self):
         """Determine RBD features supported by our version of librbd."""
         old_format = True
@@ -233,7 +246,44 @@ class CephBackupDriver(driver.BackupDriver):
             old_format = False
             features |= self.rbd.RBD_FEATURE_STRIPINGV2
 
+        # journaling requires exclusive_lock; check both together
+        if CONF.backup_ceph_image_journals:
+            if self._supports_exclusive_lock and self._supports_journaling:
+                old_format = False
+                features |= (self.rbd.RBD_FEATURE_EXCLUSIVE_LOCK |
+                             self.rbd.RBD_FEATURE_JOURNALING)
+            else:
+                # FIXME (tasker): when the backup manager supports loading the
+                #   driver during its initialization, this exception should be
+                #   moved to the driver's initialization so that it can stop
+                #   the service from starting when the underyling RBD does not
+                #   support the requested features.
+                LOG.error("RBD journaling not supported - unable to "
+                          "support per image mirroring in backup pool")
+                raise exception.BackupInvalidCephArgs(
+                    _("Image Journaling set but RBD backend does "
+                      "not support journaling")
+                )
+
         return (old_format, features)
+
+    def check_for_setup_error(self):
+        """Returns an error if prerequisites aren't met."""
+        if rados is None or rbd is None:
+            msg = _('rados and rbd python libraries not found')
+            raise exception.BackupDriverException(message=msg)
+
+        for attr in ['backup_ceph_user', 'backup_ceph_pool',
+                     'backup_ceph_conf']:
+            val = getattr(CONF, attr)
+            if not val:
+                raise exception.InvalidConfigurationValue(option=attr,
+                                                          value=val)
+        # NOTE: Checking connection to ceph
+        # RADOSClient __init__ method invokes _connect_to_rados
+        # so no need to check for self.rados.Error here.
+        with rbd_driver.RADOSClient(self, self._ceph_backup_pool):
+            pass
 
     def _connect_to_rados(self, pool=None):
         """Establish connection to the backup Ceph cluster."""
@@ -436,14 +486,14 @@ class CephBackupDriver(driver.BackupDriver):
                                                          backup.id)
                 if rem:
                     LOG.info(
-                        _LI("Backup base image of volume %(volume)s still "
-                            "has %(snapshots)s snapshots so skipping base "
-                            "image delete."),
+                        "Backup base image of volume %(volume)s still "
+                        "has %(snapshots)s snapshots so skipping base "
+                        "image delete.",
                         {'snapshots': rem, 'volume': volume_id})
                     return
 
-                LOG.info(_LI("Deleting backup base image='%(basename)s' of "
-                             "volume %(volume)s."),
+                LOG.info("Deleting backup base image='%(basename)s' of "
+                         "volume %(volume)s.",
                          {'basename': base_name, 'volume': volume_id})
                 # Delete base if no more snapshots
                 try:
@@ -451,17 +501,16 @@ class CephBackupDriver(driver.BackupDriver):
                 except self.rbd.ImageBusy:
                     # Allow a retry if the image is busy
                     if retries > 0:
-                        LOG.info(_LI("Backup image of volume %(volume)s is "
-                                     "busy, retrying %(retries)s more time(s) "
-                                     "in %(delay)ss."),
+                        LOG.info("Backup image of volume %(volume)s is "
+                                 "busy, retrying %(retries)s more time(s) "
+                                 "in %(delay)ss.",
                                  {'retries': retries,
                                   'delay': delay,
                                   'volume': volume_id})
                         eventlet.sleep(delay)
                     else:
-                        LOG.error(_LE("Max retries reached deleting backup "
-                                      "%(basename)s image of volume "
-                                      "%(volume)s."),
+                        LOG.error("Max retries reached deleting backup "
+                                  "%(basename)s image of volume %(volume)s.",
                                   {'volume': volume_id,
                                    'basename': base_name})
                         raise
@@ -495,7 +544,7 @@ class CephBackupDriver(driver.BackupDriver):
             p1 = subprocess.Popen(cmd1, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE)
         except OSError as e:
-            LOG.error(_LE("Pipe1 failed - %s "), e)
+            LOG.error("Pipe1 failed - %s ", e)
             raise
 
         # NOTE(dosaboy): ensure that the pipe is blocking. This is to work
@@ -509,7 +558,7 @@ class CephBackupDriver(driver.BackupDriver):
                                   stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE)
         except OSError as e:
-            LOG.error(_LE("Pipe2 failed - %s "), e)
+            LOG.error("Pipe2 failed - %s ", e)
             raise
 
         p1.stdout.close()
@@ -585,7 +634,7 @@ class CephBackupDriver(driver.BackupDriver):
             return False
 
         for snap in snaps:
-            if snap.name == snap_name:
+            if snap['name'] == snap_name:
                 return True
 
         return False
@@ -597,6 +646,7 @@ class CephBackupDriver(driver.BackupDriver):
         rbd_conf = volume_file.rbd_conf
         source_rbd_image = volume_file.rbd_image
         volume_id = backup.volume_id
+        updates = {}
         # Identify our --from-snap point (if one exists)
         from_snap = self._get_most_recent_snap(source_rbd_image)
         LOG.debug("Using --from-snap '%(snap)s' for incremental backup of "
@@ -681,6 +731,14 @@ class CephBackupDriver(driver.BackupDriver):
                           "source volume='%(volume)s'.",
                           {'snapshot': new_snap, 'volume': volume_id})
                 source_rbd_image.remove_snap(new_snap)
+        # We update the parent_id here. The from_snap is of the format:
+        # backup.BACKUP_ID.snap.TIMESTAMP. So we need to extract the
+        # backup_id of the parent only from from_snap and set it as
+        # parent_id
+        if from_snap:
+            parent_id = from_snap.split('.')
+            updates = {'parent_id': parent_id[1]}
+        return updates
 
     def _file_is_rbd(self, volume_file):
         """Returns True if the volume_file is actually an RBD image."""
@@ -846,6 +904,7 @@ class CephBackupDriver(driver.BackupDriver):
         If this fails we will attempt to fall back to full copy.
         """
         volume = self.db.volume_get(self.context, backup.volume_id)
+        updates = {}
         if not backup.container:
             backup.container = self._ceph_backup_pool
             backup.save()
@@ -861,7 +920,8 @@ class CephBackupDriver(driver.BackupDriver):
             # If volume an RBD, attempt incremental backup.
             LOG.debug("Volume file is RBD: attempting incremental backup.")
             try:
-                self._backup_rbd(backup, volume_file, volume.name, length)
+                updates = self._backup_rbd(backup, volume_file,
+                                           volume.name, length)
             except exception.BackupRBDOperationFailed:
                 LOG.debug("Forcing full backup of volume %s.", volume.id)
                 do_full_backup = True
@@ -874,7 +934,7 @@ class CephBackupDriver(driver.BackupDriver):
                 self._full_backup(backup, volume_file, volume.name, length)
             except exception.BackupOperationError:
                 with excutils.save_and_reraise_exception():
-                    self.delete(backup)
+                    self.delete_backup(backup)
 
         if backup_metadata:
             try:
@@ -882,10 +942,17 @@ class CephBackupDriver(driver.BackupDriver):
             except exception.BackupOperationError:
                 with excutils.save_and_reraise_exception():
                     # Cleanup.
-                    self.delete(backup)
+                    self.delete_backup(backup)
 
         LOG.debug("Backup '%(backup_id)s' of volume %(volume_id)s finished.",
                   {'backup_id': backup.id, 'volume_id': volume.id})
+
+        # If updates is empty then set parent_id to None. This will
+        # take care if --incremental flag is used in CLI but a full
+        # backup is performed instead
+        if not updates and backup.parent_id:
+            updates = {'parent_id': None}
+        return updates
 
     def _full_restore(self, backup, dest_file, dest_name, length,
                       src_snap=None):
@@ -973,8 +1040,7 @@ class CephBackupDriver(driver.BackupDriver):
                                     dest_user=rbd_user, dest_conf=rbd_conf,
                                     src_snap=restore_point)
         except exception.BackupRBDOperationFailed:
-            LOG.exception(_LE("Differential restore failed, trying full "
-                              "restore"))
+            LOG.exception("Differential restore failed, trying full restore")
             raise
 
         # If the volume we are restoring to is larger than the backup volume,
@@ -1076,10 +1142,9 @@ class CephBackupDriver(driver.BackupDriver):
             else:
                 LOG.debug("Volume file is NOT RBD.")
         else:
-            LOG.info(_LI("No restore point found for backup="
-                         "'%(backup)s' of volume %(volume)s "
-                         "although base image is found - "
-                         "forcing full copy."),
+            LOG.info("No restore point found for backup='%(backup)s' of "
+                     "volume %(volume)s although base image is found - "
+                     "forcing full copy.",
                      {'backup': backup.id,
                       'volume': backup.volume_id})
         return False, restore_point
@@ -1164,31 +1229,37 @@ class CephBackupDriver(driver.BackupDriver):
             LOG.debug('Restore to volume %s finished successfully.',
                       volume_id)
         except exception.BackupOperationError as e:
-            LOG.error(_LE('Restore to volume %(volume)s finished with error - '
-                          '%(error)s.'), {'error': e, 'volume': volume_id})
+            LOG.error('Restore to volume %(volume)s finished with error - '
+                      '%(error)s.', {'error': e, 'volume': volume_id})
             raise
 
-    def delete(self, backup):
+    def delete_backup(self, backup):
         """Delete the given backup from Ceph object store."""
         LOG.debug('Delete started for backup=%s', backup.id)
 
         delete_failed = False
+        has_pool = True
         try:
             self._try_delete_base_image(backup)
         except self.rbd.ImageNotFound:
             LOG.warning(
-                _LW("RBD image for backup %(backup)s of volume %(volume)s "
-                    "not found. Deleting backup metadata."),
+                "RBD image for backup %(backup)s of volume %(volume)s "
+                "not found. Deleting backup metadata.",
                 {'backup': backup.id, 'volume': backup.volume_id})
             delete_failed = True
+        except self.rados.ObjectNotFound:
+            LOG.warning("The pool %(pool)s doesn't exist.",
+                        {'pool': backup.container})
+            delete_failed = True
+            has_pool = False
 
-        with rbd_driver.RADOSClient(self, backup.container) as client:
-            VolumeMetadataBackup(client, backup.id).remove_if_exists()
+        if has_pool:
+            with rbd_driver.RADOSClient(self, backup.container) as client:
+                VolumeMetadataBackup(client, backup.id).remove_if_exists()
 
         if delete_failed:
-            LOG.info(_LI("Delete of backup '%(backup)s' "
-                         "for volume '%(volume)s' "
-                         "finished with warning."),
+            LOG.info("Delete of backup '%(backup)s' for volume '%(volume)s' "
+                     "finished with warning.",
                      {'backup': backup.id, 'volume': backup.volume_id})
         else:
             LOG.debug("Delete of backup '%(backup)s' for volume "

@@ -27,7 +27,7 @@ from oslo_log import log as logging
 from oslo_utils import importutils
 
 from cinder import exception
-from cinder.i18n import _, _LE
+from cinder.i18n import _
 from cinder.volume import configuration as config
 from cinder.zonemanager import fc_common
 from cinder.zonemanager import fc_zone_manager
@@ -72,7 +72,7 @@ class FCSanLookupService(fc_common.FCCommon):
                 }
             }
 
-        :raises: Exception when a lookup service implementation is not
+        :raises Exception: when a lookup service implementation is not
                  specified in cinder.conf:fc_san_lookup_service
         """
         # Initialize vendor specific implementation of  FCZoneDriver
@@ -92,6 +92,6 @@ class FCSanLookupService(fc_common.FCCommon):
             device_map = self.lookup_service.get_device_mapping_from_network(
                 initiator_list, target_list)
         except Exception as e:
-            LOG.exception(_LE('Unable to get device mapping from network.'))
+            LOG.exception('Unable to get device mapping from network.')
             raise exception.FCSanLookupServiceException(e)
         return device_map

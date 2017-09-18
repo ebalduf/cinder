@@ -13,7 +13,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_utils import uuidutils
+
 from cinder.tests.functional import functional_helpers
+from cinder.volume import configuration
 
 
 class GroupsTest(functional_helpers._FunctionalTestBase):
@@ -33,9 +36,10 @@ class GroupsTest(functional_helpers._FunctionalTestBase):
     def _get_flags(self):
         f = super(GroupsTest, self)._get_flags()
         f['volume_driver'] = (
-            'cinder.tests.fake_driver.FakeLoggingVolumeDriver')
-        f['default_volume_type'] = self._vol_type_name
-        f['default_group_type'] = self._grp_type_name
+            {'v': 'cinder.tests.fake_driver.FakeLoggingVolumeDriver',
+             'g': configuration.SHARED_CONF_GROUP})
+        f['default_volume_type'] = {'v': self._vol_type_name}
+        f['default_group_type'] = {'v': self._grp_type_name}
         return f
 
     def test_get_groups_summary(self):
@@ -66,7 +70,7 @@ class GroupsTest(functional_helpers._FunctionalTestBase):
         created_group = self.api.post_group(
             {'group': {'group_type': self.group_type['id'],
                        'volume_types': [self.volume_type['id']]}})
-        self.assertTrue(created_group['id'])
+        self.assertTrue(uuidutils.is_uuid_like(created_group['id']))
         created_group_id = created_group['id']
 
         # Check it's there
@@ -81,7 +85,7 @@ class GroupsTest(functional_helpers._FunctionalTestBase):
             {'volume': {'size': 1,
                         'group_id': created_group_id,
                         'volume_type': self.volume_type['id']}})
-        self.assertTrue(created_volume['id'])
+        self.assertTrue(uuidutils.is_uuid_like(created_volume['id']))
         created_volume_id = created_volume['id']
 
         # Check it's there

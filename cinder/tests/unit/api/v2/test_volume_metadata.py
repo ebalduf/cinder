@@ -18,6 +18,7 @@ import uuid
 import mock
 from oslo_config import cfg
 from oslo_serialization import jsonutils
+from six.moves import http_client
 import webob
 
 from cinder.api import extensions
@@ -107,10 +108,10 @@ def return_volume_nonexistent(*args, **kwargs):
     raise exception.VolumeNotFound('bogus test message')
 
 
-class volumeMetaDataTest(test.TestCase):
+class VolumeMetaDataTest(test.TestCase):
 
     def setUp(self):
-        super(volumeMetaDataTest, self).setUp()
+        super(VolumeMetaDataTest, self).setUp()
         self.volume_api = volume_api.API()
         self.mock_object(volume.api.API, 'get', get_volume)
         self.mock_object(db, 'volume_metadata_get',
@@ -200,7 +201,7 @@ class volumeMetaDataTest(test.TestCase):
                                'get') as get_volume:
             get_volume.return_value = fake_volume
             res = self.controller.delete(req, self.req_id, 'key2')
-            self.assertEqual(200, res.status_int)
+            self.assertEqual(http_client.OK, res.status_int)
             get_volume.assert_called_once_with(fake_context, self.req_id)
 
     @mock.patch.object(db, 'volume_metadata_delete')
@@ -335,6 +336,16 @@ class volumeMetaDataTest(test.TestCase):
 
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.create, req, self.req_id, None)
+
+    def test_create_metadata_keys_value_none(self):
+        self.mock_object(db, 'volume_metadata_update',
+                         return_create_volume_metadata)
+        req = fakes.HTTPRequest.blank(self.url)
+        req.method = 'POST'
+        req.headers["content-type"] = "application/json"
+        body = {"meta": {"key": None}}
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.create, req, self.req_id, body)
 
     def test_create_item_empty_key(self):
         self.mock_object(db, 'volume_metadata_update',
@@ -541,6 +552,19 @@ class volumeMetaDataTest(test.TestCase):
             expected = {'meta': {'key1': 'value1'}}
             self.assertEqual(expected, res_dict)
             get_volume.assert_called_once_with(fake_context, self.req_id)
+
+    def test_update_metadata_item_keys_value_none(self):
+        self.mock_object(db, 'volume_metadata_update',
+                         return_create_volume_metadata)
+        req = fakes.HTTPRequest.blank(self.url + '/key1')
+        req.method = 'PUT'
+        body = {"meta": {"a": None}}
+        req.body = jsonutils.dump_as_bytes(body)
+        req.headers["content-type"] = "application/json"
+
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.update,
+                          req, self.req_id, 'key1', body)
 
     @mock.patch.object(db, 'volume_metadata_update')
     def test_update_item_volume_maintenance(self, metadata_update):

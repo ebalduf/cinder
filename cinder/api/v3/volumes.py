@@ -15,6 +15,8 @@
 
 from oslo_log import log as logging
 from oslo_utils import uuidutils
+import six
+from six.moves import http_client
 import webob
 from webob import exc
 
@@ -24,10 +26,10 @@ from cinder.api.v2 import volumes as volumes_v2
 from cinder.api.v3.views import volumes as volume_views_v3
 from cinder import exception
 from cinder import group as group_api
-from cinder.i18n import _, _LI
+from cinder.i18n import _
+from cinder import objects
 import cinder.policy
 from cinder import utils
-from cinder.volume import volume_types
 
 LOG = logging.getLogger(__name__)
 
@@ -69,8 +71,8 @@ class VolumeController(volumes_v2.VolumeController):
                 params = "(cascade: %(c)s, force: %(f)s)" % {'c': cascade,
                                                              'f': force}
 
-        msg = _LI("Delete volume with id: %(id)s %(params)s")
-        LOG.info(msg, {'id': id, 'params': params}, context=context)
+        LOG.info("Delete volume with id: %(id)s %(params)s",
+                 {'id': id, 'params': params}, context=context)
 
         if force:
             check_policy(context, 'force_delete')
@@ -83,6 +85,19 @@ class VolumeController(volumes_v2.VolumeController):
 
         return webob.Response(status_int=202)
 
+    @common.process_general_filtering('volume')
+    def _process_volume_filtering(self, context=None, filters=None,
+                                  req_version=None):
+        if req_version.matches(None, "3.3"):
+            filters.pop('glance_metadata', None)
+
+        if req_version.matches(None, "3.9"):
+            filters.pop('group_id', None)
+
+        utils.remove_invalid_filter_options(
+            context, filters,
+            self._get_volume_filter_options())
+
     def _get_volumes(self, req, is_detail):
         """Returns a list of volumes, transformed through view builder."""
 
@@ -94,23 +109,15 @@ class VolumeController(volumes_v2.VolumeController):
         sort_keys, sort_dirs = common.get_sort_params(params)
         filters = params
 
-        if req_version.matches(None, "3.3"):
-            filters.pop('glance_metadata', None)
+        self._process_volume_filtering(context=context, filters=filters,
+                                       req_version=req_version)
 
-        if req_version.matches(None, "3.9"):
-            filters.pop('group_id', None)
-
-        utils.remove_invalid_filter_options(context, filters,
-                                            self._get_volume_filter_options())
         # NOTE(thingee): v2 API allows name instead of display_name
         if 'name' in sort_keys:
             sort_keys[sort_keys.index('name')] = 'display_name'
 
         if 'name' in filters:
             filters['display_name'] = filters.pop('name')
-
-        if 'group_id' in filters:
-            filters['consistencygroup_id'] = filters.pop('group_id')
 
         strict = req.api_version_request.matches("3.2", None)
         self.volume_api.check_volume_filters(filters, strict)
@@ -143,17 +150,57 @@ class VolumeController(volumes_v2.VolumeController):
         utils.remove_invalid_filter_options(context, filters,
                                             self._get_volume_filter_options())
 
-        volumes = self.volume_api.get_volume_summary(context, filters=filters)
-        return view_builder_v3.quick_summary(volumes[0], int(volumes[1]))
+        num_vols, sum_size, metadata = self.volume_api.get_volume_summary(
+            context, filters=filters)
 
-    @wsgi.response(202)
+        req_version = req.api_version_request
+        if req_version.matches("3.36"):
+            all_distinct_metadata = metadata
+        else:
+            all_distinct_metadata = None
+
+        return view_builder_v3.quick_summary(num_vols, int(sum_size),
+                                             all_distinct_metadata)
+
+    @wsgi.response(http_client.ACCEPTED)
+    @wsgi.Controller.api_version('3.40')
+    @wsgi.action('revert')
+    def revert(self, req, id, body):
+        """revert a volume to a snapshot"""
+
+        context = req.environ['cinder.context']
+        self.assert_valid_body(body, 'revert')
+        snapshot_id = body['revert'].get('snapshot_id')
+        volume = self.volume_api.get_volume(context, id)
+        try:
+            l_snap = volume.get_latest_snapshot()
+        except exception.VolumeSnapshotNotFound:
+            msg = _("Volume %s doesn't have any snapshots.")
+            raise exc.HTTPBadRequest(explanation=msg % volume.id)
+        # Ensure volume and snapshot match.
+        if snapshot_id is None or snapshot_id != l_snap.id:
+            msg = _("Specified snapshot %(s_id)s is None or not "
+                    "the latest one of volume %(v_id)s.")
+            raise exc.HTTPBadRequest(explanation=msg % {'s_id': snapshot_id,
+                                                        'v_id': volume.id})
+        try:
+            msg = 'Reverting volume %(v_id)s to snapshot %(s_id)s.'
+            LOG.info(msg, {'v_id': volume.id,
+                           's_id': l_snap.id})
+            self.volume_api.revert_to_snapshot(context, volume, l_snap)
+        except (exception.InvalidVolume, exception.InvalidSnapshot) as e:
+            raise exc.HTTPConflict(explanation=six.text_type(e))
+        except exception.VolumeSizeExceedsAvailableQuota as e:
+            raise exc.HTTPForbidden(explanation=six.text_type(e))
+
+    @wsgi.response(http_client.ACCEPTED)
     def create(self, req, body):
         """Creates a new volume.
 
         :param req: the request
         :param body: the request body
         :returns: dict -- the new volume dictionary
-        :raises: HTTPNotFound, HTTPBadRequest
+        :raises HTTPNotFound, HTTPBadRequest:
         """
         self.assert_valid_body(body, 'volume')
 
@@ -181,6 +228,14 @@ class VolumeController(volumes_v2.VolumeController):
         kwargs = {}
         self.validate_name_and_description(volume)
 
+        # Check up front for legacy replication parameters to quick fail
+        source_replica = volume.get('source_replica')
+        if source_replica:
+            msg = _("Creating a volume from a replica source was part of the "
+                    "replication v1 implementation which is no longer "
+                    "available.")
+            raise exception.InvalidInput(reason=msg)
+
         # NOTE(thingee): v2 API allows name instead of display_name
         if 'name' in volume:
             volume['display_name'] = volume.pop('name')
@@ -197,7 +252,7 @@ class VolumeController(volumes_v2.VolumeController):
         if req_volume_type:
             # Not found exception will be handled at the wsgi level
             kwargs['volume_type'] = (
-                volume_types.get_by_name_or_id(context, req_volume_type))
+                objects.VolumeType.get_by_name_or_id(context, req_volume_type))
 
         kwargs['metadata'] = volume.get('metadata', None)
 
@@ -214,6 +269,10 @@ class VolumeController(volumes_v2.VolumeController):
 
         source_volid = volume.get('source_volid')
         if source_volid is not None:
+            if not uuidutils.is_uuid_like(source_volid):
+                msg = _("Source volume ID '%s' must be a "
+                        "valid UUID.") % source_volid
+                raise exc.HTTPBadRequest(explanation=msg)
             # Not found exception will be handled at the wsgi level
             kwargs['source_volume'] = (
                 self.volume_api.get_volume(context,
@@ -221,49 +280,30 @@ class VolumeController(volumes_v2.VolumeController):
         else:
             kwargs['source_volume'] = None
 
-        source_replica = volume.get('source_replica')
-        if source_replica is not None:
-            # Not found exception will be handled at the wsgi level
-            src_vol = self.volume_api.get_volume(context,
-                                                 source_replica)
-            if src_vol['replication_status'] == 'disabled':
-                explanation = _('source volume id:%s is not'
-                                ' replicated') % source_replica
-                raise exc.HTTPBadRequest(explanation=explanation)
-            kwargs['source_replica'] = src_vol
-        else:
-            kwargs['source_replica'] = None
-
+        kwargs['group'] = None
+        kwargs['consistencygroup'] = None
         consistencygroup_id = volume.get('consistencygroup_id')
         if consistencygroup_id is not None:
-            try:
-                kwargs['consistencygroup'] = (
-                    self.consistencygroup_api.get(context,
-                                                  consistencygroup_id))
-            except exception.ConsistencyGroupNotFound:
-                # Not found exception will be handled at the wsgi level
-                kwargs['group'] = self.group_api.get(
-                    context, consistencygroup_id)
-        else:
-            kwargs['consistencygroup'] = None
+            if not uuidutils.is_uuid_like(consistencygroup_id):
+                msg = _("Consistency group ID '%s' must be a "
+                        "valid UUID.") % consistencygroup_id
+                raise exc.HTTPBadRequest(explanation=msg)
+            # Not found exception will be handled at the wsgi level
+            kwargs['group'] = self.group_api.get(context, consistencygroup_id)
 
         # Get group_id if volume is in a group.
         group_id = volume.get('group_id')
         if group_id is not None:
-            try:
-                kwargs['group'] = self.group_api.get(context, group_id)
-            except exception.GroupNotFound as error:
-                raise exc.HTTPNotFound(explanation=error.msg)
+            # Not found exception will be handled at the wsgi level
+            kwargs['group'] = self.group_api.get(context, group_id)
 
         size = volume.get('size', None)
         if size is None and kwargs['snapshot'] is not None:
             size = kwargs['snapshot']['volume_size']
         elif size is None and kwargs['source_volume'] is not None:
             size = kwargs['source_volume']['size']
-        elif size is None and kwargs['source_replica'] is not None:
-            size = kwargs['source_replica']['size']
 
-        LOG.info(_LI("Create volume of %s GB"), size)
+        LOG.info("Create volume of %s GB", size)
 
         if self.ext_mgr.is_loaded('os-image-create'):
             image_ref = volume.get('imageRef')

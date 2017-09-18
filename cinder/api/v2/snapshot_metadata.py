@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from six.moves import http_client
 import webob
 from webob import exc
 
@@ -30,10 +31,13 @@ class Controller(wsgi.Controller):
         super(Controller, self).__init__()
 
     def _get_metadata(self, context, snapshot_id):
+        return self._get_snapshot_and_metadata(context, snapshot_id)[1]
+
+    def _get_snapshot_and_metadata(self, context, snapshot_id):
         # Not found exception will be handled at the wsgi level
         snapshot = self.volume_api.get_snapshot(context, snapshot_id)
         meta = self.volume_api.get_snapshot_metadata(context, snapshot)
-        return meta
+        return snapshot, meta
 
     def index(self, req, snapshot_id):
         """Returns the list of metadata for a given snapshot."""
@@ -119,16 +123,15 @@ class Controller(wsgi.Controller):
         """Deletes an existing metadata."""
         context = req.environ['cinder.context']
 
-        metadata = self._get_metadata(context, snapshot_id)
+        snapshot, metadata = self._get_snapshot_and_metadata(context,
+                                                             snapshot_id)
 
         if id not in metadata:
             raise exception.SnapshotMetadataNotFound(snapshot_id=snapshot_id,
                                                      metadata_key=id)
 
-        # Not found exception will be handled at the wsgi level
-        snapshot = self.volume_api.get_snapshot(context, snapshot_id)
         self.volume_api.delete_snapshot_metadata(context, snapshot, id)
-        return webob.Response(status_int=200)
+        return webob.Response(status_int=http_client.OK)
 
 
 def create_resource():

@@ -24,6 +24,7 @@ from oslo_utils import timeutils
 import six
 
 from cinder import backup
+from cinder.backup import api as backup_api
 from cinder import context
 from cinder import db
 from cinder.db.sqlalchemy import api as sqa_api
@@ -183,7 +184,7 @@ class QuotaIntegrationTestCase(test.TestCase):
         self.flags(**flag_args)
         vol_ref = self._create_volume()
         backup_ref = self._create_backup(vol_ref)
-        with mock.patch.object(backup.API,
+        with mock.patch.object(backup_api.API,
                                '_get_available_backup_service_host') as \
                 mock__get_available_backup_service:
             mock__get_available_backup_service.return_value = 'host'
@@ -227,7 +228,7 @@ class QuotaIntegrationTestCase(test.TestCase):
     def test_too_many_combined_backup_gigabytes(self):
         vol_ref = self._create_volume(size=10000)
         backup_ref = self._create_backup(vol_ref)
-        with mock.patch.object(backup.API,
+        with mock.patch.object(backup_api.API,
                                '_get_available_backup_service_host') as \
                 mock__get_available_backup_service:
             mock__get_available_backup_service.return_value = 'host'
@@ -273,7 +274,7 @@ class QuotaIntegrationTestCase(test.TestCase):
                    )
         vol_ref = self._create_volume(size=10)
         backup_ref = self._create_backup(vol_ref)
-        with mock.patch.object(backup.API,
+        with mock.patch.object(backup_api.API,
                                '_get_available_backup_service_host') as \
                 mock_mock__get_available_backup_service:
             mock_mock__get_available_backup_service.return_value = 'host'
@@ -952,7 +953,7 @@ class DbQuotaDriverBaseTestCase(test.TestCase):
         self.mock_object(db, 'quota_class_get_all_by_name', fake_qcgabn)
 
     def _mock_allocated_get_all_by_project(self, allocated_quota=False):
-        def fake_qagabp(context, project_id):
+        def fake_qagabp(context, project_id, session=None):
             self.calls.append('quota_allocated_get_all_by_project')
             if allocated_quota:
                 return dict(project_id=project_id, volumes=3)
@@ -1518,7 +1519,7 @@ class NestedDbQuotaDriverTestCase(NestedDbQuotaDriverBaseTestCase):
 class NestedQuotaValidation(NestedDbQuotaDriverBaseTestCase):
     def setUp(self):
         super(NestedQuotaValidation, self).setUp()
-        """
+        r"""
         Quota hierarchy setup like so
         +-----------+
         |           |
@@ -1559,7 +1560,8 @@ class NestedQuotaValidation(NestedDbQuotaDriverBaseTestCase):
     def _fake_quota_usage_get_all_by_project(self, context, project_id):
         return {'volumes': self.proj_vals[project_id]}
 
-    def _fake_quota_allocated_get_all_by_project(self, context, project_id):
+    def _fake_quota_allocated_get_all_by_project(self, context, project_id,
+                                                 session=None):
         ret = {'project_id': project_id}
         proj_val = self.proj_vals[project_id]
         if 'alloc' in proj_val:
@@ -1710,7 +1712,8 @@ class QuotaReserveSqlAlchemyTestCase(test.TestCase):
         def fake_get_session():
             return FakeSession()
 
-        def fake_get_quota_usages(context, session, project_id):
+        def fake_get_quota_usages(context, session, project_id,
+                                  resources=None):
             return self.usages.copy()
 
         def fake_quota_usage_create(context, project_id, resource, in_use,
@@ -1735,12 +1738,6 @@ class QuotaReserveSqlAlchemyTestCase(test.TestCase):
 
             return reservation_ref
 
-        def fake_qagabp(context, project_id):
-            self.assertEqual('test_project', project_id)
-            return {'project_id': project_id}
-
-        self.mock_object(sqa_api, 'quota_allocated_get_all_by_project',
-                         fake_qagabp)
         self.mock_object(sqa_api, 'get_session',
                          fake_get_session)
         self.mock_object(sqa_api, '_get_quota_usages',
@@ -1829,8 +1826,9 @@ class QuotaReserveSqlAlchemyTestCase(test.TestCase):
         self.assertEqual(0, len(reservations))
 
     def _mock_allocated_get_all_by_project(self, allocated_quota=False):
-        def fake_qagabp(context, project_id):
+        def fake_qagabp(context, project_id, session=None):
             self.assertEqual('test_project', project_id)
+            self.assertIsNotNone(session)
             if allocated_quota:
                 return dict(project_id=project_id, volumes=3,
                             gigabytes = 2 * 1024)
@@ -1861,6 +1859,7 @@ class QuotaReserveSqlAlchemyTestCase(test.TestCase):
              dict(resource='gigabytes',
                   usage_id=self.usages_created['gigabytes'],
                   delta=2 * 1024), ])
+
         # But if we try reserve 8 volumes(more free quota that we have)
         deltas = dict(volumes=8,
                       gigabytes=2 * 1024, )

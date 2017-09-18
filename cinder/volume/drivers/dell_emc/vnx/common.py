@@ -20,13 +20,14 @@ from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import importutils
 
-storops = importutils.try_import('storops')
-
 from cinder import exception
-from cinder.i18n import _, _LW
+from cinder.i18n import _
+from cinder.volume import configuration
 from cinder.volume.drivers.dell_emc.vnx import const
+from cinder.volume import group_types
 from cinder.volume import volume_types
 
+storops = importutils.try_import('storops')
 CONF = cfg.CONF
 
 LOG = logging.getLogger(__name__)
@@ -39,6 +40,11 @@ INTERVAL_30_SEC = 30
 INTERVAL_60_SEC = 60
 
 SNAP_EXPIRATION_HOUR = '1h'
+
+
+BACKEND_QOS_CONSUMERS = frozenset(['back-end', 'both'])
+QOS_MAX_IOPS = 'maxIOPS'
+QOS_MAX_BWS = 'maxBWS'
 
 
 VNX_OPTS = [
@@ -105,7 +111,7 @@ VNX_OPTS = [
                 'By default, the value is False.')
 ]
 
-CONF.register_opts(VNX_OPTS)
+CONF.register_opts(VNX_OPTS, group=configuration.SHARED_CONF_GROUP)
 
 
 PROTOCOL_FC = 'fc'
@@ -120,13 +126,14 @@ class ExtraSpecs(object):
     PROVISION_DEFAULT = const.PROVISION_THICK
     TIER_DEFAULT = None
 
-    def __init__(self, extra_specs):
+    def __init__(self, extra_specs, group_specs=None):
         self.specs = extra_specs
         self._provision = self._get_provision()
         self.provision = self._provision
         self._tier = self._get_tier()
         self.tier = self._tier
         self.apply_default_values()
+        self.group_specs = group_specs if group_specs else {}
 
     def apply_default_values(self):
         self.provision = (ExtraSpecs.PROVISION_DEFAULT
@@ -155,6 +162,11 @@ class ExtraSpecs(object):
     def is_replication_enabled(self):
         return self.specs.get('replication_enabled', '').lower() == '<is> true'
 
+    @property
+    def is_group_replication_enabled(self):
+        return self.group_specs.get(
+            'consistent_group_replication_enabled', '').lower() == '<is> true'
+
     def _parse_to_enum(self, key, enum_class):
         value = (self.specs[key]
                  if key in self.specs else None)
@@ -176,6 +188,16 @@ class ExtraSpecs(object):
             specs = volume_types.get_volume_type_extra_specs(type_id)
 
         return cls(specs)
+
+    @classmethod
+    def from_group(cls, group):
+        group_specs = {}
+
+        if group and group.group_type_id:
+            group_specs = group_types.get_group_type_specs(
+                group.group_type_id)
+
+        return cls(extra_specs={}, group_specs=group_specs)
 
     @classmethod
     def from_volume_type(cls, type):
@@ -201,9 +223,9 @@ class ExtraSpecs(object):
         :param enabler_status: Instance of VNXEnablerStatus
         """
         if "storagetype:pool" in self.specs:
-            LOG.warning(_LW("Extra spec key 'storagetype:pool' is obsoleted "
-                            "since driver version 5.1.0. This key will be "
-                            "ignored."))
+            LOG.warning("Extra spec key 'storagetype:pool' is obsoleted "
+                        "since driver version 5.1.0. This key will be "
+                        "ignored.")
 
         if (self._provision == storops.VNXProvisionEnum.DEDUPED and
                 self._tier is not None):
@@ -386,6 +408,10 @@ class ReplicationDevice(object):
     def storage_vnx_security_file_dir(self):
         return self.replication_device.get('storage_vnx_security_file_dir')
 
+    @property
+    def pool_name(self):
+        return self.replication_device.get('pool_name', None)
+
 
 class ReplicationDeviceList(list):
     """Replication devices configured in cinder.conf
@@ -417,7 +443,7 @@ class ReplicationDeviceList(list):
             device = self._device_map[backend_id]
         except KeyError:
             device = None
-            LOG.warning(_LW('Unable to find secondary device named: %s'),
+            LOG.warning('Unable to find secondary device named: %s',
                         backend_id)
         return device
 
@@ -440,6 +466,15 @@ class ReplicationDeviceList(list):
 
     def __getitem__(self, item):
         return self.list[item]
+
+    @classmethod
+    def get_backend_ids(cls, config):
+        """Returns all configured device_id."""
+        rep_list = cls(config)
+        backend_ids = []
+        for item in rep_list.devices:
+            backend_ids.append(item.backend_id)
+        return backend_ids
 
 
 class VNXMirrorView(object):
@@ -471,6 +506,7 @@ class VNXMirrorView(object):
         self.primary_client.fracture_image(mirror_name)
 
     def promote_image(self, mirror_name):
+        """Promote the image on the secondary array."""
         self.secondary_client.promote_image(mirror_name)
 
     def destroy_mirror(self, mirror_name, secondary_lun_name):
@@ -483,10 +519,32 @@ class VNXMirrorView(object):
         mv = self.primary_client.get_mirror(mirror_name)
         if not mv.existed:
             # We will skip the mirror operations if not existed
-            LOG.warning(_LW('Mirror view %s was deleted already.'),
+            LOG.warning('Mirror view %s was deleted already.',
                         mirror_name)
             return
         self.fracture_image(mirror_name)
         self.remove_image(mirror_name)
         self.delete_mirror(mirror_name)
         self.delete_secondary_lun(lun_name=secondary_lun_name)
+
+    def create_mirror_group(self, group_name):
+        return self.primary_client.create_mirror_group(group_name)
+
+    def delete_mirror_group(self, group_name):
+        return self.primary_client.delete_mirror_group(group_name)
+
+    def add_mirror(self, group_name, mirror_name):
+        return self.primary_client.add_mirror(group_name, mirror_name)
+
+    def remove_mirror(self, group_name, mirror_name):
+        return self.primary_client.remove_mirror(group_name, mirror_name)
+
+    def sync_mirror_group(self, group_name):
+        return self.primary_client.sync_mirror_group(group_name)
+
+    def promote_mirror_group(self, group_name):
+        """Promote the mirror group on the secondary array."""
+        return self.secondary_client.promote_mirror_group(group_name)
+
+    def fracture_mirror_group(self, group_name):
+        return self.primary_client.fracture_mirror_group(group_name)

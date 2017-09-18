@@ -15,10 +15,13 @@
 
 """The backups V3 api."""
 
+import ddt
+import mock
 import webob
 
 from cinder.api.openstack import api_version_request as api_version
 from cinder.api.v3 import backups
+from cinder.api.views import backups as backup_view
 import cinder.backup
 from cinder import context
 from cinder import exception
@@ -29,6 +32,7 @@ from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import utils as test_utils
 
 
+@ddt.ddt
 class BackupsControllerAPITestCase(test.TestCase):
     """Test cases for backups API."""
 
@@ -81,6 +85,41 @@ class BackupsControllerAPITestCase(test.TestCase):
         self.assertRaises(exception.NotFound,
                           self.controller.update,
                           req, fake.BACKUP_ID, body)
+
+    @ddt.data('3.30', '3.31', '3.34')
+    @mock.patch('cinder.api.common.reject_invalid_filters')
+    def test_backup_list_with_general_filter(self, version, mock_update):
+        url = '/v3/%s/backups' % fake.PROJECT_ID
+        req = fakes.HTTPRequest.blank(url,
+                                      version=version,
+                                      use_admin_context=False)
+        self.controller.index(req)
+
+        if version != '3.30':
+            support_like = True if version == '3.34' else False
+            mock_update.assert_called_once_with(req.environ['cinder.context'],
+                                                mock.ANY, 'backup',
+                                                support_like)
+
+    @ddt.data('3.36', '3.37')
+    def test_backup_list_with_name(self, version):
+        backup1 = test_utils.create_backup(
+            self.ctxt, display_name='b_test_name',
+            status=fields.BackupStatus.AVAILABLE)
+        backup2 = test_utils.create_backup(
+            self.ctxt, display_name='a_test_name',
+            status=fields.BackupStatus.AVAILABLE)
+        url = '/v3/%s/backups?sort_key=name' % fake.PROJECT_ID
+        req = fakes.HTTPRequest.blank(url, version=version)
+        if version == '3.36':
+            self.assertRaises(exception.InvalidInput,
+                              self.controller.index,
+                              req)
+        else:
+            expect = backup_view.ViewBuilder().summary_list(req,
+                                                            [backup1, backup2])
+            result = self.controller.index(req)
+            self.assertEqual(expect, result)
 
     def test_backup_update(self):
         backup = test_utils.create_backup(

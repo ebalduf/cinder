@@ -6,12 +6,12 @@ microversion change. The description for each version should be a
 verbose one which has enough information to be suitable for use in
 user documentation.
 
-3.0
----
+3.0 (Maximum in Mitaka)
+-----------------------
   The 3.0 Cinder API includes all v2 core APIs existing prior to
   the introduction of microversions.  The /v3 URL is used to call
   3.0 APIs.
-  This it the initial version of the Cinder API which supports
+  This is the initial version of the Cinder API which supports
   microversions.
 
   A user can specify a header in the API request::
@@ -42,7 +42,7 @@ user documentation.
   Before V3.2, 'GET API request' to fetch volume list returns non-bootable
   volumes if bootable filter value is any of the false or False.
   For any other value provided to this filter, it always returns
-  bootable volumes list.
+  bootable volume list.
 
   But in V3.2, this behavior is updated.
   In V3.2, bootable volume list will be returned for any of the
@@ -81,16 +81,18 @@ user documentation.
 
   .. code-block:: json
 
-     "cluster": {
-         "created_at": ...,
-         "disabled_reason": null,
-         "last_heartbeat": ...,
-         "name": "cluster_name",
-         "num_down_hosts": 4,
-         "num_hosts": 2,
-         "state": "up",
-         "status": "enabled",
-         "updated_at": ...
+     {
+         "cluster": {
+             "created_at": "",
+             "disabled_reason": null,
+             "last_heartbeat": "",
+             "name": "cluster_name",
+             "num_down_hosts": 4,
+             "num_hosts": 2,
+             "state": "up",
+             "status": "enabled",
+             "updated_at": ""
+         }
      }
 
   Update endpoint allows enabling and disabling a cluster in a similar way to
@@ -100,11 +102,13 @@ user documentation.
 
   .. code-block:: json
 
-     "cluster": {
-         "name": "cluster_name",
-         "state": "up",
-         "status": "enabled"
-         "disabled_reason": null
+     {
+         "cluster": {
+             "name": "cluster_name",
+             "state": "up",
+             "status": "enabled",
+             "disabled_reason": null
+         }
      }
 
   Index and detail accept filtering by `name`, `binary`, `disabled`,
@@ -115,37 +119,35 @@ user documentation.
 
   .. code-block:: json
 
-     "clusters": [
-         {
-             "name": "cluster_name",
-             "state": "up",
-             "status": "enabled"
-         },
-         {
-             ...
-         }
-     ]
+     {
+         "clusters": [
+             {
+                 "name": "cluster_name",
+                 "state": "up",
+                 "status": "enabled"
+             }
+         ]
+      }
 
   Detail endpoint returns:
 
   .. code-block:: json
 
-     "clusters": [
-         {
-             "created_at": ...,
-             "disabled_reason": null,
-             "last_heartbeat": ...,
-             "name": "cluster_name",
-             "num_down_hosts": 4,
-             "num_hosts": 2,
-             "state": "up",
-             "status": "enabled",
-             "updated_at": ...
-         },
-         {
-             ...
-         }
-     ]
+     {
+         "clusters": [
+             {
+                 "created_at": "",
+                 "disabled_reason": null,
+                 "last_heartbeat": "",
+                 "name": "cluster_name",
+                 "num_down_hosts": 4,
+                 "num_hosts": 2,
+                 "state": "up",
+                 "status": "enabled",
+                 "updated_at": ""
+             }
+         ]
+     }
 
 3.8
 ---
@@ -160,10 +162,12 @@ user documentation.
 
   .. code-block:: json
 
-     "backup": {
-         "id": "backup_id",
-         "name": "backup_name",
-         "links": "backup_link",
+     {
+         "backup": {
+             "id": "backup_id",
+             "name": "backup_name",
+             "links": "backup_link"
+         }
      }
 
 3.10
@@ -173,7 +177,7 @@ user documentation.
 
 3.11
 ----
-  Added group types and group specs API.
+  Added group types and group specs APIs.
 
 3.12
 ----
@@ -256,7 +260,7 @@ user documentation.
   has at least another service to do the cleanup.
 
   API will return a dictionary with 2 lists, one with services that have been
-  issued a cleanup request (``cleaning`` key) and another list with services
+  issued a cleanup request (``cleaning`` key) and the other with services
   that cannot be cleaned right now because there is no alternative service to
   do the cleanup in that cluster (``unavailable`` key).
 
@@ -283,4 +287,89 @@ user documentation.
 
 3.27 (Maximum in Ocata)
 -----------------------
-  Added new attachment API's
+  Added new attachment APIs. See the
+  `API reference <https://developer.openstack.org/api-ref/block-storage/v3/index.html#attachments>`__
+  for details.
+
+3.28
+----
+  Add filters support to get_pools
+
+3.29
+----
+  Add filter, sorter and pagination support in group snapshot.
+
+3.30
+----
+  Support sort snapshots with "name".
+
+3.31
+----
+  Add support for configure resource query filters.
+
+3.32
+----
+  Added ``set-log`` and ``get-log`` service actions.
+
+3.33
+----
+  Add ``resource_filters`` API to retrieve configured resource filters.
+
+3.34
+----
+  Add like filter support in ``volume``, ``backup``, ``snapshot``, ``message``,
+  ``attachment``, ``group`` and ``group-snapshot`` list APIs.
+
+3.35
+----
+  Add ``volume-type`` filter to Get-Pools API.
+
+3.36
+----
+  Add metadata to volumes/summary response body.
+
+3.37
+----
+  Support sort backup by "name".
+
+3.38
+----
+  Added enable_replication/disable_replication/failover_replication/
+  list_replication_targets for replication groups (Tiramisu).
+
+3.39
+----
+  Add ``project_id`` admin filters support to limits.
+
+3.40
+----
+  Add volume revert to its latest snapshot support.
+
+3.41
+----
+  Add ``user_id`` field to snapshot list/detail and snapshot show.
+
+3.42
+----
+  Add ability to extend 'in-use' volume. User should be aware of the
+  whole environment before using this feature because it's dependent
+  on several external factors below:
+
+  1. nova-compute version - needs to be the latest for Pike.
+  2. only the libvirt compute driver supports this currently.
+  3. only iscsi and fibre channel volume types are supported on the
+     nova side currently.
+
+  Administrator can disable this ability by updating the
+  ``volume:extend_attached_volume`` policy rule.  Extend of a resered
+  Volume is NOT allowed.
+
+3.43 (Maximum in Pike)
+----------------------
+  Support backup CRUD with metadata.
+
+3.44
+----
+  Support attachment completion. See the
+  `API reference <https://developer.openstack.org/api-ref/block-storage/v3/index.html#complete-attachment>`__
+  for details.

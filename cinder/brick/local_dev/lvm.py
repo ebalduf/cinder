@@ -28,7 +28,6 @@ from oslo_utils import excutils
 from six import moves
 
 from cinder import exception
-from cinder.i18n import _LE, _LI
 from cinder import utils
 
 
@@ -74,11 +73,14 @@ class LVM(executor.Executor):
         self._supports_lvchange_ignoreskipactivation = None
         self.vg_provisioned_capacity = 0.0
 
+        if lvm_type not in ['default', 'thin']:
+            raise exception.Invalid('lvm_type must be "default" or "thin"')
+
         # Ensure LVM_SYSTEM_DIR has been added to LVM.LVM_CMD_PREFIX
         # before the first LVM command is executed, and use the directory
         # where the specified lvm_conf file is located as the value.
 
-        # NOTE(jdg): We use the temp var here becuase LVM_CMD_PREFIX is a
+        # NOTE(jdg): We use the temp var here because LVM_CMD_PREFIX is a
         # class global and if you use append here, you'll literally just keep
         # appending values to the global.
         _lvm_cmd_prefix = ['env', 'LC_ALL=C']
@@ -97,14 +99,14 @@ class LVM(executor.Executor):
             try:
                 self._create_vg(physical_volumes)
             except putils.ProcessExecutionError as err:
-                LOG.exception(_LE('Error creating Volume Group'))
-                LOG.error(_LE('Cmd     :%s'), err.cmd)
-                LOG.error(_LE('StdOut  :%s'), err.stdout)
-                LOG.error(_LE('StdErr  :%s'), err.stderr)
+                LOG.exception('Error creating Volume Group')
+                LOG.error('Cmd     :%s', err.cmd)
+                LOG.error('StdOut  :%s', err.stdout)
+                LOG.error('StdErr  :%s', err.stderr)
                 raise exception.VolumeGroupCreationFailed(vg_name=self.vg_name)
 
         if self._vg_exists() is False:
-            LOG.error(_LE('Unable to locate Volume Group %s'), vg_name)
+            LOG.error('Unable to locate Volume Group %s', vg_name)
             raise exception.VolumeGroupNotFound(vg_name=vg_name)
 
         # NOTE: we assume that the VG has been activated outside of Cinder
@@ -180,10 +182,10 @@ class LVM(executor.Executor):
                 free_space = pool_size - consumed_space
                 free_space = round(free_space, 2)
         except putils.ProcessExecutionError as err:
-            LOG.exception(_LE('Error querying thin pool about data_percent'))
-            LOG.error(_LE('Cmd     :%s'), err.cmd)
-            LOG.error(_LE('StdOut  :%s'), err.stdout)
-            LOG.error(_LE('StdErr  :%s'), err.stderr)
+            LOG.exception('Error querying thin pool about data_percent')
+            LOG.error('Cmd     :%s', err.cmd)
+            LOG.error('StdOut  :%s', err.stdout)
+            LOG.error('StdErr  :%s', err.stderr)
 
         return free_space
 
@@ -300,8 +302,8 @@ class LVM(executor.Executor):
             with excutils.save_and_reraise_exception(reraise=True) as ctx:
                 if "not found" in err.stderr or "Failed to find" in err.stderr:
                     ctx.reraise = False
-                    LOG.info(_LI("Logical Volume not found when querying "
-                                 "LVM info. (vg_name=%(vg)s, lv_name=%(lv)s"),
+                    LOG.info("Logical Volume not found when querying "
+                             "LVM info. (vg_name=%(vg)s, lv_name=%(lv)s",
                              {'vg': vg_name, 'lv': lv_name})
                     out = None
 
@@ -416,7 +418,7 @@ class LVM(executor.Executor):
         vg_list = self.get_all_volume_groups(self._root_helper, self.vg_name)
 
         if len(vg_list) != 1:
-            LOG.error(_LE('Unable to find VG: %s'), self.vg_name)
+            LOG.error('Unable to find VG: %s', self.vg_name)
             raise exception.VolumeGroupNotFound(vg_name=self.vg_name)
 
         self.vg_size = float(vg_list[0]['size'])
@@ -503,9 +505,9 @@ class LVM(executor.Executor):
         """
 
         if not self.supports_thin_provisioning(self._root_helper):
-            LOG.error(_LE('Requested to setup thin provisioning, '
-                          'however current LVM version does not '
-                          'support it.'))
+            LOG.error('Requested to setup thin provisioning, '
+                      'however current LVM version does not '
+                      'support it.')
             return None
 
         if name is None:
@@ -563,10 +565,12 @@ class LVM(executor.Executor):
                           root_helper=self._root_helper,
                           run_as_root=True)
         except putils.ProcessExecutionError as err:
-            LOG.exception(_LE('Error creating Volume'))
-            LOG.error(_LE('Cmd     :%s'), err.cmd)
-            LOG.error(_LE('StdOut  :%s'), err.stdout)
-            LOG.error(_LE('StdErr  :%s'), err.stderr)
+            LOG.exception('Error creating Volume')
+            LOG.error('Cmd     :%s', err.cmd)
+            LOG.error('StdOut  :%s', err.stdout)
+            LOG.error('StdErr  :%s', err.stderr)
+            LOG.error('Current state: %s',
+                      self.get_all_volume_groups(self._root_helper))
             raise
 
     @utils.retry(putils.ProcessExecutionError)
@@ -580,7 +584,7 @@ class LVM(executor.Executor):
         """
         source_lvref = self.get_volume(source_lv_name)
         if source_lvref is None:
-            LOG.error(_LE("Trying to create snapshot by non-existent LV: %s"),
+            LOG.error("Trying to create snapshot by non-existent LV: %s",
                       source_lv_name)
             raise exception.VolumeDeviceNotFound(device=source_lv_name)
         cmd = LVM.LVM_CMD_PREFIX + ['lvcreate', '--name', name, '--snapshot',
@@ -594,10 +598,10 @@ class LVM(executor.Executor):
                           root_helper=self._root_helper,
                           run_as_root=True)
         except putils.ProcessExecutionError as err:
-            LOG.exception(_LE('Error creating snapshot'))
-            LOG.error(_LE('Cmd     :%s'), err.cmd)
-            LOG.error(_LE('StdOut  :%s'), err.stdout)
-            LOG.error(_LE('StdErr  :%s'), err.stderr)
+            LOG.exception('Error creating snapshot')
+            LOG.error('Cmd     :%s', err.cmd)
+            LOG.error('StdOut  :%s', err.stdout)
+            LOG.error('StdErr  :%s', err.stderr)
             raise
 
     def _mangle_lv_name(self, name):
@@ -628,18 +632,18 @@ class LVM(executor.Executor):
                           root_helper=self._root_helper,
                           run_as_root=True)
         except putils.ProcessExecutionError as err:
-            LOG.exception(_LE('Error deactivating LV'))
-            LOG.error(_LE('Cmd     :%s'), err.cmd)
-            LOG.error(_LE('StdOut  :%s'), err.stdout)
-            LOG.error(_LE('StdErr  :%s'), err.stderr)
+            LOG.exception('Error deactivating LV')
+            LOG.error('Cmd     :%s', err.cmd)
+            LOG.error('StdOut  :%s', err.stdout)
+            LOG.error('StdErr  :%s', err.stderr)
             raise
 
         # Wait until lv is deactivated to return in
         # order to prevent a race condition.
         self._wait_for_volume_deactivation(name)
 
-    @utils.retry(exceptions=exception.VolumeNotDeactivated, retries=3,
-                 backoff_rate=1)
+    @utils.retry(exceptions=exception.VolumeNotDeactivated, retries=5,
+                 backoff_rate=2)
     def _wait_for_volume_deactivation(self, name):
         LOG.debug("Checking to see if volume %s has been deactivated.",
                   name)
@@ -655,7 +659,7 @@ class LVM(executor.Executor):
         :param name: Name of LV to activate
         :param is_snapshot: whether LV is a snapshot
         :param permanent: whether we should drop skipactivation flag
-        :raises: putils.ProcessExecutionError
+        :raises putils.ProcessExecutionError:
         """
 
         # This is a no-op if requested for a snapshot on a version
@@ -672,11 +676,12 @@ class LVM(executor.Executor):
         cmd = ['lvchange', '-a', 'y', '--yes']
 
         if self.supports_lvchange_ignoreskipactivation:
-            cmd.append('-K')
             # If permanent=True is specified, drop the skipactivation flag in
             # order to make this LV automatically activated after next reboot.
             if permanent:
                 cmd += ['-k', 'n']
+            else:
+                cmd.append('-K')
 
         cmd.append(lv_path)
 
@@ -685,10 +690,10 @@ class LVM(executor.Executor):
                           root_helper=self._root_helper,
                           run_as_root=True)
         except putils.ProcessExecutionError as err:
-            LOG.exception(_LE('Error activating LV'))
-            LOG.error(_LE('Cmd     :%s'), err.cmd)
-            LOG.error(_LE('StdOut  :%s'), err.stdout)
-            LOG.error(_LE('StdErr  :%s'), err.stderr)
+            LOG.exception('Error activating LV')
+            LOG.error('Cmd     :%s', err.cmd)
+            LOG.error('StdOut  :%s', err.stdout)
+            LOG.error('StdErr  :%s', err.stderr)
             raise
 
     @utils.retry(putils.ProcessExecutionError)
@@ -739,14 +744,21 @@ class LVM(executor.Executor):
                       'udev settle.', name)
 
     def revert(self, snapshot_name):
-        """Revert an LV from snapshot.
+        """Revert an LV to snapshot.
 
         :param snapshot_name: Name of snapshot to revert
-
         """
-        self._execute('lvconvert', '--merge',
-                      snapshot_name, root_helper=self._root_helper,
-                      run_as_root=True)
+
+        cmd = ['lvconvert', '--merge', '%s/%s' % (self.vg_name, snapshot_name)]
+        try:
+            self._execute(*cmd, root_helper=self._root_helper,
+                          run_as_root=True)
+        except putils.ProcessExecutionError as err:
+            LOG.exception('Error Revert Volume')
+            LOG.error('Cmd     :%s', err.cmd)
+            LOG.error('StdOut  :%s', err.stdout)
+            LOG.error('StdErr  :%s', err.stderr)
+            raise
 
     def lv_has_snapshot(self, name):
         cmd = LVM.LVM_CMD_PREFIX + ['lvdisplay', '--noheading', '-C', '-o',
@@ -804,7 +816,8 @@ class LVM(executor.Executor):
         # deactivated, but Thin Volumes with snaps have attribute 'V'
         # and won't be deactivated because the lv_has_snapshot method looks
         # for 'o' or 'O'
-        if self.lv_has_snapshot(lv_name):
+        has_snapshot = self.lv_has_snapshot(lv_name)
+        if has_snapshot:
             self.deactivate_lv(lv_name)
         try:
             cmd = LVM.LVM_CMD_PREFIX + ['lvextend', '-L', new_size,
@@ -812,11 +825,13 @@ class LVM(executor.Executor):
             self._execute(*cmd, root_helper=self._root_helper,
                           run_as_root=True)
         except putils.ProcessExecutionError as err:
-            LOG.exception(_LE('Error extending Volume'))
-            LOG.error(_LE('Cmd     :%s'), err.cmd)
-            LOG.error(_LE('StdOut  :%s'), err.stdout)
-            LOG.error(_LE('StdErr  :%s'), err.stderr)
+            LOG.exception('Error extending Volume')
+            LOG.error('Cmd     :%s', err.cmd)
+            LOG.error('StdOut  :%s', err.stdout)
+            LOG.error('StdErr  :%s', err.stderr)
             raise
+        if has_snapshot:
+            self.activate_lv(lv_name)
 
     def vg_mirror_free_space(self, mirror_count):
         free_capacity = 0.0
@@ -850,8 +865,8 @@ class LVM(executor.Executor):
                           root_helper=self._root_helper,
                           run_as_root=True)
         except putils.ProcessExecutionError as err:
-            LOG.exception(_LE('Error renaming logical volume'))
-            LOG.error(_LE('Cmd     :%s'), err.cmd)
-            LOG.error(_LE('StdOut  :%s'), err.stdout)
-            LOG.error(_LE('StdErr  :%s'), err.stderr)
+            LOG.exception('Error renaming logical volume')
+            LOG.error('Cmd     :%s', err.cmd)
+            LOG.error('StdOut  :%s', err.stdout)
+            LOG.error('StdErr  :%s', err.stderr)
             raise

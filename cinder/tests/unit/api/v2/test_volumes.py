@@ -21,6 +21,7 @@ import ddt
 import mock
 from oslo_config import cfg
 import six
+from six.moves import http_client
 from six.moves import range
 from six.moves import urllib
 import webob
@@ -28,10 +29,10 @@ import webob
 from cinder.api import common
 from cinder.api import extensions
 from cinder.api.v2 import volumes
-from cinder import consistencygroup as consistencygroupAPI
 from cinder import context
 from cinder import db
 from cinder import exception
+from cinder import group as groupAPI
 from cinder import objects
 from cinder.objects import fields
 from cinder import test
@@ -138,7 +139,6 @@ class VolumeApiTest(test.TestCase):
                              availability_zone=DEFAULT_AZ,
                              snapshot_id=None,
                              source_volid=None,
-                             source_replica=None,
                              consistencygroup_id=None,
                              volume_type=None,
                              image_ref=None,
@@ -150,7 +150,6 @@ class VolumeApiTest(test.TestCase):
                "availability_zone": availability_zone,
                "snapshot_id": snapshot_id,
                "source_volid": source_volid,
-               "source_replica": source_replica,
                "consistencygroup_id": consistencygroup_id,
                "volume_type": volume_type,
                "multiattach": multiattach,
@@ -186,9 +185,9 @@ class VolumeApiTest(test.TestCase):
                    'bootable': 'false',
                    'consistencygroup_id': consistencygroup_id,
                    'created_at': datetime.datetime(
-                       1900, 1, 1, 1, 1, 1, tzinfo=iso8601.iso8601.Utc()),
+                       1900, 1, 1, 1, 1, 1, tzinfo=iso8601.UTC),
                    'updated_at': datetime.datetime(
-                       1900, 1, 1, 1, 1, 1, tzinfo=iso8601.iso8601.Utc()),
+                       1900, 1, 1, 1, 1, 1, tzinfo=iso8601.UTC),
                    'description': description,
                    'id': v2_fakes.DEFAULT_VOL_ID,
                    'links':
@@ -221,7 +220,7 @@ class VolumeApiTest(test.TestCase):
         return {'metadata': None,
                 'snapshot': snapshot,
                 'source_volume': source_volume,
-                'source_replica': None,
+                'group': None,
                 'consistencygroup': None,
                 'availability_zone': availability_zone,
                 'scheduler_hints': None,
@@ -336,43 +335,20 @@ class VolumeApiTest(test.TestCase):
         get_volume.assert_called_once_with(self.controller.volume_api,
                                            context, source_volid)
 
-    @mock.patch.object(volume_api.API, 'get_volume', autospec=True)
-    def test_volume_creation_fails_with_invalid_source_replica(self,
-                                                               get_volume):
-
-        get_volume.side_effect = v2_fakes.fake_volume_get_notfound
-
-        source_replica = fake.VOLUME_ID
-        vol = self._vol_in_request_body(source_replica=source_replica)
+    @ddt.data({'source_volid': 1},
+              {'source_volid': []},
+              {'consistencygroup_id': 1},
+              {'consistencygroup_id': []})
+    def test_volume_creation_fails_with_invalid_uuids(self, updated_uuids):
+        vol = self._vol_in_request_body()
+        vol.update(updated_uuids)
         body = {"volume": vol}
         req = fakes.HTTPRequest.blank('/v2/volumes')
-        # Raise 404 when source replica cannot be found.
-        self.assertRaises(exception.VolumeNotFound, self.controller.create,
-                          req, body)
-
-        context = req.environ['cinder.context']
-        get_volume.assert_called_once_with(self.controller.volume_api,
-                                           context, source_replica)
-
-    @mock.patch.object(volume_api.API, 'get_volume', autospec=True)
-    def test_volume_creation_fails_with_invalid_source_replication_status(
-            self, get_volume):
-
-        get_volume.side_effect = v2_fakes.fake_volume_get
-
-        source_replica = '2f49aa3a-6aae-488d-8b99-a43271605af6'
-        vol = self._vol_in_request_body(source_replica=source_replica)
-        body = {"volume": vol}
-        req = fakes.HTTPRequest.blank('/v2/volumes')
-        # Raise 400 when replication status is disabled.
+        # Raise 400 for resource requested with invalid uuids.
         self.assertRaises(webob.exc.HTTPBadRequest, self.controller.create,
                           req, body)
 
-        context = req.environ['cinder.context']
-        get_volume.assert_called_once_with(self.controller.volume_api,
-                                           context, source_replica)
-
-    @mock.patch.object(consistencygroupAPI.API, 'get', autospec=True)
+    @mock.patch.object(groupAPI.API, 'get', autospec=True)
     def test_volume_creation_fails_with_invalid_consistency_group(self,
                                                                   get_cg):
 
@@ -388,7 +364,7 @@ class VolumeApiTest(test.TestCase):
                           self.controller.create, req, body)
 
         context = req.environ['cinder.context']
-        get_cg.assert_called_once_with(self.controller.consistencygroup_api,
+        get_cg.assert_called_once_with(self.controller.group_api,
                                        context, consistencygroup_id)
 
     def test_volume_creation_fails_with_bad_size(self):
@@ -404,7 +380,7 @@ class VolumeApiTest(test.TestCase):
         vol = self._vol_in_request_body(availability_zone="zonen:hostn")
         body = {"volume": vol}
         req = fakes.HTTPRequest.blank('/v2/volumes')
-        self.assertRaises(exception.InvalidInput,
+        self.assertRaises(exception.InvalidAvailabilityZone,
                           self.controller.create,
                           req, body)
 
@@ -621,14 +597,15 @@ class VolumeApiTest(test.TestCase):
 
     @ddt.data({'a' * 256: 'a'},
               {'a': 'a' * 256},
-              {'': 'a'})
+              {'': 'a'},
+              {'a': None})
     def test_volume_create_with_invalid_metadata(self, value):
         vol = self._vol_in_request_body()
         vol['metadata'] = value
         body = {"volume": vol}
         req = fakes.HTTPRequest.blank('/v2/volumes')
 
-        if len(list(value.keys())[0]) == 0:
+        if len(list(value.keys())[0]) == 0 or list(value.values())[0] is None:
             exc = exception.InvalidVolumeMetadata
         else:
             exc = exception.InvalidVolumeMetadataSize
@@ -776,19 +753,20 @@ class VolumeApiTest(test.TestCase):
                           'host_name': None,
                           'device': '/',
                           'attached_at': attach_tmp['attach_time'].replace(
-                              tzinfo=iso8601.iso8601.Utc()),
+                              tzinfo=iso8601.UTC),
                           }],
             metadata={'key': 'value', 'readonly': 'True'},
             with_migration_status=True)
         expected['volume']['updated_at'] = volume_tmp['updated_at'].replace(
-            tzinfo=iso8601.iso8601.Utc())
+            tzinfo=iso8601.UTC)
         self.assertEqual(expected, res_dict)
         self.assertEqual(2, len(self.notifier.notifications))
         self.assertTrue(mock_validate.called)
 
     @ddt.data({'a' * 256: 'a'},
               {'a': 'a' * 256},
-              {'': 'a'})
+              {'': 'a'},
+              {'a': None})
     @mock.patch.object(volume_api.API, 'get',
                        side_effect=v2_fakes.fake_volume_api_get, autospec=True)
     def test_volume_update_with_invalid_metadata(self, value, get):
@@ -798,7 +776,7 @@ class VolumeApiTest(test.TestCase):
         body = {"volume": updates}
         req = fakes.HTTPRequest.blank('/v2/volumes/%s' % fake.VOLUME_ID)
 
-        if len(list(value.keys())[0]) == 0:
+        if len(list(value.keys())[0]) == 0 or list(value.values())[0] is None:
             exc = exception.InvalidVolumeMetadata
         else:
             exc = webob.exc.HTTPRequestEntityTooLarge
@@ -916,12 +894,12 @@ class VolumeApiTest(test.TestCase):
                           'id': fake.VOLUME_ID,
                           'volume_id': v2_fakes.DEFAULT_VOL_ID,
                           'attached_at': attach_tmp['attach_time'].replace(
-                              tzinfo=iso8601.iso8601.Utc()),
+                              tzinfo=iso8601.UTC),
                           }],
             metadata={'key': 'value', 'readonly': 'True'},
             with_migration_status=True)
         exp_vol['volume']['updated_at'] = volume_tmp['updated_at'].replace(
-            tzinfo=iso8601.iso8601.Utc())
+            tzinfo=iso8601.UTC)
         expected = {'volumes': [exp_vol['volume']]}
         self.assertEqual(expected, res_dict)
 
@@ -1378,12 +1356,12 @@ class VolumeApiTest(test.TestCase):
                           'host_name': None,
                           'device': '/',
                           'attached_at': attach_tmp['attach_time'].replace(
-                              tzinfo=iso8601.iso8601.Utc()),
+                              tzinfo=iso8601.UTC),
                           }],
             metadata={'key': 'value', 'readonly': 'True'},
             with_migration_status=True)
         expected['volume']['updated_at'] = volume_tmp['updated_at'].replace(
-            tzinfo=iso8601.iso8601.Utc())
+            tzinfo=iso8601.UTC)
         self.assertEqual(expected, res_dict)
 
     def test_volume_show_with_encrypted_volume(self):
@@ -1428,7 +1406,7 @@ class VolumeApiTest(test.TestCase):
     def test_volume_delete(self):
         req = fakes.HTTPRequest.blank('/v2/volumes/%s' % fake.VOLUME_ID)
         resp = self.controller.delete(req, fake.VOLUME_ID)
-        self.assertEqual(202, resp.status_int)
+        self.assertEqual(http_client.ACCEPTED, resp.status_int)
 
     def test_volume_delete_attached(self):
         def fake_volume_attached(self, context, volume,

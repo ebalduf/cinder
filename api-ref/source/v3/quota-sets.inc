@@ -8,155 +8,6 @@ Administrators only, depending on policy settings.
 Shows, updates, and deletes quotas for a project.
 
 
-Show quotas for a user
-~~~~~~~~~~~~~~~~~~~~~~
-
-.. rest_method::  GET /v3/{admin_project_id}/os-quota-sets/{project_id}/{user_id}
-
-Enables an admin user to show quotas for a project and user.
-
-
-Normal response codes: 200
-Error response codes:
-
-Request
--------
-
-.. rest_parameters:: parameters.yaml
-
-   - project_id: project_id_path
-   - user_id: user_id
-   - admin_project_id: admin_project_id
-
-
-Response Parameters
--------------------
-
-.. rest_parameters:: parameters.yaml
-
-   - injected_file_content_bytes: injected_file_content_bytes
-   - metadata_items: metadata_items
-   - reserved: reserved
-   - in_use: in_use
-   - ram: ram
-   - floating_ips: floating_ips
-   - key_pairs: key_pairs
-   - injected_file_path_bytes: injected_file_path_bytes
-   - instances: instances
-   - security_group_rules: security_group_rules
-   - injected_files: injected_files
-   - quota_set: quota_set
-   - cores: cores
-   - fixed_ips: fixed_ips
-   - id: id
-   - security_groups: security_groups
-
-Response Example
-----------------
-
-.. literalinclude:: ./samples/quotas-update-response.json
-   :language: javascript
-
-
-Update quotas for a user
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. rest_method::  PUT /v3/{admin_project_id}/os-quota-sets/{project_id}/{user_id}
-
-Updates quotas for a project and user.
-
-
-Normal response codes: 200
-Error response codes:
-
-
-Request
--------
-
-.. rest_parameters:: parameters.yaml
-
-   - injected_file_content_bytes: injected_file_content_bytes
-   - metadata_items: metadata_items
-   - reserved: reserved
-   - in_use: in_use
-   - ram: ram
-   - floating_ips: floating_ips
-   - key_pairs: key_pairs
-   - injected_file_path_bytes: injected_file_path_bytes
-   - instances: instances
-   - security_group_rules: security_group_rules
-   - injected_files: injected_files
-   - quota_set: quota_set
-   - cores: cores
-   - fixed_ips: fixed_ips
-   - id: id
-   - security_groups: security_groups
-   - project_id: project_id_path
-   - user_id: user_id
-   - admin_project_id: admin_project_id
-
-Request Example
----------------
-
-.. literalinclude:: ./samples/quotas-update-request.json
-   :language: javascript
-
-Response Parameters
--------------------
-
-.. rest_parameters:: parameters.yaml
-
-   - injected_file_content_bytes: injected_file_content_bytes
-   - metadata_items: metadata_items
-   - reserved: reserved
-   - in_use: in_use
-   - ram: ram
-   - floating_ips: floating_ips
-   - key_pairs: key_pairs
-   - injected_file_path_bytes: injected_file_path_bytes
-   - instances: instances
-   - security_group_rules: security_group_rules
-   - injected_files: injected_files
-   - quota_set: quota_set
-   - cores: cores
-   - fixed_ips: fixed_ips
-   - id: id
-   - security_groups: security_groups
-
-Response Example
-----------------
-
-.. literalinclude:: ./samples/quotas-update-response.json
-   :language: javascript
-
-Delete quotas for a user
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. rest_method::  DELETE /v3/{admin_project_id}/os-quota-sets/{project_id}/{user_id}
-
-Deletes quotas for a user so that the quotas revert to default values.
-
-
-Normal response codes: 200
-Error response codes:
-
-
-Request
--------
-
-.. rest_parameters:: parameters.yaml
-
-   - project_id: project_id_path
-   - user_id: user_id
-   - admin_project_id: admin_project_id
-
-Response Example
-----------------
-
-.. literalinclude:: ./samples/quotas-delete-response.json
-   :language: javascript
-
-
 Show quotas for a project
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -166,7 +17,6 @@ Shows quotas for a project.
 
 
 Normal response codes: 200
-Error response codes:
 
 
 Request
@@ -174,7 +24,53 @@ Request
 
 .. rest_parameters:: parameters.yaml
 
-   - project_id: project_id_path
+   - admin_project_id: admin_project_id
+   - project_id: quotas_project_id
+   - usage: usage
+
+
+Response Parameters
+-------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - quota_set: quota_set
+   - id: qos_set_id
+   - volumes: volumes_number
+   - volumes_{volume_type}: volumes_number_for_type
+   - snapshots: snapshots_number
+   - snapshots_{volume_type}: snapshots_number_for_type
+   - backups: backups_number
+   - groups: groups_number
+   - per_volume_gigabytes: per_volume_gigabytes
+   - gigabytes: gigabytes
+   - gigabytes_{volume_type}: gigabytes_for_type
+   - backup_gigabytes: backup_gigabytes
+
+Response Example
+----------------
+
+.. literalinclude:: ./samples/quotas-show-response.json
+   :language: javascript
+
+
+Show quota usage for a project
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. rest_method::  GET /v3/{admin_project_id}/os-quota-sets/{project_id}?{usage}=True
+
+Shows quota usage for a project.
+
+
+Normal response codes: 200
+
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+   - project_id: quotas_project_id
    - admin_project_id: admin_project_id
    - usage: usage
 
@@ -184,29 +80,26 @@ Response Parameters
 
 .. rest_parameters:: parameters.yaml
 
-   - injected_file_content_bytes: injected_file_content_bytes
-   - metadata_items: metadata_items
-   - reserved: reserved
-   - in_use: in_use
-   - ram: ram
-   - floating_ips: floating_ips
-   - key_pairs: key_pairs
-   - injected_file_path_bytes: injected_file_path_bytes
-   - instances: instances
-   - security_group_rules: security_group_rules
-   - injected_files: injected_files
    - quota_set: quota_set
-   - cores: cores
-   - fixed_ips: fixed_ips
-   - id: id
-   - security_groups: security_groups
-
+   - id: qos_set_id
+   - volumes: volumes_number_usage
+   - volumes_{volume_type}: volumes_number_for_type_usage
+   - snapshots: snapshots_number_usage
+   - snapshots_{volume_type}: snapshots_number_for_type_usage
+   - backups: backups_number_usage
+   - groups: groups_number_usage
+   - per_volume_gigabytes: per_volume_gigabytes_usage
+   - gigabytes: gigabytes_usage
+   - gigabytes_{volume_type}: gigabytes_for_type_usage
+   - backup_gigabytes: backup_gigabytes_usage
 
 Response Example
 ----------------
 
-.. literalinclude:: ./samples/quotas-show-response.json
+.. literalinclude:: ./samples/quotas-show-usage-response.json
    :language: javascript
+
+
 
 Update quotas for a project
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -217,7 +110,6 @@ Updates quotas for a project.
 
 
 Normal response codes: 200
-Error response codes:
 
 
 Request
@@ -225,24 +117,20 @@ Request
 
 .. rest_parameters:: parameters.yaml
 
-   - injected_file_content_bytes: injected_file_content_bytes
-   - metadata_items: metadata_items
-   - reserved: reserved
-   - in_use: in_use
-   - ram: ram
-   - floating_ips: floating_ips
-   - key_pairs: key_pairs
-   - injected_file_path_bytes: injected_file_path_bytes
-   - instances: instances
-   - security_group_rules: security_group_rules
-   - injected_files: injected_files
-   - quota_set: quota_set
-   - cores: cores
-   - fixed_ips: fixed_ips
-   - id: id
-   - security_groups: security_groups
-   - project_id: project_id_path
    - admin_project_id: admin_project_id
+   - project_id: quotas_project_id
+   - quota_set: quota_set
+   - volumes: volumes_number
+   - volumes_{volume_type}: volumes_number_for_type
+   - snapshots: snapshots_number
+   - snapshots_{volume_type}: snapshots_number_for_type
+   - backups: backups_number
+   - groups: groups_number
+   - per_volume_gigabytes: per_volume_gigabytes
+   - gigabytes: gigabytes
+   - gigabytes_{volume_type}: gigabytes_for_type
+   - backup_gigabytes: backup_gigabytes
+   - skip_validation: skip_validation
 
 Request Example
 ---------------
@@ -256,22 +144,17 @@ Response Parameters
 
 .. rest_parameters:: parameters.yaml
 
-   - injected_file_content_bytes: injected_file_content_bytes
-   - metadata_items: metadata_items
-   - reserved: reserved
-   - in_use: in_use
-   - ram: ram
-   - floating_ips: floating_ips
-   - key_pairs: key_pairs
-   - injected_file_path_bytes: injected_file_path_bytes
-   - instances: instances
-   - security_group_rules: security_group_rules
-   - injected_files: injected_files
    - quota_set: quota_set
-   - cores: cores
-   - fixed_ips: fixed_ips
-   - id: id
-   - security_groups: security_groups
+   - volumes: volumes_number
+   - volumes_{volume_type}: volumes_number_for_type
+   - snapshots: snapshots_number
+   - snapshots_{volume_type}: snapshots_number_for_type
+   - backups: backups_number
+   - groups: groups_number
+   - per_volume_gigabytes: per_volume_gigabytes
+   - gigabytes: gigabytes
+   - gigabytes_{volume_type}: gigabytes_for_type
+   - backup_gigabytes: backup_gigabytes
 
 Response Example
 ----------------
@@ -288,7 +171,6 @@ Deletes quotas for a project so the quotas revert to default values.
 
 
 Normal response codes: 200
-Error response codes:
 
 
 Request
@@ -296,76 +178,21 @@ Request
 
 .. rest_parameters:: parameters.yaml
 
-   - project_id: project_id_path
-   - admin_project_id: admin_project_id
-
-Response Example
-----------------
-
-.. literalinclude:: ./samples/quotas-delete-response.json
-   :language: javascript
-
-Show quota details for a user
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. rest_method::  GET /v3/{admin_project_id}/os-quota-sets/{project_id}/detail/{user_id}
-
-Shows details for quotas for a project and user.
-
-
-Normal response codes: 200
-Error response codes:
-
-
-Request
--------
-
-.. rest_parameters:: parameters.yaml
-
-   - project_id: project_id_path
-   - user_id: user_id
+   - project_id: quotas_project_id
    - admin_project_id: admin_project_id
 
 
-Response Parameters
--------------------
-
-.. rest_parameters:: parameters.yaml
-
-   - injected_file_content_bytes: injected_file_content_bytes
-   - metadata_items: metadata_items
-   - reserved: reserved
-   - in_use: in_use
-   - ram: ram
-   - floating_ips: floating_ips
-   - key_pairs: key_pairs
-   - injected_file_path_bytes: injected_file_path_bytes
-   - instances: instances
-   - security_group_rules: security_group_rules
-   - injected_files: injected_files
-   - quota_set: quota_set
-   - cores: cores
-   - fixed_ips: fixed_ips
-   - id: id
-   - security_groups: security_groups
-
-Response Example
-----------------
-
-.. literalinclude:: ./samples/quotas-update-response.json
-   :language: javascript
 
 
 Get default quotas for a project
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. rest_method::  GET /v3/{project_id}/os-quota-sets/defaults
+.. rest_method::  GET /v3/{admin_project_id}/os-quota-sets/{project_id}/defaults
 
 Gets default quotas for a project.
 
 
 Normal response codes: 200
-Error response codes:
 
 
 Request
@@ -374,6 +201,7 @@ Request
 .. rest_parameters:: parameters.yaml
 
    - project_id: project_id_path
+   - admin_project_id: admin_project_id
 
 
 Response Parameters
@@ -381,23 +209,18 @@ Response Parameters
 
 .. rest_parameters:: parameters.yaml
 
-   - injected_file_content_bytes: injected_file_content_bytes
-   - metadata_items: metadata_items
-   - reserved: reserved
-   - in_use: in_use
-   - ram: ram
-   - floating_ips: floating_ips
-   - key_pairs: key_pairs
-   - injected_file_path_bytes: injected_file_path_bytes
-   - instances: instances
-   - security_group_rules: security_group_rules
-   - injected_files: injected_files
    - quota_set: quota_set
-   - cores: cores
-   - fixed_ips: fixed_ips
-   - id: id
-   - security_groups: security_groups
-
+   - id: qos_set_id
+   - volumes: volumes_number
+   - volumes_{volume_type}: volumes_number_for_type
+   - snapshots: snapshots_number
+   - snapshots_{volume_type}: snapshots_number_for_type
+   - backups: backups_number
+   - groups: groups_number
+   - per_volume_gigabytes: per_volume_gigabytes
+   - gigabytes: gigabytes
+   - gigabytes_{volume_type}: gigabytes_for_type
+   - backup_gigabytes: backup_gigabytes
 
 Response Example
 ----------------

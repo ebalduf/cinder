@@ -35,7 +35,7 @@ from oslo_log import log as logging
 
 from cinder.backup import driver
 from cinder import exception
-from cinder.i18n import _LE, _
+from cinder.i18n import _
 from cinder import interface
 from cinder import utils
 
@@ -250,9 +250,9 @@ def _cleanup_device_hardlink(hardlink_path, volume_path, volume_id):
                       hardlink_path,
                       run_as_root=True)
     except processutils.ProcessExecutionError as exc:
-        LOG.error(_LE('backup: %(vol_id)s failed to remove backup hardlink '
-                      'from %(vpath)s to %(bpath)s.\n'
-                      'stdout: %(out)s\n stderr: %(err)s.'),
+        LOG.error('backup: %(vol_id)s failed to remove backup hardlink '
+                  'from %(vpath)s to %(bpath)s.\n'
+                  'stdout: %(out)s\n stderr: %(err)s.',
                   {'vol_id': volume_id,
                    'vpath': volume_path,
                    'bpath': hardlink_path,
@@ -266,10 +266,18 @@ class TSMBackupDriver(driver.BackupDriver):
 
     DRIVER_VERSION = '1.0.0'
 
-    def __init__(self, context, db_driver=None):
-        super(TSMBackupDriver, self).__init__(context, db_driver)
+    def __init__(self, context, db=None):
+        super(TSMBackupDriver, self).__init__(context, db)
         self.tsm_password = CONF.backup_tsm_password
         self.volume_prefix = CONF.backup_tsm_volume_prefix
+
+    def check_for_setup_error(self):
+        required_flags = ['backup_share']
+        for flag in required_flags:
+            val = getattr(CONF, flag, None)
+            if not val:
+                raise exception.InvalidConfigurationValue(option=flag,
+                                                          value=val)
 
     def _do_backup(self, backup_path, vol_id, backup_mode):
         """Perform the actual backup operation.
@@ -474,7 +482,7 @@ class TSMBackupDriver(driver.BackupDriver):
                   {'backup_id': backup.id,
                    'volume_id': volume_id})
 
-    def delete(self, backup):
+    def delete_backup(self, backup):
         """Delete the given backup from TSM server.
 
         :param backup: backup information for volume
@@ -523,8 +531,8 @@ class TSMBackupDriver(driver.BackupDriver):
             # log error if tsm cannot delete the backup object
             # but do not raise exception so that cinder backup
             # object can be removed.
-            LOG.error(_LE('delete: %(vol_id)s failed with '
-                          'stdout: %(out)s\n stderr: %(err)s'),
+            LOG.error('delete: %(vol_id)s failed with '
+                      'stdout: %(out)s\n stderr: %(err)s',
                       {'vol_id': backup.volume_id,
                        'out': out,
                        'err': err})

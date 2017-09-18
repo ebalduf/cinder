@@ -25,7 +25,7 @@ else:
     storops_ex = None
 
 from cinder import exception
-from cinder.i18n import _, _LW
+from cinder.i18n import _
 from cinder.volume.drivers.dell_emc.unity import utils
 
 
@@ -76,6 +76,20 @@ class UnityClient(object):
             lun = self.system.get_lun(name=name)
         return lun
 
+    def thin_clone(self, lun_or_snap, name, io_limit_policy=None,
+                   description=None, new_size_gb=None):
+        try:
+            lun = lun_or_snap.thin_clone(
+                name=name, io_limit_policy=io_limit_policy,
+                description=description)
+        except storops_ex.UnityLunNameInUseError:
+            LOG.debug("LUN(thin clone) %s already exists. "
+                      "Return the existing one.", name)
+            lun = self.system.get_lun(name=name)
+        if new_size_gb is not None and new_size_gb > lun.total_size_gb:
+            lun = self.extend_lun(lun.get_id(), new_size_gb)
+        return lun
+
     def delete_lun(self, lun_id):
         """Deletes LUN on the Unity system.
 
@@ -98,13 +112,13 @@ class UnityClient(object):
         lun = None
         if lun_id is None and name is None:
             LOG.warning(
-                _LW("Both lun_id and name are None to get LUN. Return None."))
+                "Both lun_id and name are None to get LUN. Return None.")
         else:
             try:
                 lun = self.system.get_lun(_id=lun_id, name=name)
             except storops_ex.UnityResourceNotFoundError:
                 LOG.warning(
-                    _LW("LUN id=%(id)s, name=%(name)s doesn't exist."),
+                    "LUN id=%(id)s, name=%(name)s doesn't exist.",
                     {'id': lun_id, 'name': name})
         return lun
 
@@ -159,16 +173,16 @@ class UnityClient(object):
                        'err': err})
         except storops_ex.UnityDeleteAttachedSnapError as err:
             with excutils.save_and_reraise_exception():
-                LOG.warning(_LW("Failed to delete snapshot %(snap_name)s "
-                                "which is in use. Message: %(err)s"),
+                LOG.warning("Failed to delete snapshot %(snap_name)s "
+                            "which is in use. Message: %(err)s",
                             {'snap_name': snap.name, 'err': err})
 
     def get_snap(self, name=None):
         try:
             return self.system.get_snap(name=name)
         except storops_ex.UnityResourceNotFoundError as err:
-            msg = _LW("Snapshot %(name)s doesn't exist. Message: %(err)s")
-            LOG.warning(msg, {'name': name, 'err': err})
+            LOG.warning("Snapshot %(name)s doesn't exist. Message: %(err)s",
+                        {'name': name, 'err': err})
         return None
 
     def create_host(self, name, uids):
@@ -249,24 +263,27 @@ class UnityClient(object):
         :param host: the host to which the FC port is registered.
         :param logged_in_only: whether to retrieve only the logged-in port.
 
-        :return the WWN of FC ports. For example, the FC WWN on array is like:
-        50:06:01:60:89:20:09:25:50:06:01:6C:09:20:09:25.
-        This function removes the colons and returns the last 16 bits:
-        5006016C09200925.
+        :return: the WWN of FC ports. For example, the FC WWN on array is like:
+         50:06:01:60:89:20:09:25:50:06:01:6C:09:20:09:25.
+         This function removes the colons and returns the last 16 bits:
+         5006016C09200925.
         """
+        wwns = set()
         if logged_in_only:
-            ports = []
             for paths in filter(None, host.fc_host_initiators.paths):
                 paths = paths.shadow_copy(is_logged_in=True)
                 # `paths.fc_port` is just a list, not a UnityFcPortList,
                 # so use filter instead of shadow_copy here.
-                ports.extend(filter(lambda p: (allowed_ports is None or
-                                               p.get_id() in allowed_ports),
-                                    paths.fc_port))
+                wwns.update(p.wwn.upper()
+                            for p in filter(
+                                lambda fcp: (allowed_ports is None or
+                                             fcp.get_id() in allowed_ports),
+                                paths.fc_port))
         else:
             ports = self.get_fc_ports()
             ports = ports.shadow_copy(port_ids=allowed_ports)
-        return [po.wwn.replace(':', '')[16:] for po in ports]
+            wwns.update(p.wwn.upper() for p in ports)
+        return [wwn.replace(':', '')[16:] for wwn in wwns]
 
     def create_io_limit_policy(self, name, max_iops=None, max_kbps=None):
         try:

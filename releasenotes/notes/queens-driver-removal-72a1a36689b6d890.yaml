@@ -1,0 +1,10 @@
+---
+upgrade:
+  - |
+    The following volume drivers were deprecated in the Pike release and have
+    now been removed:
+
+      * Block device driver
+      * Blockbridge
+      * Coho
+

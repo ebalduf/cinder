@@ -119,8 +119,7 @@ def gcs_logger(func):
 class GoogleBackupDriver(chunkeddriver.ChunkedBackupDriver):
     """Provides backup, restore and delete of backup objects within GCS."""
 
-    def __init__(self, context, db_driver=None):
-        self.check_gcs_options()
+    def __init__(self, context, db=None):
         backup_bucket = CONF.backup_gcs_bucket
         backup_credential = CONF.backup_gcs_credential_file
         self.gcs_project_id = CONF.backup_gcs_project_id
@@ -131,7 +130,7 @@ class GoogleBackupDriver(chunkeddriver.ChunkedBackupDriver):
                                                  sha_block_size_bytes,
                                                  backup_bucket,
                                                  enable_progress_timer,
-                                                 db_driver)
+                                                 db)
         credentials = client.GoogleCredentials.from_stream(backup_credential)
         self.reader_chunk_size = CONF.backup_gcs_reader_chunk_size
         self.writer_chunk_size = CONF.backup_gcs_writer_chunk_size
@@ -153,15 +152,14 @@ class GoogleBackupDriver(chunkeddriver.ChunkedBackupDriver):
         else:
             return httplib2.proxy_info_from_environment()
 
-    def check_gcs_options(self):
+    def check_for_setup_error(self):
         required_options = ('backup_gcs_bucket', 'backup_gcs_credential_file',
                             'backup_gcs_project_id')
-        unset_options = [opt for opt in required_options
-                         if not getattr(CONF, opt, None)]
-        if unset_options:
-            msg = _('Unset gcs options: %s') % unset_options
-            LOG.error(msg)
-            raise exception.InvalidInput(reason=msg)
+        for opt in required_options:
+            val = getattr(CONF, opt, None)
+            if not val:
+                raise exception.InvalidConfigurationValue(option=opt,
+                                                          value=val)
 
     @gcs_logger
     def put_container(self, bucket):

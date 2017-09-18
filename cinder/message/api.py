@@ -19,13 +19,17 @@ from oslo_log import log as logging
 from oslo_utils import timeutils
 
 from cinder.db import base
-from cinder.i18n import _LE, _LI
-from cinder.message import defined_messages
+from cinder.message import message_field
 
 
 messages_opts = [
     cfg.IntOpt('message_ttl', default=2592000,
-               help='message minimum life in seconds.')]
+               help='message minimum life in seconds.'),
+    cfg.IntOpt('message_reap_interval', default=86400,
+               help='interval between periodic task runs to clean expired '
+                    'messages in seconds.')
+]
+
 
 CONF = cfg.CONF
 CONF.register_opts(messages_opts)
@@ -36,29 +40,33 @@ LOG = logging.getLogger(__name__)
 class API(base.Base):
     """API for handling user messages."""
 
-    def create(self, context, event_id, project_id, resource_type=None,
-               resource_uuid=None, level="ERROR"):
+    def create(self, context, action,
+               resource_type=message_field.Resource.VOLUME,
+               resource_uuid=None, exception=None, detail=None, level="ERROR"):
         """Create a message with the specified information."""
-        LOG.info(_LI("Creating message record for request_id = %s"),
+        LOG.info("Creating message record for request_id = %s",
                  context.request_id)
-        # Ensure valid event_id
-        defined_messages.get_message_text(event_id)
         # Updates expiry time for message as per message_ttl config.
         expires_at = (timeutils.utcnow() + datetime.timedelta(
                       seconds=CONF.message_ttl))
 
-        message_record = {'project_id': project_id,
+        detail_id = message_field.translate_detail_id(exception, detail)
+        message_record = {'project_id': context.project_id,
                           'request_id': context.request_id,
                           'resource_type': resource_type,
                           'resource_uuid': resource_uuid,
-                          'event_id': event_id,
+                          'action_id': action[0] if action else '',
                           'message_level': level,
+                          'event_id': "VOLUME_%s_%s_%s" % (resource_type,
+                                                           action[0],
+                                                           detail_id),
+                          'detail_id': detail_id,
                           'expires_at': expires_at}
         try:
             self.db.message_create(context, message_record)
         except Exception:
-            LOG.exception(_LE("Failed to create message record "
-                              "for request_id %s"), context.request_id)
+            LOG.exception("Failed to create message record "
+                          "for request_id %s", context.request_id)
 
     def get(self, context, id):
         """Return message with the specified id."""
@@ -81,3 +89,8 @@ class API(base.Base):
         """Delete message with the specified id."""
         ctx = context.elevated()
         return self.db.message_destroy(ctx, id)
+
+    def cleanup_expired_messages(self, context):
+        ctx = context.elevated()
+        count = self.db.cleanup_expired_messages(ctx)
+        LOG.info("Deleted %s expired messages.", count)

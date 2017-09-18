@@ -16,6 +16,7 @@
 
 from oslo_utils import strutils
 import six
+from six.moves import http_client
 import webob
 from webob import exc
 
@@ -55,7 +56,7 @@ class GroupTypesController(wsgi.Controller):
         rpc.get_notifier('groupType').info(context, method, payload)
 
     @wsgi.Controller.api_version('3.11')
-    @wsgi.response(202)
+    @wsgi.response(http_client.ACCEPTED)
     def create(self, req, body):
         """Creates a new group type."""
         context = req.environ['cinder.context']
@@ -67,7 +68,7 @@ class GroupTypesController(wsgi.Controller):
         name = grp_type.get('name', None)
         description = grp_type.get('description')
         specs = grp_type.get('group_specs', {})
-        is_public = grp_type.get('is_public', True)
+        is_public = utils.get_bool_param('is_public', grp_type, True)
 
         if name is None or len(name.strip()) == 0:
             msg = _("Group type name can not be empty.")
@@ -126,10 +127,8 @@ class GroupTypesController(wsgi.Controller):
                     "a combination thereof.")
             raise webob.exc.HTTPBadRequest(explanation=msg)
 
-        if is_public is not None and not strutils.is_valid_boolstr(is_public):
-            msg = _("Invalid value '%s' for is_public. Accepted values: "
-                    "True or False.") % is_public
-            raise webob.exc.HTTPBadRequest(explanation=msg)
+        if is_public is not None:
+            is_public = utils.get_bool_param('is_public', grp_type)
 
         if name:
             utils.check_string_length(name, 'Type name',
@@ -185,7 +184,7 @@ class GroupTypesController(wsgi.Controller):
                 context, 'group_type.delete', err, id=id)
             raise webob.exc.HTTPNotFound(explanation=err.msg)
 
-        return webob.Response(status_int=202)
+        return webob.Response(status_int=http_client.ACCEPTED)
 
     @wsgi.Controller.api_version('3.11')
     def index(self, req):

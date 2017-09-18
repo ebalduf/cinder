@@ -12,7 +12,7 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 #
-# cinder documentation build configuration file, created by
+# Cinder documentation build configuration file, created by
 # sphinx-quickstart on Sat May  1 15:17:47 2010.
 #
 # This file is execfile()d with the current directory set to
@@ -159,10 +159,9 @@ html_theme_options = {
 # If not '', a 'Last updated on:' timestamp is inserted at every page bottom,
 # using the given strftime format.
 # html_last_updated_fmt = '%b %d, %Y'
-git_cmd = ["git", "log", "--pretty=format:'%ad, commit %h'", "--date=local",
+git_cmd = ["git", "log", "--pretty=format:%ad, commit %h", "--date=local",
            "-n1"]
-html_last_updated_fmt = subprocess.Popen(
-    git_cmd, stdout=subprocess.PIPE).communicate()[0]
+html_last_updated_fmt = subprocess.check_output(git_cmd).decode('utf-8')
 
 # If true, SmartyPants will be used to convert quotes and dashes to
 # typographically correct entities.

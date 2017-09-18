@@ -34,45 +34,52 @@ class VNXDriver(driver.ManageableVD,
                 driver.BaseVD):
     """Dell EMC Cinder Driver for VNX using CLI.
 
-    Version history:
-        1.0.0 - Initial driver
-        2.0.0 - Thick/thin provisioning, robust enhancement
-        3.0.0 - Array-based Backend Support, FC Basic Support,
-                Target Port Selection for MPIO,
-                Initiator Auto Registration,
-                Storage Group Auto Deletion,
-                Multiple Authentication Type Support,
-                Storage-Assisted Volume Migration,
-                SP Toggle for HA
-        3.0.1 - Security File Support
-        4.0.0 - Advance LUN Features (Compression Support,
-                Deduplication Support, FAST VP Support,
-                FAST Cache Support), Storage-assisted Retype,
-                External Volume Management, Read-only Volume,
-                FC Auto Zoning
-        4.1.0 - Consistency group support
-        5.0.0 - Performance enhancement, LUN Number Threshold Support,
-                Initiator Auto Deregistration,
-                Force Deleting LUN in Storage Groups,
-                robust enhancement
-        5.1.0 - iSCSI multipath enhancement
-        5.2.0 - Pool-aware scheduler support
-        5.3.0 - Consistency group modification support
-        6.0.0 - Over subscription support
-                Create consistency group from cgsnapshot support
-                Multiple pools support enhancement
-                Manage/unmanage volume revise
-                White list target ports support
-                Snap copy support
-                Support efficient non-disruptive backup
-        7.0.0 - Clone consistency group support
-                Replication v2 support(managed)
-                Configurable migration rate support
-        8.0.0 - New VNX Cinder driver
-        9.0.0 - Use asynchronous migration for cloning
+    .. code-block:: default
+
+      Version history:
+          1.0.0 - Initial driver
+          2.0.0 - Thick/thin provisioning, robust enhancement
+          3.0.0 - Array-based Backend Support, FC Basic Support,
+                  Target Port Selection for MPIO,
+                  Initiator Auto Registration,
+                  Storage Group Auto Deletion,
+                  Multiple Authentication Type Support,
+                  Storage-Assisted Volume Migration,
+                  SP Toggle for HA
+          3.0.1 - Security File Support
+          4.0.0 - Advance LUN Features (Compression Support,
+                  Deduplication Support, FAST VP Support,
+                  FAST Cache Support), Storage-assisted Retype,
+                  External Volume Management, Read-only Volume,
+                  FC Auto Zoning
+          4.1.0 - Consistency group support
+          5.0.0 - Performance enhancement, LUN Number Threshold Support,
+                  Initiator Auto Deregistration,
+                  Force Deleting LUN in Storage Groups,
+                  robust enhancement
+          5.1.0 - iSCSI multipath enhancement
+          5.2.0 - Pool-aware scheduler support
+          5.3.0 - Consistency group modification support
+          6.0.0 - Over subscription support
+                  Create consistency group from cgsnapshot support
+                  Multiple pools support enhancement
+                  Manage/unmanage volume revise
+                  White list target ports support
+                  Snap copy support
+                  Support efficient non-disruptive backup
+          7.0.0 - Clone consistency group support
+                  Replication v2 support(managed)
+                  Configurable migration rate support
+          8.0.0 - New VNX Cinder driver
+          9.0.0 - Use asynchronous migration for cloning
+          10.0.0 - Extend SMP size before aync migration when cloning from an
+                   image cache volume
+          10.1.0 - Add QoS support
+          10.2.0 - Add replication group support
+
     """
 
-    VERSION = '09.00.00'
+    VERSION = '10.02.00'
     VENDOR = 'Dell EMC'
     # ThirdPartySystems wiki page
     CI_WIKI_NAME = "EMC_VNX_CI"
@@ -236,13 +243,20 @@ class VNXDriver(driver.ManageableVD,
         volume['name'] which is how drivers traditionally map between a
         cinder volume and the associated backend storage object.
 
-        manage_existing_ref:{
-            'source-id':<lun id in VNX>
-        }
+        .. code-block:: python
+
+          manage_existing_ref:{
+              'source-id':<lun id in VNX>
+          }
+
         or
-        manage_existing_ref:{
-            'source-name':<lun name in VNX>
-        }
+
+        .. code-block:: python
+
+          manage_existing_ref:{
+              'source-name':<lun name in VNX>
+          }
+
         """
         return self.adapter.manage_existing(volume, existing_ref)
 
@@ -250,51 +264,13 @@ class VNXDriver(driver.ManageableVD,
         """Return size of volume to be managed by manage_existing."""
         return self.adapter.manage_existing_get_size(volume, existing_ref)
 
-    def create_consistencygroup(self, context, group):
-        """Creates a consistencygroup."""
-        return self.adapter.create_consistencygroup(context, group)
-
-    def delete_consistencygroup(self, context, group, volumes):
-        """Deletes a consistency group."""
-        return self.adapter.delete_consistencygroup(
-            context, group, volumes)
-
-    def create_cgsnapshot(self, context, cgsnapshot, snapshots):
-        """Creates a cgsnapshot."""
-        return self.adapter.create_cgsnapshot(
-            context, cgsnapshot, snapshots)
-
-    def delete_cgsnapshot(self, context, cgsnapshot, snapshots):
-        """Deletes a cgsnapshot."""
-        return self.adapter.delete_cgsnapshot(
-            context, cgsnapshot, snapshots)
-
     def get_pool(self, volume):
         """Returns the pool name of a volume."""
         return self.adapter.get_pool_name(volume)
 
-    def update_consistencygroup(self, context, group,
-                                add_volumes,
-                                remove_volumes):
-        """Updates LUNs in consistency group."""
-        return self.adapter.update_consistencygroup(context, group,
-                                                    add_volumes,
-                                                    remove_volumes)
-
     def unmanage(self, volume):
         """Unmanages a volume."""
         return self.adapter.unmanage(volume)
-
-    def create_consistencygroup_from_src(self, context, group, volumes,
-                                         cgsnapshot=None, snapshots=None,
-                                         source_cg=None, source_vols=None):
-        """Creates a consistency group from source."""
-        if cgsnapshot:
-            return self.adapter.create_cg_from_cgsnapshot(
-                context, group, volumes, cgsnapshot, snapshots)
-        elif source_cg:
-            return self.adapter.create_cloned_cg(
-                context, group, volumes, source_cg, source_vols)
 
     def update_migrated_volume(self, context, volume, new_volume,
                                original_volume_status=None):
@@ -326,9 +302,10 @@ class VNXDriver(driver.ManageableVD,
     def backup_use_temp_snapshot(self):
         return True
 
-    def failover_host(self, context, volumes, secondary_id=None):
+    def failover_host(self, context, volumes, secondary_id=None, groups=None):
         """Fail-overs volumes from primary device to secondary."""
-        return self.adapter.failover_host(context, volumes, secondary_id)
+        return self.adapter.failover_host(context, volumes, secondary_id,
+                                          groups)
 
     @utils.require_consistent_group_snapshot_enabled
     def create_group(self, context, group):
@@ -375,3 +352,17 @@ class VNXDriver(driver.ManageableVD,
 
     def is_consistent_group_snapshot_enabled(self):
         return self._stats.get('consistent_group_snapshot_enabled')
+
+    def enable_replication(self, context, group, volumes):
+        return self.adapter.enable_replication(context, group, volumes)
+
+    def disable_replication(self, context, group, volumes):
+        return self.adapter.disable_replication(context, group, volumes)
+
+    def failover_replication(self, context, group, volumes,
+                             secondary_backend_id):
+        return self.adapter.failover_replication(
+            context, group, volumes, secondary_backend_id)
+
+    def get_replication_error_status(self, context, groups):
+        return self.adapter.get_replication_error_status(context, groups)

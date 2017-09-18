@@ -17,6 +17,7 @@
 
 import errno
 import os
+import psutil
 import six
 import traceback
 
@@ -43,6 +44,9 @@ class FakeDb(object):
 
     def snapshot_get_all_for_volume(self, *a, **kw):
         """Mock this if you want results from it."""
+        return []
+
+    def volume_get_all(self, *a, **kw):
         return []
 
 
@@ -100,6 +104,12 @@ class QuobyteDriverTestCase(test.TestCase):
         if not caught:
             self.fail('Expected raised exception but nothing caught.')
 
+    def get_mock_partitions(self):
+        mypart = mock.Mock()
+        mypart.device = "quobyte@"
+        mypart.mountpoint = self.TEST_MNT_POINT
+        return [mypart]
+
     def test_local_path(self):
         """local_path common use case."""
         drv = self._driver
@@ -113,7 +123,9 @@ class QuobyteDriverTestCase(test.TestCase):
     def test_mount_quobyte_should_mount_correctly(self):
         with mock.patch.object(self._driver, '_execute') as mock_execute, \
                 mock.patch('cinder.volume.drivers.quobyte.QuobyteDriver'
-                           '.read_proc_mount') as mock_open:
+                           '.read_proc_mount') as mock_open, \
+                mock.patch('cinder.volume.drivers.quobyte.QuobyteDriver'
+                           '._validate_volume') as mock_validate:
             # Content of /proc/mount (not mounted yet).
             mock_open.return_value = six.StringIO(
                 "/dev/sda5 / ext4 rw,relatime,data=ordered 0 0")
@@ -124,20 +136,18 @@ class QuobyteDriverTestCase(test.TestCase):
             mkdir_call = mock.call('mkdir', '-p', self.TEST_MNT_POINT)
 
             mount_call = mock.call(
-                'mount.quobyte', self.TEST_QUOBYTE_VOLUME,
+                'mount.quobyte', '--disable-xattrs', self.TEST_QUOBYTE_VOLUME,
                 self.TEST_MNT_POINT, run_as_root=False)
 
-            getfattr_call = mock.call(
-                'getfattr', '-n', 'quobyte.info', self.TEST_MNT_POINT,
-                run_as_root=False)
-
             mock_execute.assert_has_calls(
-                [mkdir_call, mount_call, getfattr_call], any_order=False)
+                [mkdir_call, mount_call], any_order=False)
+            mock_validate.called_once_with(self.TEST_MNT_POINT)
 
     def test_mount_quobyte_already_mounted_detected_seen_in_proc_mount(self):
-        with mock.patch.object(self._driver, '_execute') as mock_execute, \
+        with mock.patch('cinder.volume.drivers.quobyte.QuobyteDriver'
+                        '.read_proc_mount') as mock_open, \
                 mock.patch('cinder.volume.drivers.quobyte.QuobyteDriver'
-                           '.read_proc_mount') as mock_open:
+                           '._validate_volume') as mock_validate:
             # Content of /proc/mount (already mounted).
             mock_open.return_value = six.StringIO(
                 "quobyte@%s %s fuse rw,nosuid,nodev,noatime,user_id=1000"
@@ -146,10 +156,7 @@ class QuobyteDriverTestCase(test.TestCase):
 
             self._driver._mount_quobyte(self.TEST_QUOBYTE_VOLUME,
                                         self.TEST_MNT_POINT)
-
-            mock_execute.assert_called_once_with(
-                'getfattr', '-n', 'quobyte.info', self.TEST_MNT_POINT,
-                run_as_root=False)
+            mock_validate.assert_called_once_with(self.TEST_MNT_POINT)
 
     def test_mount_quobyte_should_suppress_and_log_already_mounted_error(self):
         """test_mount_quobyte_should_suppress_and_log_already_mounted_error
@@ -177,7 +184,7 @@ class QuobyteDriverTestCase(test.TestCase):
 
             mkdir_call = mock.call('mkdir', '-p', self.TEST_MNT_POINT)
             mount_call = mock.call(
-                'mount.quobyte', self.TEST_QUOBYTE_VOLUME,
+                'mount.quobyte', '--disable-xattrs', self.TEST_QUOBYTE_VOLUME,
                 self.TEST_MNT_POINT, run_as_root=False)
             mock_execute.assert_has_calls([mkdir_call, mount_call],
                                           any_order=False)
@@ -208,7 +215,7 @@ class QuobyteDriverTestCase(test.TestCase):
 
             mkdir_call = mock.call('mkdir', '-p', self.TEST_MNT_POINT)
             mount_call = mock.call(
-                'mount.quobyte', self.TEST_QUOBYTE_VOLUME,
+                'mount.quobyte', '--disable-xattrs', self.TEST_QUOBYTE_VOLUME,
                 self.TEST_MNT_POINT, run_as_root=False)
             mock_execute.assert_has_calls([mkdir_call, mount_call],
                                           any_order=False)
@@ -384,7 +391,7 @@ class QuobyteDriverTestCase(test.TestCase):
 
         self.assertRaises(exception.NotFound,
                           drv._find_share,
-                          self.TEST_SIZE_IN_GB)
+                          self._simple_volume())
 
     def test_find_share(self):
         """_find_share simple use case."""
@@ -393,7 +400,7 @@ class QuobyteDriverTestCase(test.TestCase):
         drv._mounted_shares = [self.TEST_QUOBYTE_VOLUME]
 
         self.assertEqual(self.TEST_QUOBYTE_VOLUME,
-                         drv._find_share(self.TEST_SIZE_IN_GB))
+                         drv._find_share(self._simple_volume()))
 
     def test_find_share_does_not_throw_error_if_there_isnt_enough_space(self):
         """_find_share intentionally does not throw when no space is left."""
@@ -408,7 +415,7 @@ class QuobyteDriverTestCase(test.TestCase):
             drv._mounted_shares = [self.TEST_QUOBYTE_VOLUME]
 
             self.assertEqual(self.TEST_QUOBYTE_VOLUME,
-                             drv._find_share(self.TEST_SIZE_IN_GB))
+                             drv._find_share(self._simple_volume()))
 
             # The current implementation does not call _get_available_capacity.
             # Future ones might do and therefore we mocked it.
@@ -512,7 +519,7 @@ class QuobyteDriverTestCase(test.TestCase):
 
         drv._do_create_volume.assert_called_once_with(volume)
         drv._ensure_shares_mounted.assert_called_once_with()
-        drv._find_share.assert_called_once_with(self.TEST_SIZE_IN_GB)
+        drv._find_share.assert_called_once_with(volume)
 
     @mock.patch('oslo_utils.fileutils.delete_if_exists')
     def test_delete_volume(self, mock_delete_if_exists):
@@ -604,13 +611,11 @@ class QuobyteDriverTestCase(test.TestCase):
 
         img_info = imageutils.QemuImgInfo(qemu_img_info_output)
 
-        drv.get_active_image_from_info = mock.Mock(return_value=volume['name'])
         image_utils.qemu_img_info = mock.Mock(return_value=img_info)
         image_utils.resize_image = mock.Mock()
 
         drv.extend_volume(volume, 3)
 
-        drv.get_active_image_from_info.assert_called_once_with(volume)
         image_utils.qemu_img_info.assert_called_once_with(volume_path,
                                                           run_as_root=False)
         image_utils.resize_image.assert_called_once_with(volume_path, 3)
@@ -720,7 +725,7 @@ class QuobyteDriverTestCase(test.TestCase):
         drv.create_volume_from_snapshot(new_volume, snap_ref)
 
         drv._ensure_shares_mounted.assert_called_once_with()
-        drv._find_share.assert_called_once_with(new_volume['size'])
+        drv._find_share.assert_called_once_with(new_volume)
         drv._do_create_volume.assert_called_once_with(new_volume)
         (drv._copy_volume_from_snapshot.
          assert_called_once_with(snap_ref, new_volume, new_volume['size']))
@@ -928,3 +933,84 @@ class QuobyteDriverTestCase(test.TestCase):
         self.assertEqual("true",
                          drv.configuration.nas_secure_file_permissions)
         self.assertFalse(drv._execute_as_root)
+
+    @mock.patch.object(psutil, "disk_partitions")
+    @mock.patch.object(os, "stat")
+    def test_validate_volume_all_good(self, stat_mock, part_mock):
+        part_mock.return_value = self.get_mock_partitions()
+        drv = self._driver
+
+        def statMockCall(*args):
+            if args[0] == self.TEST_MNT_POINT:
+                stat_result = mock.Mock()
+                stat_result.st_size = 0
+                return stat_result
+            return os.stat(args)
+        stat_mock.side_effect = statMockCall
+
+        drv._validate_volume(self.TEST_MNT_POINT)
+
+        stat_mock.assert_called_once_with(self.TEST_MNT_POINT)
+        part_mock.assert_called_once_with(all=True)
+
+    @mock.patch.object(psutil, "disk_partitions")
+    @mock.patch.object(os, "stat")
+    def test_validate_volume_mount_not_working(self, stat_mock, part_mock):
+        part_mock.return_value = self.get_mock_partitions()
+        drv = self._driver
+
+        def statMockCall(*args):
+            if args[0] == self.TEST_MNT_POINT:
+                raise exception.VolumeDriverException()
+        stat_mock.side_effect = [statMockCall, os.stat]
+
+        self.assertRaises(
+            exception.VolumeDriverException,
+            drv._validate_volume,
+            self.TEST_MNT_POINT)
+        stat_mock.assert_called_once_with(self.TEST_MNT_POINT)
+        part_mock.assert_called_once_with(all=True)
+
+    @mock.patch.object(psutil, "disk_partitions")
+    def test_validate_volume_no_mtab_entry(self, part_mock):
+        part_mock.return_value = []  # no quobyte@ devices
+        msg = ("Volume driver reported an error: "
+               "No matching Quobyte mount entry for %(mpt)s"
+               " could be found for validation in partition list."
+               % {'mpt': self.TEST_MNT_POINT})
+
+        self.assertRaisesAndMessageMatches(
+            exception.VolumeDriverException,
+            msg,
+            self._driver._validate_volume,
+            self.TEST_MNT_POINT)
+
+    @mock.patch.object(psutil, "disk_partitions")
+    def test_validate_volume_wrong_mount_type(self, part_mock):
+        mypart = mock.Mock()
+        mypart.device = "not-quobyte"
+        mypart.mountpoint = self.TEST_MNT_POINT
+        part_mock.return_value = [mypart]
+        msg = ("Volume driver reported an error: "
+               "The mount %(mpt)s is not a valid"
+               " Quobyte volume according to partition list."
+               % {'mpt': self.TEST_MNT_POINT})
+        drv = self._driver
+
+        self.assertRaisesAndMessageMatches(
+            exception.VolumeDriverException,
+            msg,
+            drv._validate_volume,
+            self.TEST_MNT_POINT)
+        part_mock.assert_called_once_with(all=True)
+
+    @mock.patch.object(psutil, "disk_partitions")
+    def test_validate_volume_stale_mount(self, part_mock):
+        part_mock.return_value = self.get_mock_partitions()
+        drv = self._driver
+
+        # As this uses a local fs the dir size is >0, raising an exception
+        self.assertRaises(
+            exception.VolumeDriverException,
+            drv._validate_volume,
+            self.TEST_MNT_POINT)

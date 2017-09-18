@@ -12,13 +12,16 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_utils import versionutils
+from oslo_versionedobjects import fields
+
 from cinder import db
 from cinder import exception
 from cinder.i18n import _
 from cinder import objects
 from cinder.objects import base
 from cinder.objects import fields as c_fields
-from oslo_versionedobjects import fields
+from cinder.volume import utils as vol_utils
 
 
 @base.CinderObjectRegistry.register
@@ -27,7 +30,8 @@ class Group(base.CinderPersistentObject, base.CinderObject,
     # Version 1.0: Initial version
     # Version 1.1: Added group_snapshots, group_snapshot_id, and
     #              source_group_id
-    VERSION = '1.1'
+    # Version 1.2: Added replication_status
+    VERSION = '1.2'
 
     OPTIONAL_FIELDS = ['volumes', 'volume_types', 'group_snapshots']
 
@@ -45,12 +49,24 @@ class Group(base.CinderPersistentObject, base.CinderObject,
         'status': c_fields.GroupStatusField(nullable=True),
         'group_snapshot_id': fields.UUIDField(nullable=True),
         'source_group_id': fields.UUIDField(nullable=True),
+        'replication_status': c_fields.ReplicationStatusField(nullable=True),
         'volumes': fields.ObjectField('VolumeList', nullable=True),
         'volume_types': fields.ObjectField('VolumeTypeList',
                                            nullable=True),
         'group_snapshots': fields.ObjectField('GroupSnapshotList',
                                               nullable=True),
     }
+
+    def obj_make_compatible(self, primitive, target_version):
+        """Make an object representation compatible with target version."""
+        super(Group, self).obj_make_compatible(primitive, target_version)
+        target_version = versionutils.convert_version_to_tuple(target_version)
+        if target_version < (1, 1):
+            for key in ('group_snapshot_id', 'source_group_id',
+                        'group_snapshots'):
+                primitive.pop(key, None)
+        if target_version < (1, 2):
+            primitive.pop('replication_status', None)
 
     @staticmethod
     def _from_db_object(context, group, db_group,
@@ -162,6 +178,14 @@ class Group(base.CinderPersistentObject, base.CinderObject,
         with self.obj_as_admin():
             db.group_destroy(self._context, self.id)
 
+    @property
+    def is_replicated(self):
+        if (vol_utils.is_group_a_type(self, "group_replication_enabled") or
+                vol_utils.is_group_a_type(
+                    self, "consistent_group_replication_enabled")):
+            return True
+        return False
+
 
 @base.CinderObjectRegistry.register
 class GroupList(base.ObjectListBase, base.CinderObject):
@@ -170,9 +194,6 @@ class GroupList(base.ObjectListBase, base.CinderObject):
 
     fields = {
         'objects': fields.ListOfObjectsField('Group')
-    }
-    child_version = {
-        '1.0': '1.0',
     }
 
     @classmethod
@@ -195,3 +216,37 @@ class GroupList(base.ObjectListBase, base.CinderObject):
         return base.obj_make_list(context, cls(context),
                                   objects.Group,
                                   groups)
+
+    @classmethod
+    def get_all_replicated(cls, context, filters=None, marker=None, limit=None,
+                           offset=None, sort_keys=None, sort_dirs=None):
+        groups = db.group_get_all(
+            context, filters=filters, marker=marker, limit=limit,
+            offset=offset, sort_keys=sort_keys, sort_dirs=sort_dirs)
+        grp_obj_list = base.obj_make_list(context, cls(context),
+                                          objects.Group,
+                                          groups)
+
+        out_groups = [grp for grp in grp_obj_list
+                      if grp.is_replicated]
+
+        return out_groups
+
+    @staticmethod
+    def include_in_cluster(context, cluster, partial_rename=True, **filters):
+        """Include all generic groups matching the filters into a cluster.
+
+        When partial_rename is set we will not set the cluster_name with
+        cluster parameter value directly, we'll replace provided cluster_name
+        or host filter value with cluster instead.
+
+        This is useful when we want to replace just the cluster name but leave
+        the backend and pool information as it is.  If we are using
+        cluster_name to filter, we'll use that same DB field to replace the
+        cluster value and leave the rest as it is.  Likewise if we use the host
+        to filter.
+
+        Returns the number of generic groups that have been changed.
+        """
+        return db.group_include_in_cluster(context, cluster, partial_rename,
+                                           **filters)

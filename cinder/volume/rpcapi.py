@@ -122,11 +122,20 @@ class VolumeAPI(rpc.RPCAPI):
                that we were doing in init_host.
         3.8  - Make failover_host cluster aware and add failover_completed.
         3.9  - Adds new attach/detach methods
-        3.10 -  Returning objects instead of raw dictionaries in
+        3.10 - Returning objects instead of raw dictionaries in
                get_manageable_volumes & get_manageable_snapshots
+        3.11 - Removes create_consistencygroup, delete_consistencygroup,
+               create_cgsnapshot, delete_cgsnapshot, update_consistencygroup,
+               and create_consistencygroup_from_src.
+        3.12 - Adds set_log_levels and get_log_levels
+        3.13 - Add initialize_connection_snapshot,
+               terminate_connection_snapshot, and remove_export_snapshot.
+        3.14 - Adds enable_replication, disable_replication,
+               failover_replication, and list_replication_targets.
+        3.15 - Add revert_to_snapshot method
     """
 
-    RPC_API_VERSION = '3.10'
+    RPC_API_VERSION = '3.15'
     RPC_DEFAULT_VERSION = '3.0'
     TOPIC = constants.VOLUME_TOPIC
     BINARY = 'cinder-volume'
@@ -148,38 +157,6 @@ class VolumeAPI(rpc.RPCAPI):
 
         return super(VolumeAPI, self)._get_cctxt(version=version, **kwargs)
 
-    def create_consistencygroup(self, ctxt, group):
-        cctxt = self._get_cctxt(group.service_topic_queue)
-        cctxt.cast(ctxt, 'create_consistencygroup', group=group)
-
-    def delete_consistencygroup(self, ctxt, group):
-        cctxt = self._get_cctxt(group.service_topic_queue)
-        cctxt.cast(ctxt, 'delete_consistencygroup', group=group)
-
-    def update_consistencygroup(self, ctxt, group, add_volumes=None,
-                                remove_volumes=None):
-        cctxt = self._get_cctxt(group.service_topic_queue)
-        cctxt.cast(ctxt, 'update_consistencygroup',
-                   group=group,
-                   add_volumes=add_volumes,
-                   remove_volumes=remove_volumes)
-
-    def create_consistencygroup_from_src(self, ctxt, group, cgsnapshot=None,
-                                         source_cg=None):
-        cctxt = self._get_cctxt(group.service_topic_queue)
-        cctxt.cast(ctxt, 'create_consistencygroup_from_src',
-                   group=group,
-                   cgsnapshot=cgsnapshot,
-                   source_cg=source_cg)
-
-    def create_cgsnapshot(self, ctxt, cgsnapshot):
-        cctxt = self._get_cctxt(cgsnapshot.service_topic_queue)
-        cctxt.cast(ctxt, 'create_cgsnapshot', cgsnapshot=cgsnapshot)
-
-    def delete_cgsnapshot(self, ctxt, cgsnapshot):
-        cctxt = self._get_cctxt(cgsnapshot.service_topic_queue)
-        cctxt.cast(ctxt, 'delete_cgsnapshot', cgsnapshot=cgsnapshot)
-
     def create_volume(self, ctxt, volume, request_spec, filter_properties,
                       allow_reschedule=True):
         cctxt = self._get_cctxt(volume.service_topic_queue)
@@ -188,6 +165,13 @@ class VolumeAPI(rpc.RPCAPI):
                    filter_properties=filter_properties,
                    allow_reschedule=allow_reschedule,
                    volume=volume)
+
+    @rpc.assert_min_rpc_version('3.15')
+    def revert_to_snapshot(self, ctxt, volume, snapshot):
+        version = self._compat_ver('3.15')
+        cctxt = self._get_cctxt(volume.host, version)
+        cctxt.cast(ctxt, 'revert_to_snapshot', volume=volume,
+                   snapshot=snapshot)
 
     def delete_volume(self, ctxt, volume, unmanage_only=False, cascade=False):
         volume.create_worker()
@@ -427,6 +411,26 @@ class VolumeAPI(rpc.RPCAPI):
         cctxt.cast(ctxt, 'delete_group_snapshot',
                    group_snapshot=group_snapshot)
 
+    @rpc.assert_min_rpc_version('3.13')
+    def initialize_connection_snapshot(self, ctxt, snapshot, connector):
+        cctxt = self._get_cctxt(snapshot.service_topic_queue, version='3.13')
+        return cctxt.call(ctxt, 'initialize_connection_snapshot',
+                          snapshot_id=snapshot.id,
+                          connector=connector)
+
+    @rpc.assert_min_rpc_version('3.13')
+    def terminate_connection_snapshot(self, ctxt, snapshot, connector,
+                                      force=False):
+        cctxt = self._get_cctxt(snapshot.service_topic_queue, version='3.13')
+        return cctxt.call(ctxt, 'terminate_connection_snapshot',
+                          snapshot_id=snapshot.id,
+                          connector=connector, force=force)
+
+    @rpc.assert_min_rpc_version('3.13')
+    def remove_export_snapshot(self, ctxt, snapshot):
+        cctxt = self._get_cctxt(snapshot.service_topic_queue, version='3.13')
+        cctxt.cast(ctxt, 'remove_export_snapshot', snapshot_id=snapshot.id)
+
     @rpc.assert_min_rpc_version('3.9')
     def attachment_update(self, ctxt, vref, connector, attachment_id):
         version = self._compat_ver('3.9')
@@ -455,3 +459,39 @@ class VolumeAPI(rpc.RPCAPI):
         # cinder.manager.CleanableManager unless in the future we overwrite it
         # in cinder.volume.manager
         cctxt.cast(ctxt, 'do_cleanup', cleanup_request=cleanup_request)
+
+    @rpc.assert_min_rpc_version('3.12')
+    def set_log_levels(self, context, service, log_request):
+        cctxt = self._get_cctxt(host=service.host, version='3.12')
+        cctxt.cast(context, 'set_log_levels', log_request=log_request)
+
+    @rpc.assert_min_rpc_version('3.12')
+    def get_log_levels(self, context, service, log_request):
+        cctxt = self._get_cctxt(host=service.host, version='3.12')
+        return cctxt.call(context, 'get_log_levels', log_request=log_request)
+
+    @rpc.assert_min_rpc_version('3.14')
+    def enable_replication(self, ctxt, group):
+        cctxt = self._get_cctxt(group.host, version='3.14')
+        cctxt.cast(ctxt, 'enable_replication',
+                   group=group)
+
+    @rpc.assert_min_rpc_version('3.14')
+    def disable_replication(self, ctxt, group):
+        cctxt = self._get_cctxt(group.host, version='3.14')
+        cctxt.cast(ctxt, 'disable_replication',
+                   group=group)
+
+    @rpc.assert_min_rpc_version('3.14')
+    def failover_replication(self, ctxt, group, allow_attached_volume=False,
+                             secondary_backend_id=None):
+        cctxt = self._get_cctxt(group.host, version='3.14')
+        cctxt.cast(ctxt, 'failover_replication',
+                   group=group, allow_attached_volume=allow_attached_volume,
+                   secondary_backend_id=secondary_backend_id)
+
+    @rpc.assert_min_rpc_version('3.14')
+    def list_replication_targets(self, ctxt, group):
+        cctxt = self._get_cctxt(group.host, version='3.14')
+        return cctxt.call(ctxt, 'list_replication_targets',
+                          group=group)

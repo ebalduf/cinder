@@ -25,14 +25,18 @@ from oslo_utils import encodeutils
 from oslo_utils import excutils
 from oslo_utils import strutils
 import six
+from six.moves import http_client
 import webob
 import webob.exc
 
 from cinder.api.openstack import api_version_request as api_version
 from cinder.api.openstack import versioned_method
 from cinder import exception
+
 from cinder import i18n
-from cinder.i18n import _, _LE, _LI
+i18n.enable_lazy()
+
+from cinder.i18n import _
 from cinder import policy
 from cinder import utils
 from cinder.wsgi import common as wsgi
@@ -279,10 +283,10 @@ class Request(webob.Request):
 
         Microversions starts with /v3, so if a client sends a request for
         version 1.0 or 2.0 with the /v3 endpoint, throw an exception.
-        Sending a header with any microversion to a /v1 or /v2 endpoint will
+        Sending a header with any microversion to a /v2 endpoint will
         be ignored.
-        Note that a microversion must be set for the legacy endpoints. This
-        will appear as 1.0 and 2.0 for /v1 and /v2.
+        Note that a microversion must be set for the legacy endpoint. This
+        will appear as 2.0 for /v2.
         """
         if API_VERSION_REQUEST_HEADER in self.headers and 'v3' in url:
             hdr_string = self.headers[API_VERSION_REQUEST_HEADER]
@@ -314,9 +318,7 @@ class Request(webob.Request):
                         max_ver=api_version.max_api_version().get_string())
 
         else:
-            if 'v1' in url:
-                self.api_version_request = api_version.legacy_api_version1()
-            elif 'v2' in url:
+            if 'v2' in url:
                 self.api_version_request = api_version.legacy_api_version2()
             else:
                 self.api_version_request = api_version.APIVersionRequest(
@@ -441,7 +443,7 @@ class ResponseObject(object):
 
         self.obj = obj
         self.serializers = serializers
-        self._default_code = 200
+        self._default_code = http_client.OK
         self._code = code
         self._headers = headers or {}
         self.serializer = None
@@ -602,15 +604,14 @@ class ResourceExceptionHandler(object):
                 code=ex_value.code, explanation=six.text_type(ex_value)))
         elif isinstance(ex_value, TypeError):
             exc_info = (ex_type, ex_value, ex_traceback)
-            LOG.error(_LE(
-                'Exception handling resource: %s'),
-                ex_value, exc_info=exc_info)
+            LOG.error('Exception handling resource: %s',
+                      ex_value, exc_info=exc_info)
             raise Fault(webob.exc.HTTPBadRequest())
         elif isinstance(ex_value, Fault):
-            LOG.info(_LI("Fault thrown: %s"), ex_value)
+            LOG.info("Fault thrown: %s", ex_value)
             raise ex_value
         elif isinstance(ex_value, webob.exc.HTTPException):
-            LOG.info(_LI("HTTP exception thrown: %s"), ex_value)
+            LOG.info("HTTP exception thrown: %s", ex_value)
             raise Fault(ex_value)
 
         # We didn't handle the exception
@@ -812,7 +813,7 @@ class Resource(wsgi.Application):
     def __call__(self, request):
         """WSGI method that controls (de)serialization and method dispatch."""
 
-        LOG.info(_LI("%(method)s %(url)s"),
+        LOG.info("%(method)s %(url)s",
                  {"method": request.method,
                   "url": request.url})
 
@@ -934,10 +935,10 @@ class Resource(wsgi.Application):
 
         try:
             msg_dict = dict(url=request.url, status=response.status_int)
-            msg = _LI("%(url)s returned with HTTP %(status)d")
+            msg = "%(url)s returned with HTTP %(status)d"
         except AttributeError as e:
             msg_dict = dict(url=request.url, e=e)
-            msg = _LI("%(url)s returned a fault: %(e)s")
+            msg = "%(url)s returned a fault: %(e)s"
 
         LOG.info(msg, msg_dict)
 
@@ -972,7 +973,7 @@ class Resource(wsgi.Application):
                                                             'create',
                                                             'delete',
                                                             'update']):
-                    LOG.exception(_LE('Get method error.'))
+                    LOG.exception('Get method error.')
                 else:
                     ctxt.reraise = False
         else:
@@ -1141,7 +1142,7 @@ class Controller(object):
             constraints and calls it with the supplied arguments.
 
             :returns: Returns the result of the method called
-            :raises: VersionNotFoundForAPIMethod if there is no method which
+            :raises VersionNotFoundForAPIMethod: if there is no method which
                  matches the name and version constraints
             """
 
@@ -1263,23 +1264,17 @@ class Controller(object):
 
     @staticmethod
     def validate_name_and_description(body):
-        name = body.get('name')
-        if name is not None:
-            if isinstance(name, six.string_types):
-                body['name'] = name.strip()
-            try:
-                utils.check_string_length(body['name'], 'Name',
-                                          min_length=0, max_length=255)
-            except exception.InvalidInput as error:
-                raise webob.exc.HTTPBadRequest(explanation=error.msg)
-
-        description = body.get('description')
-        if description is not None:
-            try:
-                utils.check_string_length(description, 'Description',
-                                          min_length=0, max_length=255)
-            except exception.InvalidInput as error:
-                raise webob.exc.HTTPBadRequest(explanation=error.msg)
+        for attribute in ['name', 'description',
+                          'display_name', 'display_description']:
+            value = body.get(attribute)
+            if value is not None:
+                if isinstance(value, six.string_types):
+                    body[attribute] = value.strip()
+                try:
+                    utils.check_string_length(body[attribute], attribute,
+                                              min_length=0, max_length=255)
+                except exception.InvalidInput as error:
+                    raise webob.exc.HTTPBadRequest(explanation=error.msg)
 
     @staticmethod
     def validate_string_length(value, entity_name, min_length=0,
@@ -1323,16 +1318,16 @@ class Controller(object):
 class Fault(webob.exc.HTTPException):
     """Wrap webob.exc.HTTPException to provide API friendly response."""
 
-    _fault_names = {400: "badRequest",
-                    401: "unauthorized",
-                    403: "forbidden",
-                    404: "itemNotFound",
-                    405: "badMethod",
-                    409: "conflictingRequest",
-                    413: "overLimit",
-                    415: "badMediaType",
-                    501: "notImplemented",
-                    503: "serviceUnavailable"}
+    _fault_names = {http_client.BAD_REQUEST: "badRequest",
+                    http_client.UNAUTHORIZED: "unauthorized",
+                    http_client.FORBIDDEN: "forbidden",
+                    http_client.NOT_FOUND: "itemNotFound",
+                    http_client.METHOD_NOT_ALLOWED: "badMethod",
+                    http_client.CONFLICT: "conflictingRequest",
+                    http_client.REQUEST_ENTITY_TOO_LARGE: "overLimit",
+                    http_client.UNSUPPORTED_MEDIA_TYPE: "badMediaType",
+                    http_client.NOT_IMPLEMENTED: "notImplemented",
+                    http_client.SERVICE_UNAVAILABLE: "serviceUnavailable"}
 
     def __init__(self, exception):
         """Create a Fault for the given webob.exc.exception."""
@@ -1351,7 +1346,7 @@ class Fault(webob.exc.HTTPException):
             fault_name: {
                 'code': code,
                 'message': i18n.translate(explanation, locale)}}
-        if code == 413:
+        if code == http_client.REQUEST_ENTITY_TOO_LARGE:
             retry = self.wrapped_exc.headers.get('Retry-After', None)
             if retry:
                 fault_data[fault_name]['retryAfter'] = retry

@@ -29,11 +29,11 @@ import six
 
 from cinder.brick.local_dev import lvm as lvm
 from cinder import exception
-from cinder.i18n import _, _LE, _LI, _LW
+from cinder.i18n import _
 from cinder.image import image_utils
 from cinder import interface
-from cinder import objects
 from cinder import utils
+from cinder.volume import configuration
 from cinder.volume import driver
 from cinder.volume import utils as volutils
 
@@ -52,7 +52,7 @@ volume_opts = [
                help='If >0, create LVs with multiple mirrors. Note that '
                     'this requires lvm_mirrors + 2 PVs with available space'),
     cfg.StrOpt('lvm_type',
-               default='default',
+               default='auto',
                choices=['default', 'thin', 'auto'],
                help='Type of LVM volumes to deploy; (default, thin, or auto). '
                     'Auto defaults to thin if thin is supported.'),
@@ -67,9 +67,10 @@ volume_opts = [
                  # LVM driver which is different than the global default.
                  default=1.0,
                  help='max_over_subscription_ratio setting for the LVM '
-                      'driver.  If set, this takes precedence over the '
-                      'general max_over_subscription_ratio option.  If '
-                      'None, the general option is used.'),
+                      'driver. This takes precedence over the general '
+                      'max_over_subscription_ratio by default. If set '
+                      'to None, the general max_over_subscription_ratio '
+                      'is used.'),
     cfg.BoolOpt('lvm_suppress_fd_warnings',
                 default=False,
                 help='Suppress leaked file descriptor warnings in LVM '
@@ -77,7 +78,7 @@ volume_opts = [
 ]
 
 CONF = cfg.CONF
-CONF.register_opts(volume_opts)
+CONF.register_opts(volume_opts, group=configuration.SHARED_CONF_GROUP)
 
 
 @interface.volumedriver
@@ -203,8 +204,8 @@ class LVMVolumeDriver(driver.VolumeDriver):
 
         LOG.debug("Updating volume stats")
         if self.vg is None:
-            LOG.warning(_LW('Unable to update stats on non-initialized '
-                            'Volume Group: %s'),
+            LOG.warning('Unable to update stats on non-initialized '
+                        'Volume Group: %s',
                         self.configuration.volume_group)
             return
 
@@ -272,7 +273,7 @@ class LVMVolumeDriver(driver.VolumeDriver):
             total_volumes=total_volumes,
             filter_function=self.get_filter_function(),
             goodness_function=self.get_goodness_function(),
-            multiattach=True
+            multiattach=False
         ))
         data["pools"].append(single_pool)
 
@@ -291,10 +292,16 @@ class LVMVolumeDriver(driver.VolumeDriver):
                 lvm_conf_file = None
 
             try:
+                lvm_type = self.configuration.lvm_type
+                if lvm_type == 'auto':
+                    if volutils.supports_thin_provisioning():
+                        lvm_type = 'thin'
+                    else:
+                        lvm_type = 'default'
                 self.vg = lvm.LVM(
                     self.configuration.volume_group,
                     root_helper,
-                    lvm_type=self.configuration.lvm_type,
+                    lvm_type=lvm_type,
                     executor=self._execute,
                     lvm_conf=lvm_conf_file,
                     suppress_fd_warn=(
@@ -326,12 +333,12 @@ class LVMVolumeDriver(driver.VolumeDriver):
 
             if volutils.supports_thin_provisioning():
                 if self.vg.get_volume(pool_name) is not None:
-                    LOG.info(_LI('Enabling LVM thin provisioning by default '
-                                 'because a thin pool exists.'))
+                    LOG.info('Enabling LVM thin provisioning by default '
+                             'because a thin pool exists.')
                     self.configuration.lvm_type = 'thin'
                 elif len(self.vg.get_volumes()) == 0:
-                    LOG.info(_LI('Enabling LVM thin provisioning by default '
-                                 'because no LVs exist.'))
+                    LOG.info('Enabling LVM thin provisioning by default '
+                             'because no LVs exist.')
                     self.configuration.lvm_type = 'thin'
 
         if self.configuration.lvm_type == 'thin':
@@ -387,8 +394,8 @@ class LVMVolumeDriver(driver.VolumeDriver):
             try:
                 self.vg.rename_volume(current_name, original_volume_name)
             except processutils.ProcessExecutionError:
-                LOG.error(_LE('Unable to rename the logical volume '
-                              'for volume: %s'), volume['id'])
+                LOG.error('Unable to rename the logical volume '
+                          'for volume: %s', volume['id'])
                 # If the rename fails, _name_id should be set to the new
                 # volume id and provider_location should be set to the
                 # one from the new volume as well.
@@ -402,6 +409,16 @@ class LVMVolumeDriver(driver.VolumeDriver):
 
     def create_volume_from_snapshot(self, volume, snapshot):
         """Creates a volume from a snapshot."""
+        if self.configuration.lvm_type == 'thin':
+            self.vg.create_lv_snapshot(volume['name'],
+                                       self._escape_snapshot(snapshot['name']),
+                                       self.configuration.lvm_type)
+            if volume['size'] > snapshot['volume_size']:
+                LOG.debug("Resize the new volume to %s.", volume['size'])
+                self.extend_volume(volume, volume['size'])
+            self.vg.activate_lv(volume['name'], is_snapshot=True,
+                                permanent=True)
+            return
         self._create_volume(volume['name'],
                             self._sizestr(volume['size']),
                             self.configuration.lvm_type,
@@ -432,12 +449,12 @@ class LVMVolumeDriver(driver.VolumeDriver):
             return True
 
         if self.vg.lv_has_snapshot(volume['name']):
-            LOG.error(_LE('Unable to delete due to existing snapshot '
-                          'for volume: %s'), volume['name'])
+            LOG.error('Unable to delete due to existing snapshot '
+                      'for volume: %s', volume['name'])
             raise exception.VolumeIsBusy(volume_name=volume['name'])
 
         self._delete_volume(volume)
-        LOG.info(_LI('Successfully deleted volume: %s'), volume['id'])
+        LOG.info('Successfully deleted volume: %s', volume['id'])
 
     def create_snapshot(self, snapshot):
         """Creates a snapshot."""
@@ -450,14 +467,30 @@ class LVMVolumeDriver(driver.VolumeDriver):
         """Deletes a snapshot."""
         if self._volume_not_present(self._escape_snapshot(snapshot['name'])):
             # If the snapshot isn't present, then don't attempt to delete
-            LOG.warning(_LW("snapshot: %s not found, "
-                            "skipping delete operations"), snapshot['name'])
-            LOG.info(_LI('Successfully deleted snapshot: %s'), snapshot['id'])
+            LOG.warning("snapshot: %s not found, "
+                        "skipping delete operations", snapshot['name'])
+            LOG.info('Successfully deleted snapshot: %s', snapshot['id'])
             return True
 
         # TODO(yamahata): zeroing out the whole snapshot triggers COW.
         # it's quite slow.
         self._delete_volume(snapshot, is_snapshot=True)
+
+    def revert_to_snapshot(self, context, volume, snapshot):
+        """Revert a volume to a snapshot"""
+
+        # NOTE(tommylikehu): We still can revert the volume because Cinder
+        # will try the alternative approach if 'NotImplementedError'
+        # is raised here.
+        if self.configuration.lvm_type == 'thin':
+            msg = _("Revert volume to snapshot not implemented for thin LVM.")
+            raise NotImplementedError(msg)
+        else:
+            self.vg.revert(self._escape_snapshot(snapshot.name))
+            self.vg.deactivate_lv(volume.name)
+            self.vg.activate_lv(volume.name)
+            # Recreate the snapshot that was destroyed by the revert
+            self.create_snapshot(snapshot)
 
     def local_path(self, volume, vg=None):
         if vg is None:
@@ -499,7 +532,7 @@ class LVMVolumeDriver(driver.VolumeDriver):
         mirror_count = 0
         if self.configuration.lvm_mirrors:
             mirror_count = self.configuration.lvm_mirrors
-        LOG.info(_LI('Creating clone of volume: %s'), src_vref['id'])
+        LOG.info('Creating clone of volume: %s', src_vref['id'])
         volume_name = src_vref['name']
         temp_id = 'tmp-snap-%s' % volume['id']
         temp_snapshot = {'volume_name': volume_name,
@@ -533,49 +566,6 @@ class LVMVolumeDriver(driver.VolumeDriver):
                     image_location, image_meta,
                     image_service):
         return None, False
-
-    def backup_volume(self, context, backup, backup_service):
-        """Create a new backup from an existing volume."""
-        volume = self.db.volume_get(context, backup.volume_id)
-        snapshot = None
-        if backup.snapshot_id:
-            snapshot = objects.Snapshot.get_by_id(context, backup.snapshot_id)
-        temp_snapshot = None
-        # NOTE(xyang): If it is to backup from snapshot, back it up
-        # directly. No need to clean it up.
-        if snapshot:
-            volume_path = self.local_path(snapshot)
-        else:
-            # NOTE(xyang): If it is not to backup from snapshot, check volume
-            # status. If the volume status is 'in-use', create a temp snapshot
-            # from the source volume, backup the temp snapshot, and then clean
-            # up the temp snapshot; if the volume status is 'available', just
-            # backup the volume.
-            previous_status = volume.get('previous_status', None)
-            if previous_status == "in-use":
-                temp_snapshot = self._create_temp_snapshot(context, volume)
-                backup.temp_snapshot_id = temp_snapshot.id
-                backup.save()
-                volume_path = self.local_path(temp_snapshot)
-            else:
-                volume_path = self.local_path(volume)
-
-        try:
-            with utils.temporary_chown(volume_path):
-                with open(volume_path) as volume_file:
-                    backup_service.backup(backup, volume_file)
-        finally:
-            if temp_snapshot:
-                self._delete_temp_snapshot(context, temp_snapshot)
-                backup.temp_snapshot_id = None
-                backup.save()
-
-    def restore_backup(self, context, backup, volume, backup_service):
-        """Restore an existing backup to a new or existing volume."""
-        volume_path = self.local_path(volume)
-        with utils.temporary_chown(volume_path):
-            with open(volume_path, 'wb') as volume_file:
-                backup_service.restore(backup, volume['id'], volume_file)
 
     def get_volume_stats(self, refresh=False):
         """Get volume status.
@@ -769,7 +759,7 @@ class LVMVolumeDriver(driver.VolumeDriver):
         try:
             next(vg for vg in vg_list if vg['name'] == dest_vg)
         except StopIteration:
-            LOG.error(_LE("Destination Volume Group %s does not exist"),
+            LOG.error("Destination Volume Group %s does not exist",
                       dest_vg)
             return false_ret
 
@@ -801,8 +791,8 @@ class LVMVolumeDriver(driver.VolumeDriver):
                                  sparse=self._sparse_copy_volume)
         except Exception as e:
             with excutils.save_and_reraise_exception():
-                LOG.error(_LE("Volume migration failed due to "
-                              "exception: %(reason)s."),
+                LOG.error("Volume migration failed due to "
+                          "exception: %(reason)s.",
                           {'reason': six.text_type(e)}, resource=volume)
                 dest_vg_ref.delete(volume)
         self._delete_volume(volume)
@@ -817,6 +807,8 @@ class LVMVolumeDriver(driver.VolumeDriver):
         volume_path = "/dev/%s/%s" % (self.configuration.volume_group,
                                       volume['name'])
 
+        self.vg.activate_lv(volume['name'])
+
         model_update = \
             self.target_driver.ensure_export(context, volume, volume_path)
         return model_update
@@ -826,6 +818,8 @@ class LVMVolumeDriver(driver.VolumeDriver):
             vg = self.configuration.volume_group
 
         volume_path = "/dev/%s/%s" % (vg, volume['name'])
+
+        self.vg.activate_lv(volume['name'])
 
         export_info = self.target_driver.create_export(
             context,
@@ -844,5 +838,17 @@ class LVMVolumeDriver(driver.VolumeDriver):
         return self.target_driver.validate_connector(connector)
 
     def terminate_connection(self, volume, connector, **kwargs):
-        return self.target_driver.terminate_connection(volume, connector,
-                                                       **kwargs)
+        # NOTE(jdg):  LVM has a single export for each volume, so what
+        # we need to do here is check if there is more than one attachment for
+        # the volume, if there is; let the caller know that they should NOT
+        # remove the export.
+        has_shared_connections = False
+        if len(volume.volume_attachment) > 1:
+            has_shared_connections = True
+
+        # NOTE(jdg): For the TGT driver this is a noop, for LIO this removes
+        # the initiator IQN from the targets access list, so we're good
+
+        self.target_driver.terminate_connection(volume, connector,
+                                                **kwargs)
+        return has_shared_connections

@@ -13,7 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""The backups V3 api."""
+"""The backups V3 API."""
 
 from oslo_log import log as logging
 from webob import exc
@@ -32,13 +32,14 @@ LOG = logging.getLogger(__name__)
 
 
 class BackupsController(backups_v2.BackupsController):
-    """The backups API controller for the Openstack API V3."""
+    """The backups API controller for the OpenStack API V3."""
 
     @wsgi.Controller.api_version(BACKUP_UPDATE_MICRO_VERSION)
     def update(self, req, id, body):
         """Update a backup."""
         context = req.environ['cinder.context']
         self.assert_valid_body(body, 'backup')
+        req_version = req.api_version_request
 
         backup_update = body['backup']
 
@@ -49,6 +50,8 @@ class BackupsController(backups_v2.BackupsController):
         if 'description' in backup_update:
             update_dict['display_description'] = (
                 backup_update.pop('description'))
+        if req_version.matches('3.43') and 'metadata' in backup_update:
+            update_dict['metadata'] = backup_update.pop('metadata')
         # Check no unsupported fields.
         if backup_update:
             msg = _("Unsupported fields %s.") % (", ".join(backup_update))
@@ -65,7 +68,7 @@ class BackupsController(backups_v2.BackupsController):
 
     def show(self, req, id):
         """Return data about the given backup."""
-        LOG.debug('show called for member %s', id)
+        LOG.debug('Show backup with id %s.', id)
         context = req.environ['cinder.context']
         req_version = req.api_version_request
 
@@ -95,6 +98,10 @@ class BackupsController(backups_v2.BackupsController):
             except exception.PolicyNotAuthorized:
                 pass
         return resp_backup
+
+    def _convert_sort_name(self, req_version, sort_keys):
+        if req_version.matches("3.37") and 'name' in sort_keys:
+            sort_keys[sort_keys.index('name')] = 'display_name'
 
 
 def create_resource():

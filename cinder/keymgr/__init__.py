@@ -19,17 +19,11 @@ from oslo_log import log as logging
 from oslo_log import versionutils
 from oslo_utils import importutils
 
-from cinder.i18n import _LW
-
 LOG = logging.getLogger(__name__)
 
 CONF = cfg.CONF
 
 castellan_opts.set_defaults(CONF)
-
-# NOTE(kfarr): This line can be removed when a value is assigned in DevStack
-CONF.set_default('api_class', 'cinder.keymgr.conf_key_mgr.ConfKeyManager',
-                 group='key_manager')
 
 
 def log_deprecated_warning(deprecated_value, castellan):
@@ -46,13 +40,13 @@ def set_overrides(conf):
     try:
         api_class = conf.key_manager.api_class
     except cfg.NoSuchOptError:
-        LOG.warning(_LW("key_manager.api_class is not set, will use deprecated"
-                        " option keymgr.api_class if set"))
+        LOG.warning("key_manager.api_class is not set, will use deprecated"
+                    " option keymgr.api_class if set")
         try:
             api_class = CONF.keymgr.api_class
             should_override = True
         except cfg.NoSuchOptError:
-            LOG.warning(_LW("keymgr.api_class is not set"))
+            LOG.warning("keymgr.api_class is not set")
 
     deprecated_barbican = 'cinder.keymgr.barbican.BarbicanKeyManager'
     barbican = 'castellan.key_manager.barbican_key_manager.BarbicanKeyManager'
@@ -72,7 +66,7 @@ def set_overrides(conf):
         should_override = True
         # TODO(kfarr): key_manager.api_class should be set in DevStack, and
         # this block can be removed
-        LOG.warning(_LW("key manager not set, using insecure default %s"),
+        LOG.warning("key manager not set, using insecure default %s",
                     castellan_mock)
         api_class = castellan_mock
 

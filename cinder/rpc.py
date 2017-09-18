@@ -23,19 +23,19 @@ __all__ = [
     'get_client',
     'get_server',
     'get_notifier',
-    'TRANSPORT_ALIASES',
 ]
 
 from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging as messaging
+from oslo_messaging.rpc import dispatcher
 from oslo_utils import importutils
 profiler = importutils.try_import('osprofiler.profiler')
 import six
 
 import cinder.context
 import cinder.exception
-from cinder.i18n import _, _LE, _LI
+from cinder.i18n import _
 from cinder import objects
 from cinder.objects import base
 from cinder import utils
@@ -51,29 +51,15 @@ ALLOWED_EXMODS = [
 ]
 EXTRA_EXMODS = []
 
-# NOTE(flaper87): The cinder.openstack.common.rpc entries are
-# for backwards compat with Havana rpc_backend configuration
-# values. The cinder.rpc entries are for compat with Folsom values.
-TRANSPORT_ALIASES = {
-    'cinder.openstack.common.rpc.impl_kombu': 'rabbit',
-    'cinder.openstack.common.rpc.impl_qpid': 'qpid',
-    'cinder.openstack.common.rpc.impl_zmq': 'zmq',
-    'cinder.rpc.impl_kombu': 'rabbit',
-    'cinder.rpc.impl_qpid': 'qpid',
-    'cinder.rpc.impl_zmq': 'zmq',
-}
-
 
 def init(conf):
     global TRANSPORT, NOTIFICATION_TRANSPORT, NOTIFIER
     exmods = get_allowed_exmods()
-    TRANSPORT = messaging.get_transport(conf,
-                                        allowed_remote_exmods=exmods,
-                                        aliases=TRANSPORT_ALIASES)
+    TRANSPORT = messaging.get_rpc_transport(conf,
+                                            allowed_remote_exmods=exmods)
     NOTIFICATION_TRANSPORT = messaging.get_notification_transport(
         conf,
-        allowed_remote_exmods=exmods,
-        aliases=TRANSPORT_ALIASES)
+        allowed_remote_exmods=exmods)
 
     # get_notification_transport has loaded oslo_messaging_notifications config
     # group, so we can now check if notifications are actually enabled.
@@ -93,7 +79,7 @@ def initialized():
 def cleanup():
     global TRANSPORT, NOTIFICATION_TRANSPORT, NOTIFIER
     if NOTIFIER is None:
-        LOG.exception(_LE("RPC cleanup: NOTIFIER is None"))
+        LOG.exception("RPC cleanup: NOTIFIER is None")
     TRANSPORT.cleanup()
     NOTIFICATION_TRANSPORT.cleanup()
     TRANSPORT = NOTIFICATION_TRANSPORT = NOTIFIER = None
@@ -164,11 +150,13 @@ def get_client(target, version_cap=None, serializer=None):
 def get_server(target, endpoints, serializer=None):
     assert TRANSPORT is not None
     serializer = RequestContextSerializer(serializer)
+    access_policy = dispatcher.DefaultRPCAccessPolicy
     return messaging.get_rpc_server(TRANSPORT,
                                     target,
                                     endpoints,
                                     executor='eventlet',
-                                    serializer=serializer)
+                                    serializer=serializer,
+                                    access_policy=access_policy)
 
 
 @utils.if_notifications_enabled
@@ -256,8 +244,8 @@ class RPCAPI(object):
             # If there is no service we assume they will come up later and will
             # have the same version as we do.
             version_cap = cls.RPC_API_VERSION
-        LOG.info(_LI('Automatically selected %(binary)s RPC version '
-                     '%(version)s as minimum service version.'),
+        LOG.info('Automatically selected %(binary)s RPC version '
+                 '%(version)s as minimum service version.',
                  {'binary': cls.BINARY, 'version': version_cap})
         LAST_RPC_VERSIONS[cls.BINARY] = version_cap
         return version_cap
@@ -274,8 +262,8 @@ class RPCAPI(object):
         # have the same version as we do.
         if not version_cap:
             version_cap = base.OBJ_VERSIONS.get_current()
-        LOG.info(_LI('Automatically selected %(binary)s objects version '
-                     '%(version)s as minimum service version.'),
+        LOG.info('Automatically selected %(binary)s objects version '
+                 '%(version)s as minimum service version.',
                  {'binary': cls.BINARY, 'version': version_cap})
         LAST_OBJ_VERSIONS[cls.BINARY] = version_cap
         return version_cap

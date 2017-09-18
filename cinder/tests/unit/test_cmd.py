@@ -11,15 +11,18 @@
 #    under the License.
 
 import datetime
-from iso8601 import iso8601
+import iso8601
 import sys
 import time
 
 import ddt
+import fixtures
 import mock
 from oslo_config import cfg
+from oslo_db import exception as oslo_exception
 from oslo_utils import timeutils
 import six
+from six.moves import StringIO
 
 try:
     import rtslib_fb
@@ -55,9 +58,6 @@ class TestCinderApiCmd(test.TestCase):
         super(TestCinderApiCmd, self).setUp()
         sys.argv = ['cinder-api']
 
-    def tearDown(self):
-        super(TestCinderApiCmd, self).tearDown()
-
     @mock.patch('cinder.service.WSGIService')
     @mock.patch('cinder.service.process_launcher')
     @mock.patch('cinder.rpc.init')
@@ -89,9 +89,6 @@ class TestCinderBackupCmd(test.TestCase):
         super(TestCinderBackupCmd, self).setUp()
         sys.argv = ['cinder-backup']
 
-    def tearDown(self):
-        super(TestCinderBackupCmd, self).tearDown()
-
     @mock.patch('cinder.service.wait')
     @mock.patch('cinder.service.serve')
     @mock.patch('cinder.service.Service.create')
@@ -107,7 +104,8 @@ class TestCinderBackupCmd(test.TestCase):
         self.assertEqual(CONF.version, version.version_string())
         log_setup.assert_called_once_with(CONF, "cinder")
         monkey_patch.assert_called_once_with()
-        service_create.assert_called_once_with(binary='cinder-backup')
+        service_create.assert_called_once_with(binary='cinder-backup',
+                                               coordination=True)
         service_serve.assert_called_once_with(server)
         service_wait.assert_called_once_with()
 
@@ -117,9 +115,6 @@ class TestCinderSchedulerCmd(test.TestCase):
     def setUp(self):
         super(TestCinderSchedulerCmd, self).setUp()
         sys.argv = ['cinder-scheduler']
-
-    def tearDown(self):
-        super(TestCinderSchedulerCmd, self).tearDown()
 
     @mock.patch('cinder.service.wait')
     @mock.patch('cinder.service.serve')
@@ -146,9 +141,6 @@ class TestCinderVolumeCmd(test.TestCase):
     def setUp(self):
         super(TestCinderVolumeCmd, self).setUp()
         sys.argv = ['cinder-volume']
-
-    def tearDown(self):
-        super(TestCinderVolumeCmd, self).tearDown()
 
     @mock.patch('cinder.service.get_launcher')
     @mock.patch('cinder.service.Service.create')
@@ -203,7 +195,7 @@ class TestCinderManageCmd(test.TestCase):
 
     @mock.patch('cinder.db.migration.db_sync')
     def test_db_commands_sync(self, db_sync):
-        version = mock.MagicMock()
+        version = 11
         db_cmds = cinder_manage.DbCommands()
         db_cmds.sync(version=version)
         db_sync.assert_called_once_with(version)
@@ -215,6 +207,19 @@ class TestCinderManageCmd(test.TestCase):
             db_cmds.version()
             self.assertEqual(1, db_version.call_count)
 
+    def test_db_commands_upgrade_out_of_range(self):
+        version = 2147483647
+        db_cmds = cinder_manage.DbCommands()
+        exit = self.assertRaises(SystemExit, db_cmds.sync, version + 1)
+        self.assertEqual(1, exit.code)
+
+    @mock.patch("oslo_db.sqlalchemy.migration.db_sync")
+    def test_db_commands_script_not_present(self, db_sync):
+        db_sync.side_effect = oslo_exception.DbMigrationError
+        db_cmds = cinder_manage.DbCommands()
+        exit = self.assertRaises(SystemExit, db_cmds.sync, 101)
+        self.assertEqual(1, exit.code)
+
     @mock.patch('cinder.cmd.manage.DbCommands.online_migrations',
                 (mock.Mock(side_effect=((2, 2), (0, 0)), __name__='foo'),))
     def test_db_commands_online_data_migrations(self):
@@ -223,6 +228,45 @@ class TestCinderManageCmd(test.TestCase):
         self.assertEqual(0, exit.code)
         cinder_manage.DbCommands.online_migrations[0].assert_has_calls(
             (mock.call(mock.ANY, 50, False),) * 2)
+
+    def _fake_db_command(self, migrations=None):
+        if migrations is None:
+            mock_mig_1 = mock.MagicMock(__name__="mock_mig_1")
+            mock_mig_2 = mock.MagicMock(__name__="mock_mig_2")
+            mock_mig_1.return_value = (5, 4)
+            mock_mig_2.return_value = (6, 6)
+            migrations = (mock_mig_1, mock_mig_2)
+
+        class _CommandSub(cinder_manage.DbCommands):
+            online_migrations = migrations
+
+        return _CommandSub
+
+    @mock.patch('cinder.context.get_admin_context')
+    def test_online_migrations(self, mock_get_context):
+        self.useFixture(fixtures.MonkeyPatch('sys.stdout', StringIO()))
+        ctxt = mock_get_context.return_value
+        db_cmds = self._fake_db_command()
+        command = db_cmds()
+        exit = self.assertRaises(SystemExit,
+                                 command.online_data_migrations, 10)
+        self.assertEqual(1, exit.code)
+        expected = """\
+5 rows matched query mock_mig_1, 4 migrated, 1 remaining
+6 rows matched query mock_mig_2, 6 migrated, 0 remaining
++------------+-------+------+-----------+
+| Migration  | Found | Done | Remaining |
++------------+-------+------+-----------+
+| mock_mig_1 |   5   |  4   |     1     |
+| mock_mig_2 |   6   |  6   |     0     |
++------------+-------+------+-----------+
+"""
+        command.online_migrations[0].assert_has_calls([mock.call(ctxt,
+                                                                 10, False)])
+        command.online_migrations[1].assert_has_calls([mock.call(ctxt,
+                                                                 6, False)])
+
+        self.assertEqual(expected, sys.stdout.getvalue())
 
     @mock.patch('cinder.cmd.manage.DbCommands.online_migrations',
                 (mock.Mock(side_effect=((2, 2), (0, 0)), __name__='foo'),))
@@ -508,6 +552,7 @@ class TestCinderManageCmd(test.TestCase):
                   'size': 123,
                   'object_count': 1,
                   'volume_id': fake.VOLUME_ID,
+                  'backup_metadata': {},
                   }
         backup_get_all.return_value = [backup]
         with mock.patch('sys.stdout', new=six.StringIO()) as fake_out:
@@ -561,6 +606,7 @@ class TestCinderManageCmd(test.TestCase):
                   'size': 123,
                   'object_count': 1,
                   'volume_id': fake.VOLUME_ID,
+                  'backup_metadata': {},
                   }
         backup_get_by_host.return_value = [backup]
         backup_cmds = cinder_manage.BackupCommands()
@@ -621,7 +667,7 @@ class TestCinderManageCmd(test.TestCase):
             object_version = service['object_current_version']
             cluster = service.get('cluster_name', '')
             service_format = format % (service['binary'],
-                                       service['host'].partition('.')[0],
+                                       service['host'],
                                        service['availability_zone'],
                                        'enabled',
                                        ':-)',
@@ -934,9 +980,6 @@ class TestCinderRtstoolCmd(test.TestCase):
 
         self.INITIATOR_IQN = 'iqn.2015.12.com.example.openstack.i:UNIT1'
         self.TARGET_IQN = 'iqn.2015.12.com.example.openstack.i:TARGET1'
-
-    def tearDown(self):
-        super(TestCinderRtstoolCmd, self).tearDown()
 
     @mock.patch.object(rtslib_fb.root, 'RTSRoot')
     def test_create_rtslib_error(self, rtsroot):
@@ -1328,8 +1371,8 @@ class TestCinderRtstoolCmd(test.TestCase):
         mock_os.path.exists.return_value = False
         mock_os.makedirs.side_effect = OSError('error')
 
-        regexp = (u'targetcli not installed and could not create default '
-                  'directory \(dirname\): error$')
+        regexp = (r'targetcli not installed and could not create default '
+                  r'directory \(dirname\): error$')
         self.assertRaisesRegexp(cinder_rtstool.RtstoolError, regexp,
                                 cinder_rtstool.save_to_file, None)
 
@@ -1338,7 +1381,7 @@ class TestCinderRtstoolCmd(test.TestCase):
     def test_save_error_saving(self, mock_rtslib, mock_os):
         save = mock_rtslib.root.RTSRoot.return_value.save_to_file
         save.side_effect = OSError('error')
-        regexp = u'Could not save configuration to myfile: error'
+        regexp = r'Could not save configuration to myfile: error'
         self.assertRaisesRegexp(cinder_rtstool.RtstoolError, regexp,
                                 cinder_rtstool.save_to_file, 'myfile')
 
@@ -1529,9 +1572,6 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
         super(TestCinderVolumeUsageAuditCmd, self).setUp()
         sys.argv = ['cinder-volume-usage-audit']
 
-    def tearDown(self):
-        super(TestCinderVolumeUsageAuditCmd, self).tearDown()
-
     @mock.patch('cinder.utils.last_completed_audit_period')
     @mock.patch('cinder.rpc.init')
     @mock.patch('cinder.version.version_string')
@@ -1574,15 +1614,15 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
         CONF.set_override('send_actions', True)
         CONF.set_override('start_time', '2014-01-01 01:00:00')
         CONF.set_override('end_time', '2014-02-02 02:00:00')
-        begin = datetime.datetime(2014, 1, 1, 1, 0, tzinfo=iso8601.Utc())
-        end = datetime.datetime(2014, 2, 2, 2, 0, tzinfo=iso8601.Utc())
+        begin = datetime.datetime(2014, 1, 1, 1, 0, tzinfo=iso8601.UTC)
+        end = datetime.datetime(2014, 2, 2, 2, 0, tzinfo=iso8601.UTC)
         ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID)
         get_admin_context.return_value = ctxt
         last_completed_audit_period.return_value = (begin, end)
         volume1_created = datetime.datetime(2014, 1, 1, 2, 0,
-                                            tzinfo=iso8601.Utc())
+                                            tzinfo=iso8601.UTC)
         volume1_deleted = datetime.datetime(2014, 1, 1, 3, 0,
-                                            tzinfo=iso8601.Utc())
+                                            tzinfo=iso8601.UTC)
         volume1 = mock.MagicMock(id=fake.VOLUME_ID, project_id=fake.PROJECT_ID,
                                  created_at=volume1_created,
                                  deleted_at=volume1_deleted)
@@ -1640,15 +1680,15 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
         CONF.set_override('send_actions', True)
         CONF.set_override('start_time', '2014-01-01 01:00:00')
         CONF.set_override('end_time', '2014-02-02 02:00:00')
-        begin = datetime.datetime(2014, 1, 1, 1, 0, tzinfo=iso8601.Utc())
-        end = datetime.datetime(2014, 2, 2, 2, 0, tzinfo=iso8601.Utc())
+        begin = datetime.datetime(2014, 1, 1, 1, 0, tzinfo=iso8601.UTC)
+        end = datetime.datetime(2014, 2, 2, 2, 0, tzinfo=iso8601.UTC)
         ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID)
         get_admin_context.return_value = ctxt
         last_completed_audit_period.return_value = (begin, end)
         volume1_created = datetime.datetime(2014, 1, 1, 2, 0,
-                                            tzinfo=iso8601.Utc())
+                                            tzinfo=iso8601.UTC)
         volume1_deleted = datetime.datetime(2014, 1, 1, 3, 0,
-                                            tzinfo=iso8601.Utc())
+                                            tzinfo=iso8601.UTC)
         volume1 = mock.MagicMock(id=fake.VOLUME_ID, project_id=fake.PROJECT_ID,
                                  created_at=volume1_created,
                                  deleted_at=volume1_deleted)
@@ -1719,15 +1759,15 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
         CONF.set_override('send_actions', True)
         CONF.set_override('start_time', '2014-01-01 01:00:00')
         CONF.set_override('end_time', '2014-02-02 02:00:00')
-        begin = datetime.datetime(2014, 1, 1, 1, 0, tzinfo=iso8601.Utc())
-        end = datetime.datetime(2014, 2, 2, 2, 0, tzinfo=iso8601.Utc())
+        begin = datetime.datetime(2014, 1, 1, 1, 0, tzinfo=iso8601.UTC)
+        end = datetime.datetime(2014, 2, 2, 2, 0, tzinfo=iso8601.UTC)
         ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID)
         get_admin_context.return_value = ctxt
         last_completed_audit_period.return_value = (begin, end)
         snapshot1_created = datetime.datetime(2014, 1, 1, 2, 0,
-                                              tzinfo=iso8601.Utc())
+                                              tzinfo=iso8601.UTC)
         snapshot1_deleted = datetime.datetime(2014, 1, 1, 3, 0,
-                                              tzinfo=iso8601.Utc())
+                                              tzinfo=iso8601.UTC)
         snapshot1 = mock.MagicMock(id=fake.VOLUME_ID,
                                    project_id=fake.PROJECT_ID,
                                    created_at=snapshot1_created,
@@ -1792,15 +1832,15 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
         CONF.set_override('send_actions', True)
         CONF.set_override('start_time', '2014-01-01 01:00:00')
         CONF.set_override('end_time', '2014-02-02 02:00:00')
-        begin = datetime.datetime(2014, 1, 1, 1, 0, tzinfo=iso8601.Utc())
-        end = datetime.datetime(2014, 2, 2, 2, 0, tzinfo=iso8601.Utc())
+        begin = datetime.datetime(2014, 1, 1, 1, 0, tzinfo=iso8601.UTC)
+        end = datetime.datetime(2014, 2, 2, 2, 0, tzinfo=iso8601.UTC)
         ctxt = context.RequestContext('fake-user', 'fake-project')
         get_admin_context.return_value = ctxt
         last_completed_audit_period.return_value = (begin, end)
         backup1_created = datetime.datetime(2014, 1, 1, 2, 0,
-                                            tzinfo=iso8601.Utc())
+                                            tzinfo=iso8601.UTC)
         backup1_deleted = datetime.datetime(2014, 1, 1, 3, 0,
-                                            tzinfo=iso8601.Utc())
+                                            tzinfo=iso8601.UTC)
         backup1 = mock.MagicMock(id=fake.BACKUP_ID,
                                  project_id=fake.PROJECT_ID,
                                  created_at=backup1_created,
@@ -1863,16 +1903,16 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
         CONF.set_override('send_actions', True)
         CONF.set_override('start_time', '2014-01-01 01:00:00')
         CONF.set_override('end_time', '2014-02-02 02:00:00')
-        begin = datetime.datetime(2014, 1, 1, 1, 0, tzinfo=iso8601.Utc())
-        end = datetime.datetime(2014, 2, 2, 2, 0, tzinfo=iso8601.Utc())
+        begin = datetime.datetime(2014, 1, 1, 1, 0, tzinfo=iso8601.UTC)
+        end = datetime.datetime(2014, 2, 2, 2, 0, tzinfo=iso8601.UTC)
         ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID)
         get_admin_context.return_value = ctxt
         last_completed_audit_period.return_value = (begin, end)
 
         volume1_created = datetime.datetime(2014, 1, 1, 2, 0,
-                                            tzinfo=iso8601.Utc())
+                                            tzinfo=iso8601.UTC)
         volume1_deleted = datetime.datetime(2014, 1, 1, 3, 0,
-                                            tzinfo=iso8601.Utc())
+                                            tzinfo=iso8601.UTC)
         volume1 = mock.MagicMock(id=fake.VOLUME_ID, project_id=fake.PROJECT_ID,
                                  created_at=volume1_created,
                                  deleted_at=volume1_deleted)
@@ -1891,9 +1931,9 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
         }
 
         snapshot1_created = datetime.datetime(2014, 1, 1, 2, 0,
-                                              tzinfo=iso8601.Utc())
+                                              tzinfo=iso8601.UTC)
         snapshot1_deleted = datetime.datetime(2014, 1, 1, 3, 0,
-                                              tzinfo=iso8601.Utc())
+                                              tzinfo=iso8601.UTC)
         snapshot1 = mock.MagicMock(id=fake.VOLUME_ID,
                                    project_id=fake.PROJECT_ID,
                                    created_at=snapshot1_created,
@@ -1909,9 +1949,9 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
         }
 
         backup1_created = datetime.datetime(2014, 1, 1, 2, 0,
-                                            tzinfo=iso8601.Utc())
+                                            tzinfo=iso8601.UTC)
         backup1_deleted = datetime.datetime(2014, 1, 1, 3, 0,
-                                            tzinfo=iso8601.Utc())
+                                            tzinfo=iso8601.UTC)
         backup1 = mock.MagicMock(id=fake.BACKUP_ID,
                                  project_id=fake.PROJECT_ID,
                                  created_at=backup1_created,

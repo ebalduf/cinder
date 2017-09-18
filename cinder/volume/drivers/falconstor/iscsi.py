@@ -33,26 +33,35 @@ class FSSISCSIDriver(fss_common.FalconstorBaseDriver,
     To enable the driver add the following line to the cinder configuration:
         volume_driver=cinder.volume.drivers.falconstor.iscsi.FSSISCSIDriver
 
-    Version history:
-        1.0.0 - Initial driver
-        1.0.1 - Fix copy_image_to_volume error.
-        1.0.2 - Closes-Bug #1554184, add lun id type conversion in
-                initialize_connection
-        1.03 -  merge source code
-        1.04 -  Fixed  create_volume_from_snapshot(), create_cloned_volume()
-        metadata TypeError
-        2.0.0 - Mitaka driver
-                -- fixed consisgroup commands error.
-        2.0.1   -- fixed bugs
-        2.0.2   -- support Multipath
-        3.0.0 - Newton driver
+    .. code: text
+
+      Version history:
+          1.0.0 - Initial driver
+          1.0.1 - Fix copy_image_to_volume error.
+          1.0.2 - Closes-Bug #1554184, add lun id type conversion in
+                  initialize_connection
+          1.03 -  merge source code
+          1.04 -  Fixed  create_volume_from_snapshot(), create_cloned_volume()
+                  metadata TypeError
+          2.0.0 - Newton driver
+                  -- fixed consisgroup commands error
+          2.0.1   -- fixed bugs
+          2.0.2   -- support Multipath
+          3.0.0 - Ocata driver
+                  -- fixed bugs
+          4.0.0 - Pike driver
+                  -- extend Cinder driver to utilize multiple FSS storage pools
 
     """
 
-    VERSION = '3.0.0'
+    VERSION = '4.0.0'
 
     # ThirdPartySystems wiki page
     CI_WIKI_NAME = "FalconStor_CI"
+
+    # TODO(smcginnis) Remove driver in Queens if CI issues are not
+    # addressed.
+    SUPPORTED = False
 
     def __init__(self, *args, **kwargs):
         super(FSSISCSIDriver, self).__init__(*args, **kwargs)

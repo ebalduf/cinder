@@ -19,7 +19,6 @@
 
 from oslo_log import log as logging
 from six.moves import http_client
-import webob
 from webob import exc
 
 from cinder.api import common
@@ -28,7 +27,7 @@ from cinder.api.openstack import wsgi
 from cinder.api.views import backups as backup_views
 from cinder import backup as backupAPI
 from cinder import exception
-from cinder.i18n import _, _LI
+from cinder.i18n import _
 from cinder import utils
 
 LOG = logging.getLogger(__name__)
@@ -45,7 +44,7 @@ class BackupsController(wsgi.Controller):
 
     def show(self, req, id):
         """Return data about the given backup."""
-        LOG.debug('show called for member %s', id)
+        LOG.debug('Show backup with id: %s.', id)
         context = req.environ['cinder.context']
 
         # Not found exception will be handled at the wsgi level
@@ -54,12 +53,12 @@ class BackupsController(wsgi.Controller):
 
         return self._view_builder.detail(req, backup)
 
+    @wsgi.response(http_client.ACCEPTED)
     def delete(self, req, id):
         """Delete a backup."""
-        LOG.debug('Delete called for member %s.', id)
         context = req.environ['cinder.context']
 
-        LOG.info(_LI('Delete backup with id: %s'), id)
+        LOG.info('Delete backup with id: %s.', id)
 
         try:
             backup = self.backup_api.get(context, id)
@@ -67,8 +66,6 @@ class BackupsController(wsgi.Controller):
         # Not found exception will be handled at the wsgi level
         except exception.InvalidBackup as error:
             raise exc.HTTPBadRequest(explanation=error.msg)
-
-        return webob.Response(status_int=http_client.ACCEPTED)
 
     def index(self, req):
         """Returns a summary list of backups."""
@@ -83,16 +80,28 @@ class BackupsController(wsgi.Controller):
         """Return volume search options allowed by non-admin."""
         return ('name', 'status', 'volume_id')
 
+    @common.process_general_filtering('backup')
+    def _process_backup_filtering(self, context=None, filters=None,
+                                  req_version=None):
+        utils.remove_invalid_filter_options(context,
+                                            filters,
+                                            self._get_backup_filter_options())
+
+    def _convert_sort_name(self, req_version, sort_keys):
+        """Convert sort key "name" to "display_name". """
+        pass
+
     def _get_backups(self, req, is_detail):
         """Returns a list of backups, transformed through view builder."""
         context = req.environ['cinder.context']
         filters = req.params.copy()
+        req_version = req.api_version_request
         marker, limit, offset = common.get_pagination_params(filters)
         sort_keys, sort_dirs = common.get_sort_params(filters)
 
-        utils.remove_invalid_filter_options(context,
-                                            filters,
-                                            self._get_backup_filter_options())
+        self._convert_sort_name(req_version, sort_keys)
+        self._process_backup_filtering(context=context, filters=filters,
+                                       req_version=req_version)
 
         if 'name' in filters:
             filters['display_name'] = filters.pop('name')
@@ -125,6 +134,7 @@ class BackupsController(wsgi.Controller):
 
         context = req.environ['cinder.context']
         backup = body['backup']
+        req_version = req.api_version_request
 
         try:
             volume_id = backup['volume_id']
@@ -141,8 +151,10 @@ class BackupsController(wsgi.Controller):
         incremental = backup.get('incremental', False)
         force = backup.get('force', False)
         snapshot_id = backup.get('snapshot_id', None)
-        LOG.info(_LI("Creating backup of volume %(volume_id)s in container"
-                     " %(container)s"),
+        metadata = backup.get(
+            'metadata', None) if req_version.matches("3.43") else None
+        LOG.info("Creating backup of volume %(volume_id)s in container"
+                 " %(container)s",
                  {'volume_id': volume_id, 'container': container},
                  context=context)
 
@@ -150,13 +162,15 @@ class BackupsController(wsgi.Controller):
             new_backup = self.backup_api.create(context, name, description,
                                                 volume_id, container,
                                                 incremental, None, force,
-                                                snapshot_id)
+                                                snapshot_id, metadata)
         except (exception.InvalidVolume,
-                exception.InvalidSnapshot) as error:
+                exception.InvalidSnapshot,
+                exception.InvalidVolumeMetadata,
+                exception.InvalidVolumeMetadataSize) as error:
             raise exc.HTTPBadRequest(explanation=error.msg)
         # Other not found exceptions will be handled at the wsgi level
         except exception.ServiceNotFound as error:
-            raise exc.HTTPInternalServerError(explanation=error.msg)
+            raise exc.HTTPServiceUnavailable(explanation=error.msg)
 
         retval = self._view_builder.summary(req, dict(new_backup))
         return retval
@@ -173,7 +187,7 @@ class BackupsController(wsgi.Controller):
         volume_id = restore.get('volume_id', None)
         name = restore.get('name', None)
 
-        LOG.info(_LI("Restoring backup %(backup_id)s to volume %(volume_id)s"),
+        LOG.info("Restoring backup %(backup_id)s to volume %(volume_id)s.",
                  {'backup_id': id, 'volume_id': volume_id},
                  context=context)
 
@@ -183,16 +197,12 @@ class BackupsController(wsgi.Controller):
                                                   volume_id=volume_id,
                                                   name=name)
         # Not found exception will be handled at the wsgi level
-        except exception.InvalidInput as error:
+        except (exception.InvalidInput,
+                exception.InvalidVolume,
+                exception.InvalidBackup) as error:
             raise exc.HTTPBadRequest(explanation=error.msg)
-        except exception.InvalidVolume as error:
-            raise exc.HTTPBadRequest(explanation=error.msg)
-        except exception.InvalidBackup as error:
-            raise exc.HTTPBadRequest(explanation=error.msg)
-        except exception.VolumeSizeExceedsAvailableQuota as error:
-            raise exc.HTTPRequestEntityTooLarge(
-                explanation=error.msg, headers={'Retry-After': '0'})
-        except exception.VolumeLimitExceeded as error:
+        except (exception.VolumeSizeExceedsAvailableQuota,
+                exception.VolumeLimitExceeded) as error:
             raise exc.HTTPRequestEntityTooLarge(
                 explanation=error.msg, headers={'Retry-After': '0'})
 
@@ -200,10 +210,9 @@ class BackupsController(wsgi.Controller):
             req, dict(new_restore))
         return retval
 
-    @wsgi.response(http_client.OK)
     def export_record(self, req, id):
         """Export a backup."""
-        LOG.debug('export record called for member %s.', id)
+        LOG.debug('Export record for backup %s.', id)
         context = req.environ['cinder.context']
 
         try:
@@ -214,7 +223,7 @@ class BackupsController(wsgi.Controller):
 
         retval = self._view_builder.export_summary(
             req, dict(backup_info))
-        LOG.debug('export record output: %s.', retval)
+        LOG.debug('Exported record output: %s.', retval)
         return retval
 
     @wsgi.response(http_client.CREATED)
@@ -242,10 +251,10 @@ class BackupsController(wsgi.Controller):
             raise exc.HTTPBadRequest(explanation=error.msg)
         # Other Not found exceptions will be handled at the wsgi level
         except exception.ServiceNotFound as error:
-            raise exc.HTTPInternalServerError(explanation=error.msg)
+            raise exc.HTTPServiceUnavailable(explanation=error.msg)
 
         retval = self._view_builder.summary(req, dict(new_backup))
-        LOG.debug('import record output: %s.', retval)
+        LOG.debug('Import record output: %s.', retval)
         return retval
 
 

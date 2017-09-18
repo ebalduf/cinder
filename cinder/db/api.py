@@ -223,10 +223,10 @@ def volume_attach(context, values):
 
 
 def volume_attached(context, volume_id, instance_id, host_name, mountpoint,
-                    attach_mode='rw'):
+                    attach_mode='rw', mark_attached=True):
     """Ensure that a volume is set as attached."""
     return IMPL.volume_attached(context, volume_id, instance_id, host_name,
-                                mountpoint, attach_mode)
+                                mountpoint, attach_mode, mark_attached)
 
 
 def volume_create(context, values):
@@ -296,14 +296,9 @@ def volume_get_all_by_project(context, project_id, marker, limit,
                                           offset=offset)
 
 
-def get_volume_summary_all(context):
-    """Get all volume summary."""
-    return IMPL.get_volume_summary_all(context)
-
-
-def get_volume_summary_by_project(context, project_id):
-    """Get all volume summary belonging to a project."""
-    return IMPL.get_volume_summary_by_project(context, project_id)
+def get_volume_summary(context, project_only):
+    """Get volume summary."""
+    return IMPL.get_volume_summary(context, project_only)
 
 
 def volume_update(context, volume_id, values):
@@ -414,6 +409,10 @@ def volume_qos_allows_retype(new_vol_type):
     return IMPL.volume_qos_allows_retype(new_vol_type)
 
 
+def volume_has_other_project_snp_filter():
+    return IMPL.volume_has_other_project_snp_filter()
+
+
 ####################
 
 
@@ -470,6 +469,11 @@ def snapshot_get_all_for_group_snapshot(context, group_snapshot_id):
 def snapshot_get_all_for_volume(context, volume_id):
     """Get all snapshots for a volume."""
     return IMPL.snapshot_get_all_for_volume(context, volume_id)
+
+
+def snapshot_get_latest_for_volume(context, volume_id):
+    """Get latest snapshot for a volume"""
+    return IMPL.snapshot_get_latest_for_volume(context, volume_id)
 
 
 def snapshot_update(context, snapshot_id, values):
@@ -1037,7 +1041,7 @@ def quota_allocated_update(context, project_id,
                            resource, allocated):
     """Update allocated quota to subprojects or raise if it does not exist.
 
-    :raises: cinder.exception.ProjectQuotaNotFound
+    :raises cinder.exception.ProjectQuotaNotFound:
     """
     return IMPL.quota_allocated_update(context, project_id,
                                        resource, allocated)
@@ -1177,6 +1181,14 @@ def backup_get_all_by_host(context, host):
 def backup_create(context, values):
     """Create a backup from the values dictionary."""
     return IMPL.backup_create(context, values)
+
+
+def backup_metadata_get(context, backup_id):
+    return IMPL.backup_metadata_get(context, backup_id)
+
+
+def backup_metadata_update(context, backup_id, metadata, delete):
+    return IMPL.backup_metadata_update(context, backup_id, metadata, delete)
 
 
 def backup_get_all_by_project(context, project_id, filters=None, marker=None,
@@ -1348,18 +1360,22 @@ def consistencygroup_include_in_cluster(context, cluster, partial_rename=True,
                                                     **filters)
 
 
-def migrate_add_message_prefix(context, max_count, force=False):
-    """Change Message event ids to start with the VOLUME_ prefix.
+def group_include_in_cluster(context, cluster, partial_rename=True, **filters):
+    """Include all generic groups matching the filters into a cluster.
 
-    :param max_count: The maximum number of messages to consider in
-                      this run.
-    :param force: Ignored in this migration
-    :returns: number of messages needing migration, number of
-              messages migrated (both will always be less than
-              max_count).
+    When partial_rename is set we will not set the cluster_name with cluster
+    parameter value directly, we'll replace provided cluster_name or host
+    filter value with cluster instead.
+
+    This is useful when we want to replace just the cluster name but leave
+    the backend and pool information as it is.  If we are using cluster_name
+    to filter, we'll use that same DB field to replace the cluster value and
+    leave the rest as it is.  Likewise if we use the host to filter.
+
+    Returns the number of generic groups that have been changed.
     """
-    return IMPL.migrate_add_message_prefix(context, max_count, force)
-
+    return IMPL.group_include_in_cluster(context, cluster, partial_rename,
+                                         **filters)
 
 ###################
 
@@ -1444,11 +1460,6 @@ def group_volume_type_mapping_create(context, group_id, volume_type_id):
                                                  volume_type_id)
 
 
-def migrate_consistencygroups_to_groups(context, max_count, force=False):
-    """Migrage CGs to generic volume groups"""
-    return IMPL.migrate_consistencygroups_to_groups(context, max_count, force)
-
-
 ###################
 
 
@@ -1503,9 +1514,11 @@ def group_snapshot_get(context, group_snapshot_id):
     return IMPL.group_snapshot_get(context, group_snapshot_id)
 
 
-def group_snapshot_get_all(context, filters=None):
+def group_snapshot_get_all(context, filters=None, marker=None, limit=None,
+                           offset=None, sort_keys=None, sort_dirs=None):
     """Get all group snapshots."""
-    return IMPL.group_snapshot_get_all(context, filters)
+    return IMPL.group_snapshot_get_all(context, filters, marker, limit,
+                                       offset, sort_keys, sort_dirs)
 
 
 def group_snapshot_create(context, values):
@@ -1513,14 +1526,24 @@ def group_snapshot_create(context, values):
     return IMPL.group_snapshot_create(context, values)
 
 
-def group_snapshot_get_all_by_group(context, group_id, filters=None):
+def group_snapshot_get_all_by_group(context, group_id, filters=None,
+                                    marker=None, limit=None,
+                                    offset=None, sort_keys=None,
+                                    sort_dirs=None):
     """Get all group snapshots belonging to a group."""
-    return IMPL.group_snapshot_get_all_by_group(context, group_id, filters)
+    return IMPL.group_snapshot_get_all_by_group(context, group_id,
+                                                filters, marker, limit,
+                                                offset, sort_keys, sort_dirs)
 
 
-def group_snapshot_get_all_by_project(context, project_id, filters=None):
+def group_snapshot_get_all_by_project(context, project_id, filters=None,
+                                      marker=None, limit=None,
+                                      offset=None, sort_keys=None,
+                                      sort_dirs=None):
     """Get all group snapshots belonging to a project."""
-    return IMPL.group_snapshot_get_all_by_project(context, project_id, filters)
+    return IMPL.group_snapshot_get_all_by_project(context, project_id,
+                                                  filters, marker, limit,
+                                                  offset, sort_keys, sort_dirs)
 
 
 def group_snapshot_update(context, group_snapshot_id, values):
@@ -1660,6 +1683,11 @@ def message_create(context, values):
 def message_destroy(context, message_id):
     """Deletes message with the specified ID."""
     return IMPL.message_destroy(context, message_id)
+
+
+def cleanup_expired_messages(context):
+    """Soft delete expired messages"""
+    return IMPL.cleanup_expired_messages(context)
 
 
 ###################
@@ -1855,7 +1883,7 @@ def conditional_update(context, model, values, expected_values, filters=(),
                             equivalent to read_deleted.
     :param project_only: Should the query be limited to context's project.
     :param order: Specific order of fields in which to update the values
-    :returns number of db rows that were updated.
+    :returns: Number of db rows that were updated.
     """
     return IMPL.conditional_update(context, model, values, expected_values,
                                    filters, include_deleted, project_only,

@@ -11,19 +11,27 @@ possible:
 
 **Snapshot statuses**
 
-+----------------+-------------------------------------+
-| Status         | Description                         |
-+----------------+-------------------------------------+
-| creating       | The snapshot is being created.      |
-+----------------+-------------------------------------+
-| available      | The snapshot is ready to use.       |
-+----------------+-------------------------------------+
-| deleting       | The snapshot is being deleted.      |
-+----------------+-------------------------------------+
-| error          | A snapshot creation error occurred. |
-+----------------+-------------------------------------+
-| error_deleting | A snapshot deletion error occurred. |
-+----------------+-------------------------------------+
++----------------+---------------------------------------------+
+| Status         | Description                                 |
++----------------+---------------------------------------------+
+| creating       | The snapshot is being created.              |
++----------------+---------------------------------------------+
+| available      | The snapshot is ready to use.               |
++----------------+---------------------------------------------+
+| backing-up     | The snapshot is being backed up.            |
++----------------+---------------------------------------------+
+| deleting       | The snapshot is being deleted.              |
++----------------+---------------------------------------------+
+| error          | A snapshot creation error occurred.         |
++----------------+---------------------------------------------+
+| deleted        | The snapshot has been deleted.              |
++----------------+---------------------------------------------+
+| unmanaging     | The snapshot is being unmanaged.            |
++----------------+---------------------------------------------+
+| restoring      | The snapshot is being restored to a volume. |
++----------------+---------------------------------------------+
+| error_deleting | A snapshot deletion error occurred.         |
++----------------+---------------------------------------------+
 
 
 List snapshots with details
@@ -134,6 +142,7 @@ Request
    - sort_key: sort_key
    - sort_dir: sort_dir
    - limit: limit
+   - offset: offset
    - marker: marker
 
 
@@ -203,15 +212,50 @@ Response Example
    :language: javascript
 
 
+Create snapshot metadata
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. rest_method::  POST /v2/{tenant_id}/snapshots/{snapshot_id}/metadata
+
+Updates metadata for a snapshot.
+
+Creates or replaces metadata items that match keys. Does not modify items that
+are not in the request.
+
+
+Normal response codes: 200
+Error response codes:
+
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+   - metadata: metadata
+   - tenant_id: tenant_id
+   - snapshot_id: snapshot_id
+
+Request Example
+---------------
+
+.. literalinclude:: ./samples/snapshot-metadata-create-request.json
+   :language: javascript
+
+
+Response Example
+----------------
+
+.. literalinclude:: ./samples/snapshot-metadata-create-response.json
+   :language: javascript
+
+
 Update snapshot metadata
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. rest_method::  PUT /v2/{tenant_id}/snapshots/{snapshot_id}/metadata
 
-Updates metadata for a snapshot.
-
-Replaces metadata items that match keys. Does not modify items that
-are not in the request.
+Replaces all the snapshot's metadata with the key-value pairs in the request.
 
 
 Normal response codes: 200

@@ -39,7 +39,7 @@ from oslo_config import cfg
 from oslo_log import log as logging
 
 from cinder import exception
-from cinder.i18n import _, _LW
+from cinder.i18n import _
 
 
 key_mgr_opts = [
@@ -67,8 +67,8 @@ class ConfKeyManager(key_manager.KeyManager):
 
     def __init__(self, configuration):
         if not ConfKeyManager.warning_logged:
-            LOG.warning(_LW('This key manager is insecure and is not '
-                            'recommended for production deployments'))
+            LOG.warning('This key manager is insecure and is not '
+                        'recommended for production deployments')
             ConfKeyManager.warning_logged = True
 
         super(ConfKeyManager, self).__init__(configuration)
@@ -143,4 +143,20 @@ class ConfKeyManager(key_manager.KeyManager):
             raise exception.KeyManagerError(
                 reason="cannot delete non-existent key")
 
-        LOG.warning(_LW("Not deleting key %s"), managed_object_id)
+        LOG.warning("Not deleting key %s", managed_object_id)
+
+    def list(self, context, object_type=None, metadata_only=False):
+        """Retrieves a list of managed objects that match the criteria.
+
+        Note: Required abstract method starting with Castellan 0.13.0
+
+        :param context: Contains information of the user and the environment
+                        for the request.
+        :param object_type: The type of object to retrieve.
+        :param metadata_only: Whether secret data should be included.
+        :raises NotAuthorized: If no user context.
+        """
+        if context is None:
+            raise exception.NotAuthorized()
+
+        return []

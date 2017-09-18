@@ -26,7 +26,8 @@ import six
 from xml.etree import ElementTree as ETree
 
 from cinder import exception
-from cinder.i18n import _, _LW, _LE
+from cinder.i18n import _
+from cinder.volume import configuration
 from cinder.volume import volume_types
 
 LOG = logging.getLogger(__name__)
@@ -83,10 +84,10 @@ drivers_common_opts = [
 ]
 
 CONF = cfg.CONF
-CONF.register_opts(drivers_common_opts)
+CONF.register_opts(drivers_common_opts, group=configuration.SHARED_CONF_GROUP)
 
 
-def _check_conf_params(config, pool_name, dv_type, idx):
+def _check_conf_params(config, pool_name, idx):
     """Validates if the configuration on cinder.conf is complete.
 
     :param config: Dictionary with the driver configurations
@@ -134,15 +135,6 @@ def _check_conf_params(config, pool_name, dv_type, idx):
         LOG.error(msg)
         raise exception.InvalidParameterValue(err=msg)
 
-    if (dv_type == 'iscsi' and
-            config['services'][pool_name]['iscsi_ip'] is None):
-        msg = (_("The config parameter "
-                 "hnas_svc%(idx)s_iscsi_ip is not set "
-                 "in the cinder.conf. Note that you need to "
-                 "have at least one pool configured.") % {'idx': idx})
-        LOG.error(msg)
-        raise exception.InvalidParameterValue(err=msg)
-
 
 def _xml_read(root, element, check=None):
     """Read an xml element.
@@ -156,7 +148,7 @@ def _xml_read(root, element, check=None):
 
     # mandatory parameter not found
     if val is None and check:
-        LOG.error(_LE("Mandatory parameter not found: %(p)s"), {'p': element})
+        LOG.error("Mandatory parameter not found: %(p)s", {'p': element})
         raise exception.ParameterNotFound(param=element)
 
     # tag not found
@@ -168,7 +160,7 @@ def _xml_read(root, element, check=None):
     if not val.strip():
         if svc_tag_pattern.search(element):
             return ""
-        LOG.error(_LE("Parameter not found: %(param)s"), {'param': element})
+        LOG.error("Parameter not found: %(param)s", {'param': element})
         raise exception.ParameterNotFound(param=element)
 
     LOG.debug("%(element)s: %(val)s",
@@ -183,9 +175,17 @@ def read_xml_config(xml_config_file, svc_params, optional_params):
 
     :param xml_config_file: string filename containing XML configuration
     :param svc_params: parameters to configure the services
-    ['volume_type', 'hdp', 'iscsi_ip']
+
+    .. code:: python
+
+      ['volume_type', 'hdp']
+
     :param optional_params: parameters to configure that are not mandatory
-    ['ssc_cmd', 'cluster_admin_ip0', 'chap_enabled']
+
+    .. code:: python
+
+      ['ssc_cmd', 'cluster_admin_ip0', 'chap_enabled']
+
     """
 
     if not os.access(xml_config_file, os.R_OK):
@@ -194,11 +194,11 @@ def read_xml_config(xml_config_file, svc_params, optional_params):
         LOG.error(msg)
         raise exception.ConfigNotFound(message=msg)
     else:
-        LOG.warning(_LW("This XML configuration file %(xml)s is deprecated. "
-                        "Please, move all the configurations to the "
-                        "cinder.conf file. If you keep both configuration "
-                        "files, the options set on cinder.conf will be "
-                        "used."), {'xml': xml_config_file})
+        LOG.warning("This XML configuration file %(xml)s is deprecated. "
+                    "Please, move all the configurations to the "
+                    "cinder.conf file. If you keep both configuration "
+                    "files, the options set on cinder.conf will be "
+                    "used.", {'xml': xml_config_file})
 
     try:
         root = ETree.parse(xml_config_file).getroot()
@@ -208,13 +208,13 @@ def read_xml_config(xml_config_file, svc_params, optional_params):
         LOG.error(msg)
         raise exception.ConfigNotFound(message=msg)
 
-    # mandatory parameters for NFS and iSCSI
+    # mandatory parameters for NFS
     config = {}
     arg_prereqs = ['mgmt_ip0', 'username']
     for req in arg_prereqs:
         config[req] = _xml_read(root, req, 'check')
 
-    # optional parameters for NFS and iSCSI
+    # optional parameters for NFS
     for req in optional_params:
         config[req] = _xml_read(root, req)
         if config[req] is None and HNAS_DEFAULT_CONFIG.get(req) is not None:
@@ -254,7 +254,7 @@ def read_xml_config(xml_config_file, svc_params, optional_params):
 
     # at least one service required!
     if not config['services'].keys():
-        LOG.error(_LE("No service found in xml config file"))
+        LOG.error("No service found in xml config file")
         raise exception.ParameterNotFound(param="svc_0")
 
     return config
@@ -279,14 +279,14 @@ def get_pool(config, volume):
     return 'default'
 
 
-def read_cinder_conf(config_opts, dv_type):
+def read_cinder_conf(config_opts):
     """Reads cinder.conf
 
     Gets the driver specific information set on cinder.conf configuration
     file.
 
     :param config_opts: Configuration object that contains the information
-    needed by HNAS driver
+                        needed by HNAS driver
     :param dv_type: The type of the driver (NFS or iSCSI)
     :returns: Dictionary with the driver configuration
     """
@@ -295,7 +295,7 @@ def read_cinder_conf(config_opts, dv_type):
     config['services'] = {}
     config['fs'] = {}
     mandatory_parameters = ['username', 'password', 'mgmt_ip0']
-    optional_parameters = ['ssc_cmd', 'chap_enabled',
+    optional_parameters = ['ssc_cmd',
                            'ssh_port', 'cluster_admin_ip0',
                            'ssh_private_key']
 
@@ -334,14 +334,9 @@ def read_cinder_conf(config_opts, dv_type):
             config['services'][svc_pool_name]['hdp'] = svc_hdp
             config['services'][svc_pool_name]['pool_name'] = svc_pool_name
 
-            if dv_type == 'iscsi':
-                svc_ip = (config_opts.safe_get(
-                    'hnas_svc%(idx)s_iscsi_ip' % {'idx': idx}))
-                config['services'][svc_pool_name]['iscsi_ip'] = svc_ip
-
             config['services'][svc_pool_name]['label'] = (
                 'svc_%(idx)s' % {'idx': idx})
             # Checking to ensure that the pools configurations are complete
-            _check_conf_params(config, svc_pool_name, dv_type, idx)
+            _check_conf_params(config, svc_pool_name, idx)
 
     return config

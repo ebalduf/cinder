@@ -13,6 +13,7 @@
 """The messages API."""
 
 
+from six.moves import http_client
 import webob
 
 from cinder.api import common
@@ -20,6 +21,7 @@ from cinder.api.openstack import wsgi
 from cinder.api.v3.views import messages as messages_view
 from cinder.message import api as message_api
 from cinder.message import defined_messages
+from cinder.message import message_field
 import cinder.policy
 
 
@@ -47,6 +49,19 @@ class MessagesController(wsgi.Controller):
         self.ext_mgr = ext_mgr
         super(MessagesController, self).__init__()
 
+    def _build_user_message(self, message):
+        # NOTE(tommylikehu): if the `action_id` is empty, we use 'event_id'
+        # to translate the user message.
+        if message is None:
+            return
+        if message['action_id'] is None and message['event_id'] is not None:
+            message['user_message'] = defined_messages.get_message_text(
+                message['event_id'])
+        else:
+            message['user_message'] = "%s:%s" % (
+                message_field.translate_action(message['action_id']),
+                message_field.translate_detail(message['detail_id']))
+
     @wsgi.Controller.api_version(MESSAGES_BASE_MICRO_VERSION)
     def show(self, req, id):
         """Return the given message."""
@@ -57,10 +72,7 @@ class MessagesController(wsgi.Controller):
 
         check_policy(context, 'get', message)
 
-        # Fetches message text based on event id passed to it.
-        message['user_message'] = defined_messages.get_message_text(
-            message['event_id'])
-
+        self._build_user_message(message)
         return self._view_builder.detail(req, message)
 
     @wsgi.Controller.api_version(MESSAGES_BASE_MICRO_VERSION)
@@ -73,12 +85,13 @@ class MessagesController(wsgi.Controller):
         check_policy(context, 'delete', message)
         self.message_api.delete(context, message)
 
-        return webob.Response(status_int=204)
+        return webob.Response(status_int=http_client.NO_CONTENT)
 
     @wsgi.Controller.api_version(MESSAGES_BASE_MICRO_VERSION)
     def index(self, req):
         """Returns a list of messages, transformed through view builder."""
         context = req.environ['cinder.context']
+        api_version = req.api_version_request
         check_policy(context, 'get_all')
         filters = None
         marker = None
@@ -87,10 +100,16 @@ class MessagesController(wsgi.Controller):
         sort_keys = None
         sort_dirs = None
 
-        if (req.api_version_request.matches("3.5")):
+        if api_version.matches("3.5"):
             filters = req.params.copy()
             marker, limit, offset = common.get_pagination_params(filters)
             sort_keys, sort_dirs = common.get_sort_params(filters)
+
+        if api_version.matches(common.FILTERING_VERSION):
+            support_like = (True if api_version.matches(
+                common.LIKE_FILTER_VERSION) else False)
+            common.reject_invalid_filters(context, filters, 'message',
+                                          support_like)
 
         messages = self.message_api.get_all(context, filters=filters,
                                             marker=marker, limit=limit,
@@ -99,11 +118,7 @@ class MessagesController(wsgi.Controller):
                                             sort_dirs=sort_dirs)
 
         for message in messages:
-            # Fetches message text based on event id passed to it.
-            user_message = defined_messages.get_message_text(
-                message['event_id'])
-            message['user_message'] = user_message
-
+            self._build_user_message(message)
         messages = self._view_builder.index(req, messages)
         return messages
 

@@ -22,16 +22,17 @@ import collections
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import importutils
+from oslo_utils import strutils
 from oslo_utils import timeutils
 
 from cinder.common import constants
 from cinder import context as cinder_context
 from cinder import exception
 from cinder import objects
-from cinder import utils
-from cinder.i18n import _LI, _LW
 from cinder.scheduler import filters
+from cinder import utils
 from cinder.volume import utils as vol_utils
+from cinder.volume import volume_types
 
 
 # FIXME: This file should be renamed to backend_manager, we should also rename
@@ -392,7 +393,7 @@ class HostManager(object):
         """Return a list of available filter names.
 
         This function checks input filter names against a predefined set
-        of acceptable filterss (all loaded filters).  If input is None,
+        of acceptable filters (all loaded filters). If input is None,
         it uses CONF.scheduler_default_filters instead.
         """
         if filter_cls_names is None:
@@ -483,11 +484,10 @@ class HostManager(object):
 
         # Ignore older updates
         if capab_old['timestamp'] and timestamp < capab_old['timestamp']:
-            LOG.info(_LI('Ignoring old capability report from %s.'),
-                     backend)
+            LOG.info('Ignoring old capability report from %s.', backend)
             return
 
-        # If the capabilites are not changed and the timestamp is older,
+        # If the capabilities are not changed and the timestamp is older,
         # record the capabilities.
 
         # There are cases: capab_old has the capabilities set,
@@ -558,7 +558,7 @@ class HostManager(object):
         for service in volume_services.objects:
             host = service.host
             if not service.is_up:
-                LOG.warning(_LW("volume service is down. (host: %s)"), host)
+                LOG.warning("volume service is down. (host: %s)", host)
                 continue
 
             backend_key = service.service_topic_queue
@@ -600,8 +600,8 @@ class HostManager(object):
             # the map when we are removing it because it has been added to a
             # cluster.
             if backend_key not in active_hosts:
-                LOG.info(_LI("Removing non-active backend: %(backend)s from "
-                             "scheduler cache."), {'backend': backend_key})
+                LOG.info("Removing non-active backend: %(backend)s from "
+                         "scheduler cache.", {'backend': backend_key})
             del self.backend_state_map[backend_key]
 
     def get_all_backend_states(self, context):
@@ -628,22 +628,69 @@ class HostManager(object):
 
         return all_pools.values()
 
-    def get_pools(self, context):
+    def _filter_pools_by_volume_type(self, context, volume_type, pools):
+        """Return the pools filtered by volume type specs"""
+
+        # wrap filter properties only with volume_type
+        filter_properties = {
+            'context': context,
+            'volume_type': volume_type,
+            'resource_type': volume_type,
+            'qos_specs': volume_type.get('qos_specs'),
+        }
+
+        filtered = self.get_filtered_backends(pools.values(),
+                                              filter_properties)
+
+        # filter the pools by value
+        return {k: v for k, v in pools.items() if v in filtered}
+
+    def get_pools(self, context, filters=None):
         """Returns a dict of all pools on all hosts HostManager knows about."""
 
         self._update_backend_state_map(context)
 
-        all_pools = []
+        all_pools = {}
+        name = volume_type = None
+        if filters:
+            name = filters.pop('name', None)
+            volume_type = filters.pop('volume_type', None)
+
         for backend_key, state in self.backend_state_map.items():
             for key in state.pools:
+                filtered = False
                 pool = state.pools[key]
                 # use backend_key.pool_name to make sure key is unique
                 pool_key = vol_utils.append_host(backend_key, pool.pool_name)
                 new_pool = dict(name=pool_key)
                 new_pool.update(dict(capabilities=pool.capabilities))
-                all_pools.append(new_pool)
 
-        return all_pools
+                if name and new_pool.get('name') != name:
+                    continue
+
+                if filters:
+                    # filter all other items in capabilities
+                    for (attr, value) in filters.items():
+                        cap = new_pool.get('capabilities').get(attr)
+                        if not self._equal_after_convert(cap, value):
+                            filtered = True
+                            break
+
+                if not filtered:
+                    all_pools[pool_key] = pool
+
+        # filter pools by volume type
+        if volume_type:
+            volume_type = volume_types.get_by_name_or_id(
+                context, volume_type)
+            all_pools = (
+                self._filter_pools_by_volume_type(context,
+                                                  volume_type,
+                                                  all_pools))
+
+        # encapsulate pools in format:{name: XXX, capabilities: XXX}
+        return [dict(name=key, capabilities=value.capabilities)
+                for key, value in all_pools.items()]
 
     def get_usage_and_notify(self, capa_new, updated_pools, host, timestamp):
         context = cinder_context.get_admin_context()
@@ -761,3 +808,17 @@ class HostManager(object):
                 vol_utils.notify_about_capacity_usage(
                     context, u, u['type'], None, None)
         LOG.debug("Publish storage capacity: %s.", usage)
+
+    def _equal_after_convert(self, capability, value):
+
+        if isinstance(value, type(capability)) or capability is None:
+            return value == capability
+
+        if isinstance(capability, bool):
+            return capability == strutils.bool_from_string(value)
+
+        # We can not check or convert value parameter's type in
+        # anywhere else.
+        # If the capability and value are not in the same type,
+        # we just convert them into string to compare them.
+        return str(value) == str(capability)

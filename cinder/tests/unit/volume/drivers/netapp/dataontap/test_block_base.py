@@ -33,7 +33,6 @@ import six
 
 from cinder import context
 from cinder import exception
-from cinder.i18n import _LW
 from cinder.objects import fields
 from cinder import test
 from cinder.tests.unit import fake_volume
@@ -91,10 +90,10 @@ class NetAppBlockStorageLibraryTestCase(test.TestCase):
         reserved_percentage = 100 * int(reserved_ratio)
 
         self.assertEqual(reserved_percentage, result)
-        msg = _LW('The "netapp_size_multiplier" configuration option is '
-                  'deprecated and will be removed in the Mitaka release. '
-                  'Please set "reserved_percentage = %d" instead.') % (
-                      result)
+        msg = ('The "netapp_size_multiplier" configuration option is '
+               'deprecated and will be removed in the Mitaka release. '
+               'Please set "reserved_percentage = %d" instead.' %
+               result)
         mock_report.assert_called_once_with(block_base.LOG, msg)
 
     @mock.patch.object(block_base.NetAppBlockStorageLibrary,
@@ -885,6 +884,7 @@ class NetAppBlockStorageLibraryTestCase(test.TestCase):
     def test_delete_lun_no_metadata(self):
         self.mock_object(self.library, '_get_lun_attr', return_value=None)
         self.library.zapi_client = mock.Mock()
+        self.library.lun_table = fake.LUN_TABLE
         self.mock_object(self.library, 'zapi_client')
 
         self.library._delete_lun(fake.LUN_NAME)
@@ -895,6 +895,40 @@ class NetAppBlockStorageLibraryTestCase(test.TestCase):
         self.assertEqual(0,
                          self.zapi_client.
                          mark_qos_policy_group_for_deletion.call_count)
+
+    @mock.patch.object(block_base, 'LOG', mock.Mock())
+    def test_delete_lun_missing_lun(self):
+        mock_get_lun_attr = self.mock_object(self.library, '_get_lun_attr')
+        mock_get_lun_attr.return_value = fake.LUN_METADATA
+        self.library.zapi_client = mock.Mock()
+        error = netapp_api.NaApiError(code=netapp_api.EOBJECTNOTFOUND)
+        self.mock_object(self.library.zapi_client, 'destroy_lun',
+                         side_effect=error)
+        self.library.lun_table = {fake.LUN_NAME: None}
+
+        self.library._delete_lun(fake.LUN_NAME)
+
+        mock_get_lun_attr.assert_called_once_with(
+            fake.LUN_NAME, 'metadata')
+        self.library.zapi_client.destroy_lun.assert_called_once_with(fake.PATH)
+        block_base.LOG.error.assert_not_called()
+        block_base.LOG.warning.assert_called_once()
+        self.assertFalse(self.library.lun_table)
+
+    @mock.patch.object(block_base, 'LOG', mock.Mock())
+    def test_delete_lun_client_exception(self):
+        mock_get_lun_attr = self.mock_object(self.library, '_get_lun_attr')
+        mock_get_lun_attr.return_value = fake.LUN_METADATA
+        self.library.zapi_client = mock.Mock()
+        self.mock_object(self.library.zapi_client, 'destroy_lun',
+                         side_effect=netapp_api.NaApiError)
+
+        self.assertRaises(exception.NetAppDriverException,
+                          self.library._delete_lun,
+                          fake.LUN_NAME)
+
+        block_base.LOG.error.assert_not_called()
+        block_base.LOG.warning.assert_not_called()
 
     def test_delete_snapshot(self):
         mock_delete_lun = self.mock_object(self.library, '_delete_lun')
@@ -1399,192 +1433,6 @@ class NetAppBlockStorageLibraryTestCase(test.TestCase):
         self.assertEqual('CHAP', data['discovery_auth_method'])
         self.assertEqual('user1', data['discovery_auth_username'])
         self.assertEqual('pass1', data['discovery_auth_password'])
-
-    def test_create_cgsnapshot(self):
-        snapshot = fake.CG_SNAPSHOT
-        snapshot['volume'] = fake.CG_VOLUME
-
-        mock_extract_host = self.mock_object(
-            volume_utils, 'extract_host', return_value=fake.POOL_NAME)
-
-        mock_clone_lun = self.mock_object(self.library, '_clone_lun')
-        mock_busy = self.mock_object(
-            self.zapi_client, 'wait_for_busy_snapshot')
-        mock_delete_snapshot = self.mock_object(
-            self.zapi_client, 'delete_snapshot')
-
-        self.library.create_cgsnapshot(fake.CG_SNAPSHOT, [snapshot])
-
-        mock_extract_host.assert_called_once_with(fake.CG_VOLUME['host'],
-                                                  level='pool')
-        self.zapi_client.create_cg_snapshot.assert_called_once_with(
-            set([fake.POOL_NAME]), fake.CG_SNAPSHOT_ID)
-        mock_clone_lun.assert_called_once_with(
-            fake.CG_VOLUME_NAME, fake.CG_SNAPSHOT_NAME,
-            source_snapshot=fake.CG_SNAPSHOT_ID)
-        mock_busy.assert_called_once_with(fake.POOL_NAME, fake.CG_SNAPSHOT_ID)
-        mock_delete_snapshot.assert_called_once_with(
-            fake.POOL_NAME, fake.CG_SNAPSHOT_ID)
-
-    def test_create_cgsnapshot_busy_snapshot(self):
-        snapshot = fake.CG_SNAPSHOT
-        snapshot['volume'] = fake.CG_VOLUME
-
-        mock_extract_host = self.mock_object(
-            volume_utils, 'extract_host',
-            return_value=fake.POOL_NAME)
-        mock_clone_lun = self.mock_object(self.library, '_clone_lun')
-        mock_busy = self.mock_object(
-            self.zapi_client, 'wait_for_busy_snapshot')
-        mock_busy.side_effect = exception.SnapshotIsBusy(snapshot['name'])
-        mock_delete_snapshot = self.mock_object(
-            self.zapi_client, 'delete_snapshot')
-        mock_mark_snapshot_for_deletion = self.mock_object(
-            self.zapi_client, 'mark_snapshot_for_deletion')
-
-        self.library.create_cgsnapshot(fake.CG_SNAPSHOT, [snapshot])
-
-        mock_extract_host.assert_called_once_with(
-            fake.CG_VOLUME['host'], level='pool')
-        self.zapi_client.create_cg_snapshot.assert_called_once_with(
-            set([fake.POOL_NAME]), fake.CG_SNAPSHOT_ID)
-        mock_clone_lun.assert_called_once_with(
-            fake.CG_VOLUME_NAME, fake.CG_SNAPSHOT_NAME,
-            source_snapshot=fake.CG_SNAPSHOT_ID)
-        mock_delete_snapshot.assert_not_called()
-        mock_mark_snapshot_for_deletion.assert_called_once_with(
-            fake.POOL_NAME, fake.CG_SNAPSHOT_ID)
-
-    def test_delete_cgsnapshot(self):
-
-        mock_delete_snapshot = self.mock_object(
-            self.library, '_delete_lun')
-
-        self.library.delete_cgsnapshot(fake.CG_SNAPSHOT, [fake.CG_SNAPSHOT])
-
-        mock_delete_snapshot.assert_called_once_with(fake.CG_SNAPSHOT['name'])
-
-    def test_delete_cgsnapshot_not_found(self):
-        self.mock_object(block_base, 'LOG')
-        self.mock_object(self.library, '_get_lun_attr', return_value=None)
-
-        self.library.delete_cgsnapshot(fake.CG_SNAPSHOT, [fake.CG_SNAPSHOT])
-
-        self.assertEqual(0, block_base.LOG.error.call_count)
-        self.assertEqual(1, block_base.LOG.warning.call_count)
-        self.assertEqual(0, block_base.LOG.info.call_count)
-
-    def test_create_volume_with_cg(self):
-        volume_size_in_bytes = int(fake.CG_VOLUME_SIZE) * units.Gi
-        self._create_volume_test_helper()
-
-        self.library.create_volume(fake.CG_VOLUME)
-
-        self.library._create_lun.assert_called_once_with(
-            fake.POOL_NAME, fake.CG_VOLUME_NAME, volume_size_in_bytes,
-            fake.CG_LUN_METADATA, None)
-        self.library._get_volume_model_update.assert_called_once_with(
-            fake.CG_VOLUME)
-        self.assertEqual(0, self.library.
-                         _mark_qos_policy_group_for_deletion.call_count)
-        self.assertEqual(0, block_base.LOG.error.call_count)
-
-    def _create_volume_test_helper(self):
-        self.mock_object(na_utils, 'get_volume_extra_specs')
-        self.mock_object(na_utils, 'log_extra_spec_warnings')
-        self.mock_object(block_base, 'LOG')
-        self.mock_object(volume_utils, 'extract_host',
-                         return_value=fake.POOL_NAME)
-        self.mock_object(self.library, '_setup_qos_for_volume',
-                         return_value=None)
-        self.mock_object(self.library, '_create_lun')
-        self.mock_object(self.library, '_create_lun_handle')
-        self.mock_object(self.library, '_add_lun_to_table')
-        self.mock_object(self.library, '_mark_qos_policy_group_for_deletion')
-        self.mock_object(self.library, '_get_volume_model_update')
-
-    def test_create_consistency_group(self):
-        model_update = self.library.create_consistencygroup(
-            fake.CONSISTENCY_GROUP)
-        self.assertEqual('available', model_update['status'])
-
-    def test_delete_consistencygroup_volume_delete_failure(self):
-        self.mock_object(block_base, 'LOG')
-        self.mock_object(self.library, '_delete_lun', side_effect=Exception)
-
-        model_update, volumes = self.library.delete_consistencygroup(
-            fake.CONSISTENCY_GROUP, [fake.CG_VOLUME])
-
-        self.assertEqual('deleted', model_update['status'])
-        self.assertEqual('error_deleting', volumes[0]['status'])
-        self.assertEqual(1, block_base.LOG.exception.call_count)
-
-    def test_delete_consistencygroup_not_found(self):
-        self.mock_object(block_base, 'LOG')
-        self.mock_object(self.library, '_get_lun_attr', return_value=None)
-
-        model_update, volumes = self.library.delete_consistencygroup(
-            fake.CONSISTENCY_GROUP, [fake.CG_VOLUME])
-
-        self.assertEqual(0, block_base.LOG.error.call_count)
-        self.assertEqual(1, block_base.LOG.warning.call_count)
-        self.assertEqual(0, block_base.LOG.info.call_count)
-
-        self.assertEqual('deleted', model_update['status'])
-        self.assertEqual('deleted', volumes[0]['status'])
-
-    @ddt.data(None,
-              {'replication_status': fields.ReplicationStatus.ENABLED})
-    def test_create_consistencygroup_from_src_cg_snapshot(self,
-                                                          volume_model_update):
-        mock_clone_source_to_destination = self.mock_object(
-            self.library, '_clone_source_to_destination',
-            return_value=volume_model_update)
-
-        actual_return_value = self.library.create_consistencygroup_from_src(
-            fake.CONSISTENCY_GROUP, [fake.VOLUME], cgsnapshot=fake.CG_SNAPSHOT,
-            snapshots=[fake.CG_VOLUME_SNAPSHOT])
-
-        clone_source_to_destination_args = {
-            'name': fake.CG_SNAPSHOT['name'],
-            'size': fake.CG_SNAPSHOT['volume_size'],
-        }
-        mock_clone_source_to_destination.assert_called_once_with(
-            clone_source_to_destination_args, fake.VOLUME)
-        if volume_model_update:
-            volume_model_update['id'] = fake.VOLUME['id']
-        expected_return_value = ((None, [volume_model_update])
-                                 if volume_model_update else (None, []))
-        self.assertEqual(expected_return_value, actual_return_value)
-
-    @ddt.data(None,
-              {'replication_status': fields.ReplicationStatus.ENABLED})
-    def test_create_consistencygroup_from_src_cg(self, volume_model_update):
-        lun_name = fake.SOURCE_CG_VOLUME['name']
-        mock_lun = block_base.NetAppLun(
-            lun_name, lun_name, '3', {'UUID': 'fake_uuid'})
-        self.mock_object(self.library, '_get_lun_from_table',
-                         return_value=mock_lun)
-        mock_clone_source_to_destination = self.mock_object(
-            self.library, '_clone_source_to_destination',
-            return_value=volume_model_update)
-
-        actual_return_value = self.library.create_consistencygroup_from_src(
-            fake.CONSISTENCY_GROUP, [fake.VOLUME],
-            source_cg=fake.SOURCE_CONSISTENCY_GROUP,
-            source_vols=[fake.SOURCE_CG_VOLUME])
-
-        clone_source_to_destination_args = {
-            'name': fake.SOURCE_CG_VOLUME['name'],
-            'size': fake.SOURCE_CG_VOLUME['size'],
-        }
-        if volume_model_update:
-            volume_model_update['id'] = fake.VOLUME['id']
-        expected_return_value = ((None, [volume_model_update])
-                                 if volume_model_update else (None, []))
-        mock_clone_source_to_destination.assert_called_once_with(
-            clone_source_to_destination_args, fake.VOLUME)
-        self.assertEqual(expected_return_value, actual_return_value)
 
     def test_add_looping_tasks(self):
         mock_add_task = self.mock_object(self.library.loopingcalls, 'add_task')

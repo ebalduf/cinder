@@ -27,7 +27,8 @@ from oslo_utils import units
 import six
 
 from cinder import exception
-from cinder.i18n import _, _LE, _LI, _LW
+from cinder.i18n import _
+from cinder.volume import configuration
 from cinder.volume.drivers.falconstor import rest_proxy
 from cinder.volume.drivers.san import san
 
@@ -36,7 +37,20 @@ LOG = logging.getLogger(__name__)
 FSS_OPTS = [
     cfg.IntOpt('fss_pool',
                default='',
-               help='FSS pool id in which FalconStor volumes are stored.'),
+               help='DEPRECATED: FSS pool id in which FalconStor volumes are '
+                    'stored.',
+               deprecated_since='Pike',
+               deprecated_reason='This option will be removed once Queens '
+                                 'development opens up. Please use fss_pools '
+                                 'instead.'),
+    cfg.DictOpt('fss_pools',
+                default={},
+                help='FSS pool id list in which FalconStor volumes are stored.'
+                     ' If you have only one pool, use A:<pool-id>. '
+                     'You can also have up to two storage pools, '
+                     'P for primary and O for all supporting devices. '
+                     'The usage is P:<primary-pool-id>,O:<others-pool-id>',
+                deprecated_name='fss_pool'),
     cfg.StrOpt('fss_san_secondary_ip',
                default='',
                help='Specifies FSS secondary management IP to be used '
@@ -50,15 +64,23 @@ FSS_OPTS = [
 ]
 
 CONF = cfg.CONF
-CONF.register_opts(FSS_OPTS)
+CONF.register_opts(FSS_OPTS, group=configuration.SHARED_CONF_GROUP)
 
 
 class FalconstorBaseDriver(san.SanDriver):
-
     def __init__(self, *args, **kwargs):
         super(FalconstorBaseDriver, self).__init__(*args, **kwargs)
         if self.configuration:
             self.configuration.append_config_values(FSS_OPTS)
+
+        if self.configuration.fss_pool:
+            self.configuration.fss_pools = {'A': str(
+                self.configuration.fss_pool)}
+            LOG.warning("'fss_pool=<pool-id>' is deprecated. Using the "
+                        "fss_pools=A:<pool-id> for single pool or "
+                        "fss_pools=P:<pool-id>,O:<other-pool-id> instead "
+                        "as old format will be removed once Queens development"
+                        " opens up.")
 
         self.proxy = rest_proxy.RESTProxy(self.configuration)
         self._backend_name = (
@@ -67,47 +89,86 @@ class FalconstorBaseDriver(san.SanDriver):
 
     def do_setup(self, context):
         self.proxy.do_setup()
-        LOG.info(_LI('Activate FalconStor cinder volume driver.'))
+        LOG.info('Activate FalconStor cinder volume driver.')
 
     def check_for_setup_error(self):
         if self.proxy.session_id is None:
-            msg = (_('FSS cinder volume driver not ready: Unable to determine '
-                     'session id.'))
+            msg = _('FSS cinder volume driver not ready: Unable to determine '
+                    'session id.')
             raise exception.VolumeBackendAPIException(data=msg)
 
-        if not self.configuration.fss_pool:
+        if self.configuration.fss_pool:
+            self.configuration.fss_pools = {'A': six.text_type(
+                self.configuration.fss_pool)}
+            # The fss_pool is deprecated.
+            LOG.warning("'fss_pool=<pool-id>' is deprecated. Using the "
+                        "fss_pools=A:<pool-id> for single pool or "
+                        "fss_pools=P:<pool-id>,O:<other-pool-id> instead "
+                        "as old format will be removed once Queens development"
+                        " opens up.")
+
+        if not self.configuration.fss_pools:
             msg = _('Pool is not available in the cinder configuration '
                     'fields.')
             raise exception.InvalidHost(reason=msg)
+        self._pool_checking(self.configuration.fss_pools)
 
-        self._pool_checking(self.configuration.fss_pool)
+        if self.configuration.san_thin_provision:
+            if not self.configuration.max_over_subscription_ratio:
+                msg = _('The max_over_subscription_ratio have to set '
+                        'when thin provisioning enabled.')
+                raise exception.InvalidConfigurationValue(reason=msg)
 
-    def _pool_checking(self, pool_id):
+    def _pool_checking(self, pool_info):
         pool_count = 0
         try:
-            output = self.proxy.list_pool_info(pool_id)
-            if "name" in output['data']:
-                pool_count = len(re.findall(rest_proxy.GROUP_PREFIX,
-                                            output['data']['name']))
-            if pool_count is 0:
-                msg = (_('The given pool info must include the storage pool '
-                         'and naming start with OpenStack-'))
-                raise exception.VolumeBackendAPIException(data=msg)
+            if len(pool_info) == 1:
+                _pool_state = self._is_single_pool(pool_info)
+                if not _pool_state:
+                    msg = _('The given pool info does not match.')
+                    raise exception.VolumeBackendAPIException(data=msg)
+            else:
+                _pool_state = self._is_multi_pool(pool_info)
+                if not _pool_state:
+                    msg = _('The given pool info does not match.')
+                    raise exception.VolumeBackendAPIException(data=msg)
+
+            for index, pool_id in pool_info.items():
+                output = self.proxy.list_pool_info(pool_id)
+                if "name" in output['data']:
+                    pool_count = len(re.findall(rest_proxy.GROUP_PREFIX,
+                                                output['data']['name']))
+                if pool_count is 0:
+                    msg = _('The given pool info must include the storage '
+                            'pool and naming start with OpenStack-')
+                    raise exception.VolumeBackendAPIException(data=msg)
         except Exception:
-            msg = (_('Unexpected exception during pool checking.'))
+            msg = _('Unexpected exception during pool checking.')
             LOG.exception(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
     def _check_multipath(self):
         if self.configuration.use_multipath_for_image_xfer:
             if not self.configuration.fss_san_secondary_ip:
-                msg = (_('The san_secondary_ip param is null.'))
+                msg = _('The san_secondary_ip param is null.')
                 raise exception.VolumeBackendAPIException(data=msg)
             output = self.proxy._check_iocluster_state()
             if not output:
-                msg = (_('FSS do not support multipathing.'))
+                msg = _('FSS do not support multipathing.')
                 raise exception.VolumeBackendAPIException(data=msg)
             return output
+        else:
+            return False
+
+    def _is_single_pool(self, pool_info):
+        if len(pool_info) == 1 and "A" in pool_info:
+            return True
+        else:
+            return False
+
+    def _is_multi_pool(self, pool_info):
+        if len(pool_info) == 2 and "P" in pool_info and "O" in pool_info:
+            return True
         else:
             return False
 
@@ -117,16 +178,31 @@ class FalconstorBaseDriver(san.SanDriver):
         We  use the metadata of the volume to create variety volume.
 
         Create a thin provisioned volume :
-        [Usage] create --volume-type FSS --metadata thinprovisioned=true
-            thinsize=<thin-volume-size>
+
+        .. code:: console
+
+          create --volume-type FSS-THIN
+              --metadata thinsize=<thin-volume-size> volume-size
 
         Create a LUN that is a Timeview of another LUN at a specified CDP tag:
-        [Usage] create --volume-type FSS --metadata timeview=<vid>
-            cdptag=<tag> volume-size
+
+        .. code:: console
+
+          create --volume-type FSS --metadata timeview=<vid>
+              cdptag=<tag> volume-size
 
         Create a LUN that is a Timeview of another LUN at a specified Timemark:
-        [Usage] create --volume-type FSS --metadata timeview=<vid>
-            rawtimestamp=<rawtimestamp> volume-size
+
+        .. code:: console
+
+          create --volume-type FSS --metadata timeview=<vid>
+              rawtimestamp=<rawtimestamp> volume-size
+
+        Create a mirrored volume :
+
+        .. code:: console
+
+          create --volume-type FSS --metadata mirrored=true
 
         """
 
@@ -134,14 +210,16 @@ class FalconstorBaseDriver(san.SanDriver):
         if not volume_metadata:
             volume_name, fss_metadata = self.proxy.create_vdev(volume)
         else:
-            if ("timeview" in volume_metadata and
+            if self.configuration.san_thin_provision:
+                volume_name, fss_metadata = self.proxy.create_thin_vdev(
+                    volume_metadata, volume)
+            elif ("timeview" in volume_metadata and
                     ("cdptag" in volume_metadata) or
                     ("rawtimestamp" in volume_metadata)):
                 volume_name, fss_metadata = self.proxy.create_tv_from_cdp_tag(
                     volume_metadata, volume)
-            elif ("thinprovisioned" in volume_metadata and
-                    "thinsize" in volume_metadata):
-                volume_name, fss_metadata = self.proxy.create_thin_vdev(
+            elif 'mirrored' in volume_metadata:
+                volume_name, fss_metadata = self.proxy.create_vdev_with_mirror(
                     volume_metadata, volume)
             else:
                 volume_name, fss_metadata = self.proxy.create_vdev(volume)
@@ -196,7 +274,7 @@ class FalconstorBaseDriver(san.SanDriver):
         except rest_proxy.FSSHTTPError as err:
             with excutils.save_and_reraise_exception() as ctxt:
                 ctxt.reraise = False
-                LOG.warning(_LW("Volume deletion failed with message: %s"),
+                LOG.warning("Volume deletion failed with message: %s",
                             err.reason)
 
     def create_snapshot(self, snapshot):
@@ -214,7 +292,7 @@ class FalconstorBaseDriver(san.SanDriver):
             with excutils.save_and_reraise_exception() as ctxt:
                 ctxt.reraise = False
                 LOG.error(
-                    _LE("Snapshot deletion failed with message: %s"),
+                    "Snapshot deletion failed with message: %s",
                     err.reason)
 
     def create_volume_from_snapshot(self, volume, snapshot):
@@ -231,10 +309,10 @@ class FalconstorBaseDriver(san.SanDriver):
             except rest_proxy.FSSHTTPError as err:
                 with excutils.save_and_reraise_exception() as ctxt:
                     ctxt.reraise = False
-                    LOG.error(_LE(
+                    LOG.error(
                         "Resizing %(id)s failed with message: %(msg)s. "
-                        "Cleaning volume."), {'id': volume["id"],
-                                              'msg': err.reason})
+                        "Cleaning volume.", {'id': volume["id"],
+                                             'msg': err.reason})
 
         if type(volume['metadata']) is dict:
             fss_metadata.update(volume['metadata'])
@@ -265,6 +343,8 @@ class FalconstorBaseDriver(san.SanDriver):
     def get_volume_stats(self, refresh=False):
         total_capacity = 0
         free_space = 0
+        # Thin provisioning
+        thin_enabled = self.configuration.san_thin_provision
         if refresh:
             try:
                 info = self.proxy._get_pools_info()
@@ -280,13 +360,19 @@ class FalconstorBaseDriver(san.SanDriver):
                         "total_capacity_gb": total_capacity,
                         "free_capacity_gb": free_space,
                         "reserved_percentage": 0,
-                        "consistencygroup_support": True
+                        "consistencygroup_support": True,
+                        "thin_provisioning_support": thin_enabled,
+                        "thick_provisioning_support": not thin_enabled
                         }
-
+                if thin_enabled:
+                    provisioned_capacity = int(info['used_gb'])
+                    data['provisioned_capacity_gb'] = provisioned_capacity
+                    data['max_over_subscription_ratio'] = (
+                        self.configuration.max_over_subscription_ratio)
                 self._stats = data
 
             except Exception as exc:
-                LOG.error(_LE('Cannot get volume status %(exc)s.'),
+                LOG.error('Cannot get volume status %(exc)s.',
                           {'exc': exc})
         return self._stats
 

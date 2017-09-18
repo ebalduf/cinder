@@ -5,7 +5,7 @@ Tempest Integration for Cinder
 This directory contains additional Cinder tempest tests.
 
 See the tempest plugin docs for information on using it:
-http://docs.openstack.org/developer/tempest/plugin.html#using-plugins
+https://docs.openstack.org/tempest/latest/plugin.html#using-plugins
 
 To run all tests from this plugin, install cinder into your environment. Then
 from the tempest directory run::
@@ -40,7 +40,7 @@ work. Update backend information to fit your environment.
                      n-api,n-cond,n-cpu,n-crt,n-net,n-sch,rabbit,tempest
     CINDER_ENABLED_BACKENDS=lvmdriver-1
     CINDER_DEFAULT_VOLUME_TYPE=lvmdriver-1
-    CINDER_SECURE_DELETE=False
+    CINDER_VOLUME_CLEAR=none
     TEMPEST_ENABLED_BACKENDS=lvmdriver-1
     TEMPEST_VOLUME_DRIVER=lvmdriver-1
     TEMPEST_VOLUME_VENDOR="Open Source"

@@ -23,11 +23,12 @@ import os
 from eventlet import pools
 from oslo_config import cfg
 from oslo_log import log as logging
+from oslo_utils import excutils
 import paramiko
 import six
 
 from cinder import exception
-from cinder.i18n import _, _LI
+from cinder.i18n import _
 
 LOG = logging.getLogger(__name__)
 
@@ -79,8 +80,8 @@ class SSHPool(pools.Pool):
 
         if 'hosts_key_file' in kwargs.keys():
             self.hosts_key_file = kwargs.pop('hosts_key_file')
-            LOG.info(_LI("Secondary ssh hosts key file %(kwargs)s will be "
-                         "loaded along with %(conf)s from /etc/cinder.conf."),
+            LOG.info("Secondary ssh hosts key file %(kwargs)s will be "
+                     "loaded along with %(conf)s from /etc/cinder.conf.",
                      {'kwargs': self.hosts_key_file,
                       'conf': CONF.ssh_hosts_key_file})
 
@@ -166,7 +167,14 @@ class SSHPool(pools.Pool):
                 return conn
             else:
                 conn.close()
-        return self.create()
+        try:
+            new_conn = self.create()
+        except Exception:
+            LOG.error("Create new item in SSHPool failed.")
+            with excutils.save_and_reraise_exception():
+                if conn:
+                    self.current_size -= 1
+        return new_conn
 
     def remove(self, ssh):
         """Close an ssh client and remove it from free_items."""

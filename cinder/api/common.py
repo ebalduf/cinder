@@ -14,6 +14,7 @@
 #    under the License.
 
 
+import json
 import os
 import re
 
@@ -36,13 +37,21 @@ api_common_opts = [
                help='The maximum number of items that a collection '
                     'resource returns in a single response'),
     cfg.StrOpt('osapi_volume_base_URL',
-               help='Base URL that will be presented to users in links '
-                    'to the OpenStack Volume API',
-               deprecated_name='osapi_compute_link_prefix'),
+               help='DEPRECATED: Base URL that will be presented to users in '
+                    'links to the OpenStack Volume API',
+               deprecated_name='osapi_compute_link_prefix',
+               deprecated_since='Pike',
+               deprecated_reason='Duplicate config option.'),
+    cfg.StrOpt('resource_query_filters_file',
+               default='/etc/cinder/resource_filters.json',
+               help="Json file indicating user visible filter "
+                    "parameters for list queries.",
+               deprecated_name='query_volume_filters'),
     cfg.ListOpt('query_volume_filters',
                 default=['name', 'status', 'metadata',
                          'availability_zone',
                          'bootable', 'group_id'],
+                deprecated_for_removal=True,
                 help="Volume filter options which "
                      "non-admin user could use to "
                      "query volumes. Default values "
@@ -52,9 +61,16 @@ api_common_opts = [
 ]
 
 CONF = cfg.CONF
+CONF.import_opt('public_endpoint', 'cinder.api.views.versions')
 CONF.register_opts(api_common_opts)
 
 LOG = logging.getLogger(__name__)
+_FILTERS_COLLECTION = None
+FILTERING_VERSION = '3.31'
+LIKE_FILTER_VERSION = '3.34'
+
+ATTRIBUTE_CONVERTERS = {'name~': 'display_name~',
+                        'description~': 'display_description~'}
 
 
 METADATA_TYPES = enum.Enum('METADATA_TYPES', 'user image')
@@ -232,13 +248,13 @@ def get_request_url(request):
     forwarded = headers.get('X-Forwarded-Host')
     if forwarded:
         url_parts = list(urllib.parse.urlsplit(url))
-        url_parts[1] = re.split(',\s?', forwarded)[-1]
+        url_parts[1] = re.split(r',\s?', forwarded)[-1]
         url = urllib.parse.urlunsplit(url_parts).rstrip('/')
     return url
 
 
 def remove_version_from_href(href):
-    """Removes the first api version from the href.
+    """Removes the first API version from the href.
 
     Given: 'http://cinder.example.com/v1.1/123'
     Returns: 'http://cinder.example.com/123'
@@ -288,7 +304,7 @@ class ViewBuilder(object):
         params = request.params.copy()
         params["marker"] = identifier
         prefix = self._update_link_prefix(get_request_url(request),
-                                          CONF.osapi_volume_base_URL)
+                                          CONF.public_endpoint)
         url = os.path.join(prefix,
                            request.environ["cinder.context"].project_id,
                            collection_name)
@@ -297,7 +313,7 @@ class ViewBuilder(object):
     def _get_href_link(self, request, identifier):
         """Return an href string pointing to this object."""
         prefix = self._update_link_prefix(get_request_url(request),
-                                          CONF.osapi_volume_base_URL)
+                                          CONF.public_endpoint)
         return os.path.join(prefix,
                             request.environ["cinder.context"].project_id,
                             self._collection_name,
@@ -307,7 +323,7 @@ class ViewBuilder(object):
         """Create a URL that refers to a specific resource."""
         base_url = remove_version_from_href(get_request_url(request))
         base_url = self._update_link_prefix(base_url,
-                                            CONF.osapi_volume_base_URL)
+                                            CONF.public_endpoint)
         return os.path.join(base_url,
                             request.environ["cinder.context"].project_id,
                             self._collection_name,
@@ -399,3 +415,92 @@ def get_cluster_host(req, params, cluster_version=None):
     if bool(cluster_name) == bool(host):
         raise exception.InvalidInput(reason=msg)
     return cluster_name, host
+
+
+def _initialize_filters():
+    global _FILTERS_COLLECTION
+    if not _FILTERS_COLLECTION:
+        with open(CONF.resource_query_filters_file, 'r') as filters_file:
+            _FILTERS_COLLECTION = json.load(filters_file)
+
+
+def get_enabled_resource_filters(resource=None):
+    """Get list of configured/allowed filters for the specified resource.
+
+    This method checks resource_query_filters_file and returns dictionary
+    which contains the specified resource and its allowed filters:
+
+    .. code-block:: json
+
+            {
+                "resource": ["filter1", "filter2", "filter3"]
+            }
+
+    if resource is not specified, all of the configuration will be returned,
+    and if the resource is not found, empty dict will be returned.
+    """
+    try:
+        _initialize_filters()
+        if not resource:
+            return _FILTERS_COLLECTION
+        else:
+            return {resource: _FILTERS_COLLECTION[resource]}
+    except Exception:
+        LOG.debug("Failed to collect resource %s's filters.", resource)
+        return {}
+
+
+def convert_filter_attributes(filters, resource):
+    for key in filters.copy().keys():
+        if resource in ['volume', 'backup',
+                        'snapshot'] and key in ATTRIBUTE_CONVERTERS.keys():
+            filters[ATTRIBUTE_CONVERTERS[key]] = filters[key]
+            filters.pop(key)
+
+
+def reject_invalid_filters(context, filters, resource,
+                           enable_like_filter=False):
+    if context.is_admin and resource not in ['pool']:
+        # Allow all options except resource is pool
+        # pool API is only available for admin
+        return
+    # Check the configured filters against those passed in resource
+    configured_filters = get_enabled_resource_filters(resource)
+    if configured_filters:
+        configured_filters = configured_filters[resource]
+    else:
+        configured_filters = []
+    invalid_filters = []
+    for key in filters.copy().keys():
+        if not enable_like_filter:
+            if key not in configured_filters:
+                invalid_filters.append(key)
+        else:
+            # If 'key~' is configured, both 'key' and 'key~' are valid.
+            if not (key in configured_filters or
+                    "%s~" % key in configured_filters):
+                invalid_filters.append(key)
+    if invalid_filters:
+        raise webob.exc.HTTPBadRequest(
+            explanation=_('Invalid filters %s are found in query '
+                          'options.') % ','.join(invalid_filters))
+
+
+def process_general_filtering(resource):
+    def wrapper(process_non_general_filtering):
+        def _decorator(*args, **kwargs):
+            req_version = kwargs.get('req_version')
+            filters = kwargs.get('filters')
+            context = kwargs.get('context')
+            if req_version.matches(FILTERING_VERSION):
+                support_like = False
+                if req_version.matches(LIKE_FILTER_VERSION):
+                    support_like = True
+                reject_invalid_filters(context, filters,
+                                       resource, support_like)
+                convert_filter_attributes(filters, resource)
+
+            else:
+                process_non_general_filtering(*args, **kwargs)
+        return _decorator
+    return wrapper

@@ -1,6 +1,3 @@
-# Copyright 2016 OpenStack Foundation.
-# All Rights Reserved.
-#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -18,6 +15,7 @@ import uuid
 import mock
 from oslo_config import cfg
 from oslo_serialization import jsonutils
+import webob
 
 from cinder.api import extensions
 from cinder.api.v3 import volume_metadata
@@ -27,6 +25,7 @@ from cinder import exception
 from cinder import test
 from cinder.tests.unit.api import fakes
 from cinder.tests.unit.api.v2 import fakes as v2_fakes
+from cinder.tests.unit.api.v2 import test_volume_metadata as v2_test
 from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import fake_volume
 from cinder import volume
@@ -118,10 +117,10 @@ def fake_update_volume_metadata(self, context, volume, diff):
     pass
 
 
-class volumeMetaDataTest(test.TestCase):
+class VolumeMetaDataTest(test.TestCase):
 
     def setUp(self):
-        super(volumeMetaDataTest, self).setUp()
+        super(VolumeMetaDataTest, self).setUp()
         self.volume_api = volume_api.API()
         self.mock_object(volume.api.API, 'get', get_volume)
         self.mock_object(db, 'volume_metadata_get',
@@ -138,7 +137,7 @@ class volumeMetaDataTest(test.TestCase):
         self.volume_controller = volumes.VolumeController(self.ext_mgr)
         self.controller = volume_metadata.Controller()
         self.req_id = str(uuid.uuid4())
-        self.url = '/v2/%s/volumes/%s/metadata' % (
+        self.url = '/v3/%s/volumes/%s/metadata' % (
             fake.PROJECT_ID, self.req_id)
 
         vol = {"size": 100,
@@ -232,3 +231,36 @@ class volumeMetaDataTest(test.TestCase):
             expected = {'meta': {'key1': 'value1'}}
             self.assertEqual(expected, res_dict)
             get_volume.assert_called_once_with(fake_context, self.req_id)
+
+    def test_create_metadata_keys_value_none(self):
+        self.mock_object(db, 'volume_metadata_update',
+                         return_create_volume_metadata)
+        req = fakes.HTTPRequest.blank(self.url, version="3.15")
+        req.method = 'POST'
+        req.headers["content-type"] = "application/json"
+        body = {"meta": {"key": None}}
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.create, req, self.req_id, body)
+
+    def test_update_items_value_none(self):
+        self.mock_object(db, 'volume_metadata_update',
+                         return_create_volume_metadata)
+        req = fakes.HTTPRequest.blank(self.url + '/key1', version="3.15")
+        req.method = 'PUT'
+        body = {"metadata": {"key": None}}
+        req.body = jsonutils.dump_as_bytes(body)
+        req.headers["content-type"] = "application/json"
+
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.create, req, self.req_id, body)
+
+
+class VolumeMetaDataTestNoMicroversion(v2_test.VolumeMetaDataTest):
+    """Volume metadata tests with no microversion provided."""
+
+    def setUp(self):
+        super(VolumeMetaDataTestNoMicroversion, self).setUp()
+        self.volume_controller = volumes.VolumeController(self.ext_mgr)
+        self.controller = volume_metadata.Controller()
+        self.url = '/v3/%s/volumes/%s/metadata' % (
+            fake.PROJECT_ID, self.req_id)

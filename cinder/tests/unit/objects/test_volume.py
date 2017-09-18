@@ -21,6 +21,7 @@ import six
 from cinder import context
 from cinder import exception
 from cinder import objects
+from cinder.objects import base as ovo_base
 from cinder.objects import fields
 from cinder.tests.unit.consistencygroup import fake_consistencygroup
 from cinder.tests.unit import fake_constants as fake
@@ -62,14 +63,27 @@ class TestVolume(test_objects.BaseObjectsTestCase):
         self.assertEqual(db_volume['id'], volume.id)
 
     @mock.patch('cinder.db.volume_update')
-    def test_save(self, volume_update):
+    @ddt.data(False, True)
+    def test_save(self, test_cg, volume_update):
         db_volume = fake_volume.fake_db_volume()
         volume = objects.Volume._from_db_object(self.context,
                                                 objects.Volume(), db_volume)
         volume.display_name = 'foobar'
+        if test_cg:
+            volume.consistencygroup = None
         volume.save()
         volume_update.assert_called_once_with(self.context, volume.id,
                                               {'display_name': 'foobar'})
+
+    def test_save_error(self):
+        db_volume = fake_volume.fake_db_volume()
+        volume = objects.Volume._from_db_object(self.context,
+                                                objects.Volume(), db_volume)
+        volume.display_name = 'foobar'
+        volume.consistencygroup = (
+            fake_consistencygroup.fake_consistencyobject_obj(self.context))
+        self.assertRaises(exception.ObjectActionError,
+                          volume.save)
 
     @mock.patch('cinder.db.volume_metadata_update',
                 return_value={'key1': 'value1'})
@@ -521,6 +535,52 @@ class TestVolume(test_objects.BaseObjectsTestCase):
             self.assertEqual('in-use', volume.status)
             self.assertEqual({}, volume.cinder_obj_get_changes())
             self.assertFalse(volume_attachment_get.called)
+
+    @ddt.data('1.6', '1.7')
+    def test_obj_make_compatible_cluster_added(self, version):
+        extra_data = {'cluster_name': 'cluster_name',
+                      'cluster': objects.Cluster()}
+        volume = objects.Volume(self.context, host='host', **extra_data)
+
+        serializer = ovo_base.CinderObjectSerializer(version)
+        primitive = serializer.serialize_entity(self.context, volume)
+
+        converted_volume = objects.Volume.obj_from_primitive(primitive)
+        is_set = version == '1.7'
+        for key in extra_data:
+            self.assertEqual(is_set, converted_volume.obj_attr_is_set(key))
+        self.assertEqual('host', converted_volume.host)
+
+    @ddt.data('1.9', '1.10')
+    def test_obj_make_compatible_groups_added(self, version):
+        extra_data = {'group_id': fake.GROUP_ID,
+                      'group': objects.Group()}
+        volume = objects.Volume(self.context, host='host', **extra_data)
+
+        serializer = ovo_base.CinderObjectSerializer(version)
+        primitive = serializer.serialize_entity(self.context, volume)
+
+        converted_volume = objects.Volume.obj_from_primitive(primitive)
+        is_set = version == '1.10'
+        for key in extra_data:
+            self.assertEqual(is_set, converted_volume.obj_attr_is_set(key))
+        self.assertEqual('host', converted_volume.host)
+
+    @ddt.data(True, False)
+    def test_is_replicated(self, result):
+        volume_type = fake_volume.fake_volume_type_obj(self.context)
+        volume = fake_volume.fake_volume_obj(
+            self.context, volume_type_id=volume_type.id)
+        volume.volume_type = volume_type
+        with mock.patch.object(volume_type, 'is_replicated',
+                               return_value=result) as is_replicated:
+            self.assertEqual(result, volume.is_replicated())
+            is_replicated.assert_called_once_with()
+
+    def test_is_replicated_no_type(self):
+        volume = fake_volume.fake_volume_obj(
+            self.context, volume_type_id=None, volume_type=None)
+        self.assertFalse(volume.is_replicated())
 
 
 @ddt.ddt

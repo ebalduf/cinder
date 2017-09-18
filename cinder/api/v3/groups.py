@@ -17,6 +17,7 @@
 from oslo_log import log as logging
 from oslo_utils import strutils
 from oslo_utils import uuidutils
+from six.moves import http_client
 import webob
 from webob import exc
 
@@ -25,7 +26,7 @@ from cinder.api.openstack import wsgi
 from cinder.api.v3.views import groups as views_groups
 from cinder import exception
 from cinder import group as group_api
-from cinder.i18n import _, _LI
+from cinder.i18n import _
 from cinder import rpc
 from cinder.volume import group_types
 
@@ -33,6 +34,7 @@ LOG = logging.getLogger(__name__)
 
 GROUP_API_VERSION = '3.13'
 GROUP_CREATE_FROM_SRC_API_VERSION = '3.14'
+GROUP_REPLICATION_API_VERSION = '3.38'
 
 
 class GroupsController(wsgi.Controller):
@@ -105,7 +107,7 @@ class GroupsController(wsgi.Controller):
                            {'error_message': error.msg,
                             'id': id})
             raise exc.HTTPBadRequest(explanation=error.msg)
-        return webob.Response(status_int=202)
+        return webob.Response(status_int=http_client.ACCEPTED)
 
     @wsgi.Controller.api_version(GROUP_API_VERSION)
     @wsgi.action("delete")
@@ -133,7 +135,7 @@ class GroupsController(wsgi.Controller):
                        % del_vol)
                 raise exc.HTTPBadRequest(explanation=msg)
 
-        LOG.info(_LI('Delete group with id: %s'), id,
+        LOG.info('Delete group with id: %s', id,
                  context=context)
 
         try:
@@ -146,7 +148,7 @@ class GroupsController(wsgi.Controller):
         except exception.InvalidGroup as error:
             raise exc.HTTPBadRequest(explanation=error.msg)
 
-        return webob.Response(status_int=202)
+        return webob.Response(status_int=http_client.ACCEPTED)
 
     @wsgi.Controller.api_version(GROUP_API_VERSION)
     def index(self, req):
@@ -162,8 +164,16 @@ class GroupsController(wsgi.Controller):
         """Returns a list of groups through view builder."""
         context = req.environ['cinder.context']
         filters = req.params.copy()
+        api_version = req.api_version_request
         marker, limit, offset = common.get_pagination_params(filters)
         sort_keys, sort_dirs = common.get_sort_params(filters)
+
+        filters.pop('list_volume', None)
+        if api_version.matches(common.FILTERING_VERSION):
+            support_like = (True if api_version.matches(
+                common.LIKE_FILTER_VERSION) else False)
+            common.reject_invalid_filters(context, filters, 'group',
+                                          support_like)
 
         groups = self.group_api.get_all(
             context, filters=filters, marker=marker, limit=limit,
@@ -188,7 +198,7 @@ class GroupsController(wsgi.Controller):
         return groups
 
     @wsgi.Controller.api_version(GROUP_API_VERSION)
-    @wsgi.response(202)
+    @wsgi.response(http_client.ACCEPTED)
     def create(self, req, body):
         """Create a new group."""
         LOG.debug('Creating new group %s', body)
@@ -216,7 +226,7 @@ class GroupsController(wsgi.Controller):
             raise exc.HTTPBadRequest(explanation=msg)
         availability_zone = group.get('availability_zone')
 
-        LOG.info(_LI("Creating group %(name)s."),
+        LOG.info("Creating group %(name)s.",
                  {'name': name},
                  context=context)
 
@@ -235,7 +245,7 @@ class GroupsController(wsgi.Controller):
 
     @wsgi.Controller.api_version(GROUP_CREATE_FROM_SRC_API_VERSION)
     @wsgi.action("create-from-src")
-    @wsgi.response(202)
+    @wsgi.response(http_client.ACCEPTED)
     def create_from_src(self, req, body):
         """Create a new group from a source.
 
@@ -267,16 +277,16 @@ class GroupsController(wsgi.Controller):
 
         group_type_id = None
         if group_snapshot_id:
-            LOG.info(_LI("Creating group %(name)s from group_snapshot "
-                         "%(snap)s."),
+            LOG.info("Creating group %(name)s from group_snapshot "
+                     "%(snap)s.",
                      {'name': name, 'snap': group_snapshot_id},
                      context=context)
             grp_snap = self.group_api.get_group_snapshot(context,
                                                          group_snapshot_id)
             group_type_id = grp_snap.group_type_id
         elif source_group_id:
-            LOG.info(_LI("Creating group %(name)s from "
-                         "source group %(source_group_id)s."),
+            LOG.info("Creating group %(name)s from "
+                     "source group %(source_group_id)s.",
                      {'name': name, 'source_group_id': source_group_id},
                      context=context)
             source_group = self.group_api.get(context, source_group_id)
@@ -340,9 +350,9 @@ class GroupsController(wsgi.Controller):
                     "can not be all empty in the request body.")
             raise exc.HTTPBadRequest(explanation=msg)
 
-        LOG.info(_LI("Updating group %(id)s with name %(name)s "
-                     "description: %(description)s add_volumes: "
-                     "%(add_volumes)s remove_volumes: %(remove_volumes)s."),
+        LOG.info("Updating group %(id)s with name %(name)s "
+                 "description: %(description)s add_volumes: "
+                 "%(add_volumes)s remove_volumes: %(remove_volumes)s.",
                  {'id': id, 'name': name,
                   'description': description,
                   'add_volumes': add_volumes,
@@ -361,7 +371,112 @@ class GroupsController(wsgi.Controller):
         except exception.InvalidGroup as error:
             raise exc.HTTPBadRequest(explanation=error.msg)
 
+        return webob.Response(status_int=http_client.ACCEPTED)
+
+    @wsgi.Controller.api_version(GROUP_REPLICATION_API_VERSION)
+    @wsgi.action("enable_replication")
+    def enable_replication(self, req, id, body):
+        """Enables replications for a group."""
+        context = req.environ['cinder.context']
+        if body:
+            if not self.is_valid_body(body, 'enable_replication'):
+                msg = _("Missing required element 'enable_replication' in "
+                        "request body.")
+                raise exc.HTTPBadRequest(explanation=msg)
+
+        LOG.info('Enable replication group with id: %s.', id,
+                 context=context)
+
+        try:
+            group = self.group_api.get(context, id)
+            self.group_api.enable_replication(context, group)
+            # Not found exception will be handled at the wsgi level
+        except (exception.InvalidGroup, exception.InvalidGroupType,
+                exception.InvalidVolume, exception.InvalidVolumeType) as error:
+            raise exc.HTTPBadRequest(explanation=error.msg)
+
         return webob.Response(status_int=202)
+
+    @wsgi.Controller.api_version(GROUP_REPLICATION_API_VERSION)
+    @wsgi.action("disable_replication")
+    def disable_replication(self, req, id, body):
+        """Disables replications for a group."""
+        context = req.environ['cinder.context']
+        if body:
+            if not self.is_valid_body(body, 'disable_replication'):
+                msg = _("Missing required element 'disable_replication' in "
+                        "request body.")
+                raise exc.HTTPBadRequest(explanation=msg)
+
+        LOG.info('Disable replication group with id: %s.', id,
+                 context=context)
+
+        try:
+            group = self.group_api.get(context, id)
+            self.group_api.disable_replication(context, group)
+            # Not found exception will be handled at the wsgi level
+        except (exception.InvalidGroup, exception.InvalidGroupType,
+                exception.InvalidVolume, exception.InvalidVolumeType) as error:
+            raise exc.HTTPBadRequest(explanation=error.msg)
+
+        return webob.Response(status_int=202)
+
+    @wsgi.Controller.api_version(GROUP_REPLICATION_API_VERSION)
+    @wsgi.action("failover_replication")
+    def failover_replication(self, req, id, body):
+        """Fails over replications for a group."""
+        context = req.environ['cinder.context']
+        if body:
+            if not self.is_valid_body(body, 'failover_replication'):
+                msg = _("Missing required element 'failover_replication' in "
+                        "request body.")
+                raise exc.HTTPBadRequest(explanation=msg)
+
+            grp_body = body['failover_replication']
+            try:
+                allow_attached = strutils.bool_from_string(
+                    grp_body.get('allow_attached_volume', False),
+                    strict=True)
+            except ValueError:
+                msg = (_("Invalid value '%s' for allow_attached_volume flag.")
+                       % grp_body)
+                raise exc.HTTPBadRequest(explanation=msg)
+            secondary_backend_id = grp_body.get('secondary_backend_id')
+
+        LOG.info('Failover replication group with id: %s.', id,
+                 context=context)
+
+        try:
+            group = self.group_api.get(context, id)
+            self.group_api.failover_replication(context, group, allow_attached,
+                                                secondary_backend_id)
+            # Not found exception will be handled at the wsgi level
+        except (exception.InvalidGroup, exception.InvalidGroupType,
+                exception.InvalidVolume, exception.InvalidVolumeType) as error:
+            raise exc.HTTPBadRequest(explanation=error.msg)
+
+        return webob.Response(status_int=202)
+
+    @wsgi.Controller.api_version(GROUP_REPLICATION_API_VERSION)
+    @wsgi.action("list_replication_targets")
+    def list_replication_targets(self, req, id, body):
+        """List replication targets for a group."""
+        context = req.environ['cinder.context']
+        if body:
+            if not self.is_valid_body(body, 'list_replication_targets'):
+                msg = _("Missing required element 'list_replication_targets' "
+                        "in request body.")
+                raise exc.HTTPBadRequest(explanation=msg)
+
+        LOG.info('List replication targets for group with id: %s.', id,
+                 context=context)
+
+        # Not found exception will be handled at the wsgi level
+        group = self.group_api.get(context, id)
+        replication_targets = self.group_api.list_replication_targets(
+            context, group)
+
+        return replication_targets
 
 
 def create_resource():

@@ -39,7 +39,7 @@ from oslo_log import log as logging
 from oslo_utils.excutils import save_and_reraise_exception
 
 from cinder import exception
-from cinder.i18n import _, _LE, _LW
+from cinder.i18n import _
 from cinder import interface
 from cinder import utils
 from cinder.volume import driver
@@ -121,10 +121,13 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
         3.0.12 - Added entry point tracing
         3.0.13 - Handling HTTP conflict 409, host WWN/iSCSI name already used
                 by another host, while creating 3PAR iSCSI Host. bug #1642945
+        3.0.14 - Handle manage and unmanage hosts present. bug #1648067
+        3.0.15 - Adds consistency group capability in generic volume groups.
+        3.0.16 - Get host from os-brick connector. bug #1690244
 
     """
 
-    VERSION = "3.0.13"
+    VERSION = "3.0.16"
 
     # The name of the CI wiki page.
     CI_WIKI_NAME = "HPE_Storage_CI"
@@ -148,10 +151,10 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
             common.client_login()
         except Exception:
             if common._replication_enabled:
-                LOG.warning(_LW("The primary array is not reachable at this "
-                                "time. Since replication is enabled, "
-                                "listing replication targets and failing over "
-                                "a volume can still be performed."))
+                LOG.warning("The primary array is not reachable at this "
+                            "time. Since replication is enabled, "
+                            "listing replication targets and failing over "
+                            "a volume can still be performed.")
                 pass
             else:
                 raise
@@ -218,7 +221,7 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
                 elif len(ip) == 2:
                     temp_iscsi_ip[ip[0]] = {'ip_port': ip[1]}
                 else:
-                    LOG.warning(_LW("Invalid IP address format '%s'"), ip_addr)
+                    LOG.warning("Invalid IP address format '%s'", ip_addr)
 
         # add the single value iscsi_ip_address option to the IP dictionary.
         # This way we can see if it's a valid iSCSI IP. If it's not valid,
@@ -250,9 +253,9 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
 
         # lets see if there are invalid iSCSI IPs left in the temp dict
         if len(temp_iscsi_ip) > 0:
-            LOG.warning(_LW("Found invalid iSCSI IP address(s) in "
-                            "configuration option(s) hpe3par_iscsi_ips or "
-                            "iscsi_ip_address '%s.'"),
+            LOG.warning("Found invalid iSCSI IP address(s) in "
+                        "configuration option(s) hpe3par_iscsi_ips or "
+                        "iscsi_ip_address '%s.'",
                         (", ".join(temp_iscsi_ip)))
 
         if not len(iscsi_ip_list) > 0:
@@ -329,10 +332,10 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
         The format of the driver data is defined in _get_iscsi_properties.
         Example return value:
 
-        .. code-block:: json
+        .. code-block:: default
 
             {
-                'driver_volume_type': 'iscsi'
+                'driver_volume_type': 'iscsi',
                 'data': {
                     'encrypted': False,
                     'target_discovered': True,
@@ -408,9 +411,9 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
                         target_iqns.append(port['iSCSIName'])
                         target_luns.append(vlun['lun'])
                     else:
-                        LOG.warning(_LW("iSCSI IP: '%s' was not found in "
-                                        "hpe3par_iscsi_ips list defined in "
-                                        "cinder.conf."), iscsi_ip)
+                        LOG.warning("iSCSI IP: '%s' was not found in "
+                                    "hpe3par_iscsi_ips list defined in "
+                                    "cinder.conf.", iscsi_ip)
 
                 info = {'driver_volume_type': 'iscsi',
                         'data': {'target_portals': target_portals,
@@ -446,8 +449,8 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
                     vlun = existing_vlun
 
                 if least_used_nsp is None:
-                    LOG.warning(_LW("Least busy iSCSI port not found, "
-                                    "using first iSCSI port in list."))
+                    LOG.warning("Least busy iSCSI port not found, "
+                                "using first iSCSI port in list.")
                     iscsi_ip = list(iscsi_ips)[0]
                 else:
                     iscsi_ip = self._get_ip_using_nsp(least_used_nsp, common)
@@ -535,7 +538,7 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
                                          optional={'domain': domain,
                                                    'persona': persona_id})
             except hpeexceptions.HTTPConflict as path_conflict:
-                msg = _LE("Create iSCSI host caught HTTP conflict code: %s")
+                msg = "Create iSCSI host caught HTTP conflict code: %s"
                 with save_and_reraise_exception(reraise=False) as ctxt:
                     if path_conflict.get_code() is EXISTENT_PATH:
                         # Handle exception : EXISTENT_PATH - host WWN/iSCSI
@@ -592,6 +595,11 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
 
         try:
             host = common._get_3par_host(hostname)
+            # Check whether host with iqn of initiator present on 3par
+            hosts = common.client.queryHost(iqns=[connector['initiator']])
+            host, hostname = common._get_prioritized_host_on_3par(host,
+                                                                  hosts,
+                                                                  hostname)
         except hpeexceptions.HTTPNotFound:
             # get persona from the volume type extra specs
             persona_id = common.get_persona_type(volume)
@@ -617,9 +625,9 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
                 host = common._get_3par_host(hostname)
             elif (not host['initiatorChapEnabled'] and
                     common._client_conf['hpe3par_iscsi_chap_enabled']):
-                LOG.warning(_LW("Host exists without CHAP credentials set and "
-                                "has iSCSI attachments but CHAP is enabled. "
-                                "Updating host with new CHAP credentials."))
+                LOG.warning("Host exists without CHAP credentials set and "
+                            "has iSCSI attachments but CHAP is enabled. "
+                            "Updating host with new CHAP credentials.")
                 self._set_3par_chaps(
                     common,
                     hostname,
@@ -629,7 +637,7 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
 
         return host, username, password
 
-    def _do_export(self, common, volume):
+    def _do_export(self, common, volume, connector):
         """Gets the associated account, generates CHAP info and updates."""
         model_update = {}
 
@@ -638,7 +646,7 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
             return model_update
 
         # CHAP username will be the hostname
-        chap_username = volume['host'].split('@')[0]
+        chap_username = connector['host']
 
         chap_password = None
         try:
@@ -649,12 +657,12 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
             host_info = common.client.getHost(chap_username)
 
             if not host_info['initiatorChapEnabled']:
-                LOG.warning(_LW("Host has no CHAP key, but CHAP is enabled."))
+                LOG.warning("Host has no CHAP key, but CHAP is enabled.")
 
         except hpeexceptions.HTTPNotFound:
             chap_password = volume_utils.generate_password(16)
-            LOG.warning(_LW("No host or VLUNs exist. Generating new "
-                            "CHAP key."))
+            LOG.warning("No host or VLUNs exist. Generating new "
+                        "CHAP key.")
         else:
             # Get a list of all iSCSI VLUNs and see if there is already a CHAP
             # key assigned to one of them.  Use that CHAP key if present,
@@ -682,12 +690,12 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
                                   "but CHAP is enabled. Skipping.",
                                   vlun['remoteName'])
                 else:
-                    LOG.warning(_LW("Non-iSCSI VLUN detected."))
+                    LOG.warning("Non-iSCSI VLUN detected.")
 
             if not chap_exists:
                 chap_password = volume_utils.generate_password(16)
-                LOG.warning(_LW("No VLUN contained CHAP credentials. "
-                                "Generating new CHAP key."))
+                LOG.warning("No VLUN contained CHAP credentials. "
+                            "Generating new CHAP key.")
 
         # Add CHAP credentials to the volume metadata
         vol_name = common._get_3par_vol_name(volume['id'])
@@ -705,7 +713,7 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
     def create_export(self, context, volume, connector):
         common = self._login()
         try:
-            return self._do_export(common, volume)
+            return self._do_export(common, volume, connector)
         finally:
             self._logout(common)
 
@@ -720,7 +728,7 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
             vol_name = common._get_3par_vol_name(volume['id'])
             common.client.getVolume(vol_name)
         except hpeexceptions.HTTPNotFound:
-            LOG.error(_LE("Volume %s doesn't exist on array."), vol_name)
+            LOG.error("Volume %s doesn't exist on array.", vol_name)
         else:
             metadata = common.client.getAllVolumeMetaData(vol_name)
 
@@ -814,7 +822,6 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
             if count < current_smallest_count:
                 current_least_used_nsp = nsp
                 current_smallest_count = count
-
         return current_least_used_nsp
 
     @utils.trace
@@ -826,56 +833,58 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
             self._logout(common)
 
     @utils.trace
-    def create_consistencygroup(self, context, group):
+    def create_group(self, context, group):
         common = self._login()
         try:
-            common.create_consistencygroup(context, group)
+            common.create_group(context, group)
         finally:
             self._logout(common)
 
     @utils.trace
-    def create_consistencygroup_from_src(self, context, group, volumes,
-                                         cgsnapshot=None, snapshots=None,
-                                         source_cg=None, source_vols=None):
+    def create_group_from_src(self, context, group, volumes,
+                              group_snapshot=None, snapshots=None,
+                              source_group=None, source_vols=None):
         common = self._login()
         try:
-            return common.create_consistencygroup_from_src(
-                context, group, volumes, cgsnapshot, snapshots, source_cg,
-                source_vols)
+            return common.create_group_from_src(
+                context, group, volumes, group_snapshot, snapshots,
+                source_group, source_vols)
         finally:
             self._logout(common)
 
     @utils.trace
-    def delete_consistencygroup(self, context, group, volumes):
+    def delete_group(self, context, group, volumes):
         common = self._login()
         try:
-            return common.delete_consistencygroup(context, group, volumes)
+            return common.delete_group(context, group, volumes)
         finally:
             self._logout(common)
 
     @utils.trace
-    def update_consistencygroup(self, context, group,
-                                add_volumes=None, remove_volumes=None):
+    def update_group(self, context, group, add_volumes=None,
+                     remove_volumes=None):
         common = self._login()
         try:
-            return common.update_consistencygroup(context, group, add_volumes,
-                                                  remove_volumes)
+            return common.update_group(context, group, add_volumes,
+                                       remove_volumes)
         finally:
             self._logout(common)
 
     @utils.trace
-    def create_cgsnapshot(self, context, cgsnapshot, snapshots):
+    def create_group_snapshot(self, context, group_snapshot, snapshots):
         common = self._login()
         try:
-            return common.create_cgsnapshot(context, cgsnapshot, snapshots)
+            return common.create_group_snapshot(context, group_snapshot,
+                                                snapshots)
         finally:
             self._logout(common)
 
     @utils.trace
-    def delete_cgsnapshot(self, context, cgsnapshot, snapshots):
+    def delete_group_snapshot(self, context, group_snapshot, snapshots):
         common = self._login()
         try:
-            return common.delete_cgsnapshot(context, cgsnapshot, snapshots)
+            return common.delete_group_snapshot(context, group_snapshot,
+                                                snapshots)
         finally:
             self._logout(common)
 
@@ -976,7 +985,7 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
             self._logout(common)
 
     @utils.trace
-    def failover_host(self, context, volumes, secondary_id=None):
+    def failover_host(self, context, volumes, secondary_id=None, groups=None):
         """Force failover to a secondary replication target."""
         common = self._login(timeout=30)
         try:
@@ -984,6 +993,6 @@ class HPE3PARISCSIDriver(driver.ManageableVD,
             active_backend_id, volume_updates = common.failover_host(
                 context, volumes, secondary_id)
             self._active_backend_id = active_backend_id
-            return active_backend_id, volume_updates
+            return active_backend_id, volume_updates, []
         finally:
             self._logout(common)

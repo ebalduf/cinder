@@ -29,7 +29,7 @@ import six
 from cinder import context
 from cinder import db
 from cinder import exception
-from cinder.i18n import _, _LE
+from cinder.i18n import _
 from cinder import quota_utils
 
 
@@ -62,6 +62,10 @@ quota_opts = [
     cfg.IntOpt('reservation_expire',
                default=86400,
                help='Number of seconds until a reservation expires'),
+    cfg.IntOpt('reservation_clean_interval',
+               default='$reservation_expire',
+               help='Interval between periodic task runs to clean expired '
+                    'reservations in seconds.'),
     cfg.IntOpt('until_refresh',
                default=0,
                help='Count of reservations until usage is refreshed'),
@@ -1044,8 +1048,7 @@ class QuotaEngine(object):
             # usage resynchronization and the reservation expiration
             # mechanisms will resolve the issue.  The exception is
             # logged, however, because this is less than optimal.
-            LOG.exception(_LE("Failed to commit "
-                              "reservations %s"), reservations)
+            LOG.exception("Failed to commit reservations %s", reservations)
 
     def rollback(self, context, reservations, project_id=None):
         """Roll back reservations.
@@ -1065,8 +1068,7 @@ class QuotaEngine(object):
             # usage resynchronization and the reservation expiration
             # mechanisms will resolve the issue.  The exception is
             # logged, however, because this is less than optimal.
-            LOG.exception(_LE("Failed to roll back reservations "
-                              "%s"), reservations)
+            LOG.exception("Failed to roll back reservations %s", reservations)
 
     def destroy_by_project(self, context, project_id):
         """Destroy all quota limits associated with a project.

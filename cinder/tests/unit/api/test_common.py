@@ -57,7 +57,7 @@ class LimiterTest(test.TestCase):
 
         This test includes next test cases:
         1) Offset key works with a blank offset;
-        2) Offset key works with a offset out of range;
+        2) Offset key works with an offset out of range;
         3) Offset key works with a BAD offset;
         4) Offset value is negative;
         5) Limit value is bad;
@@ -356,6 +356,153 @@ class TestCollectionLinks(test.TestCase):
         """
         self._validate_next_link(item_count, osapi_max_limit, limit,
                                  should_link_exist)
+
+
+@ddt.ddt
+class GeneralFiltersTest(test.TestCase):
+
+    @ddt.data({'filters': {'volume': ['key1', 'key2']},
+               'resource': 'volume',
+               'expected': {'volume': ['key1', 'key2']}},
+              {'filters': {'volume': ['key1', 'key2']},
+               'resource': 'snapshot',
+               'expected': {}},
+              {'filters': {'volume': ['key1', 'key2']},
+               'resource': None,
+               'expected': {'volume': ['key1', 'key2']}})
+    @ddt.unpack
+    def test_get_enabled_resource_filters(self, filters, resource, expected):
+        with mock.patch('cinder.api.common._FILTERS_COLLECTION', filters):
+            result = common.get_enabled_resource_filters(resource)
+            self.assertEqual(expected, result)
+
+    @ddt.data({'filters': {'key1': 'value1'},
+               'is_admin': False,
+               'result': {'fake_resource': ['key1']},
+               'expected': {'key1': 'value1'},
+               'resource': 'fake_resource'},
+              {'filters': {'key1': 'value1', 'key2': 'value2'},
+               'is_admin': False,
+               'result': {'fake_resource': ['key1']},
+               'expected': None,
+               'resource': 'fake_resource'},
+              {'filters': {'key1': 'value1',
+                           'all_tenants': 'value2',
+                           'key3': 'value3'},
+               'is_admin': True,
+               'result': {'fake_resource': []},
+               'expected': {'key1': 'value1',
+                            'all_tenants': 'value2',
+                            'key3': 'value3'},
+               'resource': 'fake_resource'},
+              {'filters': {'key1': 'value1',
+                           'all_tenants': 'value2',
+                           'key3': 'value3'},
+               'is_admin': True,
+               'result': {'pool': []},
+               'expected': None,
+               'resource': 'pool'})
+    @ddt.unpack
+    @mock.patch('cinder.api.common.get_enabled_resource_filters')
+    def test_reject_invalid_filters(self, mock_get, filters,
+                                    is_admin, result, expected, resource):
+        class FakeContext(object):
+            def __init__(self, admin):
+                self.is_admin = admin
+
+        fake_context = FakeContext(is_admin)
+        mock_get.return_value = result
+        if expected:
+            common.reject_invalid_filters(fake_context,
+                                          filters, resource)
+            self.assertEqual(expected, filters)
+        else:
+            self.assertRaises(
+                webob.exc.HTTPBadRequest,
+                common.reject_invalid_filters, fake_context,
+                filters, resource)
+
+    @ddt.data({'filters': {'name': 'value1'},
+               'is_admin': False,
+               'result': {'fake_resource': ['name']},
+               'expected': {'name': 'value1'}},
+              {'filters': {'name~': 'value1'},
+               'is_admin': False,
+               'result': {'fake_resource': ['name']},
+               'expected': None},
+              {'filters': {'name': 'value1'},
+               'is_admin': False,
+               'result': {'fake_resource': ['name~']},
+               'expected': {'name': 'value1'}},
+              {'filters': {'name~': 'value1'},
+               'is_admin': False,
+               'result': {'fake_resource': ['name~']},
+               'expected': {'name~': 'value1'}}
+              )
+    @ddt.unpack
+    @mock.patch('cinder.api.common.get_enabled_resource_filters')
+    def test_reject_invalid_filters_like_operator_enabled(
+            self, mock_get, filters, is_admin, result, expected):
+        class FakeContext(object):
+            def __init__(self, admin):
+                self.is_admin = admin
+
+        fake_context = FakeContext(is_admin)
+        mock_get.return_value = result
+        if expected:
+            common.reject_invalid_filters(fake_context,
+                                          filters, 'fake_resource', True)
+            self.assertEqual(expected, filters)
+        else:
+            self.assertRaises(
+                webob.exc.HTTPBadRequest,
+                common.reject_invalid_filters, fake_context,
+                filters, 'fake_resource')
+
+    @ddt.data({'resource': 'volume',
+               'expected': ["name", "status", "metadata",
+                            "bootable", "migration_status",
+                            "availability_zone", "group_id"]},
+              {'resource': 'backup',
+               'expected': ["name", "status", "volume_id"]},
+              {'resource': 'snapshot',
+               'expected': ["name", "status", "volume_id", "metadata",
+                            "availability_zone"]},
+              {'resource': 'group_snapshot',
+               'expected': ["status", "group_id"]},
+              {'resource': 'attachment',
+               'expected': ["volume_id", "status", "instance_id",
+                            "attach_status"]},
+              {'resource': 'message',
+               'expected': ["resource_uuid", "resource_type", "event_id",
+                            "request_id", "message_level"]},
+              {'resource': 'pool', 'expected': ["name", "volume_type"]})
+    @ddt.unpack
+    def test_filter_keys_exists(self, resource, expected):
+        result = common.get_enabled_resource_filters(resource)
+        self.assertEqual(expected, result[resource])
+
+    @ddt.data({'resource': 'group',
+               'filters': {'name~': 'value'},
+               'expected': {'name~': 'value'}},
+              {'resource': 'snapshot',
+               'filters': {'status~': 'value'},
+               'expected': {'status~': 'value'}},
+              {'resource': 'volume',
+               'filters': {'name~': 'value',
+                           'description~': 'value'},
+               'expected': {'display_name~': 'value',
+                            'display_description~': 'value'}},
+              {'resource': 'backup',
+               'filters': {'name~': 'value',
+                           'description~': 'value'},
+               'expected': {'display_name~': 'value',
+                            'display_description~': 'value'}},
+              )
+    @ddt.unpack
+    def test_convert_filter_attributes(self, resource, filters, expected):
+        common.convert_filter_attributes(filters, resource)
+        self.assertEqual(expected, filters)
 
 
 @ddt.ddt

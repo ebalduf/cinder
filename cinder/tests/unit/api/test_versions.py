@@ -17,11 +17,12 @@ import ddt
 from oslo_serialization import jsonutils
 from oslo_utils import encodeutils
 import six
+from six.moves import http_client
 import webob
 
 from cinder.api.openstack import api_version_request
 from cinder.api.openstack import wsgi
-from cinder.api.v1 import router
+from cinder.api.v3 import router
 from cinder.api import versions
 from cinder import exception
 from cinder import test
@@ -58,21 +59,17 @@ class VersionsControllerTestCase(test.TestCase):
                          response.headers[VERSION_HEADER_NAME])
         self.assertEqual(VERSION_HEADER_NAME, response.headers['Vary'])
 
-    @ddt.data('1.0', '2.0', '3.0')
+    @ddt.data('2.0', '3.0')
     def test_versions_root(self, version):
         req = self.build_request(base_url='http://localhost')
 
         response = req.get_response(versions.Versions())
-        self.assertEqual(300, response.status_int)
+        self.assertEqual(http_client.MULTIPLE_CHOICES, response.status_int)
         body = jsonutils.loads(response.body)
         version_list = body['versions']
 
         ids = [v['id'] for v in version_list]
-        self.assertEqual({'v1.0', 'v2.0', 'v3.0'}, set(ids))
-
-        v1 = [v for v in version_list if v['id'] == 'v1.0'][0]
-        self.assertEqual('', v1.get('min_version'))
-        self.assertEqual('', v1.get('version'))
+        self.assertEqual({'v2.0', 'v3.0'}, set(ids))
 
         v2 = [v for v in version_list if v['id'] == 'v2.0'][0]
         self.assertEqual('', v2.get('min_version'))
@@ -84,19 +81,13 @@ class VersionsControllerTestCase(test.TestCase):
         self.assertEqual(api_version_request._MIN_API_VERSION,
                          v3.get('min_version'))
 
-    def test_versions_v1_no_header(self):
-        req = self.build_request(base_url='http://localhost/v1')
-
-        response = req.get_response(router.APIRouter())
-        self.assertEqual(200, response.status_int)
-
     def test_versions_v2_no_header(self):
         req = self.build_request(base_url='http://localhost/v2')
 
         response = req.get_response(router.APIRouter())
-        self.assertEqual(200, response.status_int)
+        self.assertEqual(http_client.OK, response.status_int)
 
-    @ddt.data('1.0', '2.0', '3.0')
+    @ddt.data('2.0', '3.0')
     def test_versions(self, version):
         req = self.build_request(
             base_url='http://localhost/v{}'.format(version[0]),
@@ -106,7 +97,7 @@ class VersionsControllerTestCase(test.TestCase):
             req.headers = {VERSION_HEADER_NAME: VOLUME_SERVICE + version}
 
         response = req.get_response(router.APIRouter())
-        self.assertEqual(200, response.status_int)
+        self.assertEqual(http_client.OK, response.status_int)
         body = jsonutils.loads(response.body)
         version_list = body['versions']
 
@@ -128,7 +119,7 @@ class VersionsControllerTestCase(test.TestCase):
 
         response = req.get_response(router.APIRouter())
 
-        self.assertEqual(200, response.status_int)
+        self.assertEqual(http_client.OK, response.status_int)
         self.check_response(response, api_version_request._MAX_API_VERSION)
 
     def test_versions_version_invalid(self):
@@ -137,9 +128,9 @@ class VersionsControllerTestCase(test.TestCase):
         for app in self.wsgi_apps:
             response = req.get_response(app)
 
-            self.assertEqual(400, response.status_int)
+            self.assertEqual(http_client.BAD_REQUEST, response.status_int)
 
-    @ddt.data('1.0', '2.0', '3.0')
+    @ddt.data('2.0', '3.0')
     def test_versions_response_fault(self, version):
         req = self.build_request(header_version=version)
         req.api_version_request = (
@@ -148,7 +139,7 @@ class VersionsControllerTestCase(test.TestCase):
         app = wsgi.Fault(webob.exc.HTTPBadRequest(explanation='what?'))
         response = req.get_response(app)
 
-        self.assertEqual(400, response.status_int)
+        self.assertEqual(http_client.BAD_REQUEST, response.status_int)
         if version == '3.0':
             self.check_response(response, '3.0')
         else:
@@ -234,32 +225,32 @@ class VersionsControllerTestCase(test.TestCase):
         self.assertEqual('None.None', _get_str_version(new_method.end_version))
 
     @ddt.data(
-        ('2.0', 'index', 406, 'ControllerParent'),
-        ('2.0', 'show', 406, 'ControllerParent'),
-        ('3.0', 'index', 404, 'ControllerParent'),
-        ('3.0', 'show', 404, 'ControllerParent'),
+        ('2.0', 'index', http_client.NOT_ACCEPTABLE, 'ControllerParent'),
+        ('2.0', 'show', http_client.NOT_ACCEPTABLE, 'ControllerParent'),
+        ('3.0', 'index', http_client.NOT_FOUND, 'ControllerParent'),
+        ('3.0', 'show', http_client.NOT_FOUND, 'ControllerParent'),
         ('3.1', 'index', 'parent', 'ControllerParent'),
-        ('3.1', 'show', 404, 'ControllerParent'),
+        ('3.1', 'show', http_client.NOT_FOUND, 'ControllerParent'),
         ('3.2', 'index', 'parent', 'ControllerParent'),
-        ('3.2', 'show', 404, 'ControllerParent'),
+        ('3.2', 'show', http_client.NOT_FOUND, 'ControllerParent'),
 
-        ('2.0', 'index', 406, 'Controller'),
-        ('2.0', 'show', 406, 'Controller'),
-        ('3.0', 'index', 404, 'Controller'),
-        ('3.0', 'show', 404, 'Controller'),
+        ('2.0', 'index', http_client.NOT_ACCEPTABLE, 'Controller'),
+        ('2.0', 'show', http_client.NOT_ACCEPTABLE, 'Controller'),
+        ('3.0', 'index', http_client.NOT_FOUND, 'Controller'),
+        ('3.0', 'show', http_client.NOT_FOUND, 'Controller'),
         ('3.1', 'index', 'single', 'Controller'),
-        ('3.1', 'show', 404, 'Controller'),
+        ('3.1', 'show', http_client.NOT_FOUND, 'Controller'),
         ('3.2', 'index', 'single', 'Controller'),
-        ('3.2', 'show', 404, 'Controller'),
+        ('3.2', 'show', http_client.NOT_FOUND, 'Controller'),
 
-        ('2.0', 'index', 406, 'ControllerChild'),
-        ('2.0', 'show', 406, 'ControllerChild'),
-        ('3.0', 'index', 404, 'ControllerChild'),
-        ('3.0', 'show', 404, 'ControllerChild'),
+        ('2.0', 'index', http_client.NOT_ACCEPTABLE, 'ControllerChild'),
+        ('2.0', 'show', http_client.NOT_ACCEPTABLE, 'ControllerChild'),
+        ('3.0', 'index', http_client.NOT_FOUND, 'ControllerChild'),
+        ('3.0', 'show', http_client.NOT_FOUND, 'ControllerChild'),
         ('3.1', 'index', 'parent', 'ControllerChild'),
-        ('3.1', 'show', 404, 'ControllerChild'),
+        ('3.1', 'show', http_client.NOT_FOUND, 'ControllerChild'),
         ('3.2', 'index', 'child 3.2', 'ControllerChild'),
-        ('3.2', 'show', 404, 'ControllerChild'),
+        ('3.2', 'show', http_client.NOT_FOUND, 'ControllerChild'),
         ('3.3', 'index', 'child 3.3', 'ControllerChild'),
         ('3.3', 'show', 'show', 'ControllerChild'),
         ('3.4', 'index', 'child 3.4', 'ControllerChild'))
@@ -307,7 +298,7 @@ class VersionsControllerTestCase(test.TestCase):
         resp = encodeutils.safe_decode(response.body, incoming='utf-8')
 
         if isinstance(expected, six.string_types):
-            self.assertEqual(200, response.status_int)
+            self.assertEqual(http_client.OK, response.status_int)
             self.assertEqual(expected, resp)
         else:
             self.assertEqual(expected, response.status_int)
@@ -329,14 +320,14 @@ class VersionsControllerTestCase(test.TestCase):
 
         response = req.get_response(app)
 
-        self.assertEqual(404, response.status_int)
+        self.assertEqual(http_client.NOT_FOUND, response.status_int)
 
     def test_versions_version_not_acceptable(self):
         req = self.build_request(header_version='4.0')
 
         response = req.get_response(router.APIRouter())
 
-        self.assertEqual(406, response.status_int)
+        self.assertEqual(http_client.NOT_ACCEPTABLE, response.status_int)
 
     @ddt.data(['volume 3.0, compute 2.22', True],
               ['volume 3.0, compute 2.22, identity 2.3', True],
@@ -355,7 +346,7 @@ class VersionsControllerTestCase(test.TestCase):
             elif not should_pass:
                 return
 
-        self.assertEqual(200, response.status_int)
+        self.assertEqual(http_client.OK, response.status_int)
         body = jsonutils.loads(response.body)
         version_list = body['versions']
 
@@ -368,7 +359,7 @@ class VersionsControllerTestCase(test.TestCase):
         self.assertEqual(api_version_request._MIN_API_VERSION,
                          version_list[0].get('min_version'))
 
-    @ddt.data(['3.5', 200], ['3.55', 404])
+    @ddt.data(['3.5', http_client.OK], ['3.55', http_client.NOT_FOUND])
     @ddt.unpack
     def test_req_version_matches(self, version, HTTP_ret):
         version_request = api_version_request.APIVersionRequest(version)
@@ -388,9 +379,9 @@ class VersionsControllerTestCase(test.TestCase):
         response = req.get_response(app)
         resp = encodeutils.safe_decode(response.body, incoming='utf-8')
 
-        if HTTP_ret == 200:
+        if HTTP_ret == http_client.OK:
             self.assertEqual('off', resp)
-        elif HTTP_ret == 404:
+        elif HTTP_ret == http_client.NOT_FOUND:
             self.assertNotEqual('off', resp)
         self.assertEqual(HTTP_ret, response.status_int)
 
@@ -418,7 +409,7 @@ class VersionsControllerTestCase(test.TestCase):
 
         resp = encodeutils.safe_decode(response.body, incoming='utf-8')
         self.assertEqual(ret_val, resp)
-        self.assertEqual(200, response.status_int)
+        self.assertEqual(http_client.OK, response.status_int)
 
     @ddt.data(['3.5', 'older'], ['3.37', 'newer'])
     @ddt.unpack
@@ -444,7 +435,7 @@ class VersionsControllerTestCase(test.TestCase):
 
         resp = encodeutils.safe_decode(response.body, incoming='utf-8')
         self.assertEqual(ret_val, resp)
-        self.assertEqual(200, response.status_int)
+        self.assertEqual(http_client.OK, response.status_int)
 
     def test_req_version_matches_with_None_None(self):
         version_request = api_version_request.APIVersionRequest('3.39')
@@ -467,4 +458,4 @@ class VersionsControllerTestCase(test.TestCase):
 
         resp = encodeutils.safe_decode(response.body, incoming='utf-8')
         self.assertEqual("Pass", resp)
-        self.assertEqual(200, response.status_int)
+        self.assertEqual(http_client.OK, response.status_int)

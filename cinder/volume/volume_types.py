@@ -28,7 +28,7 @@ from oslo_utils import uuidutils
 from cinder import context
 from cinder import db
 from cinder import exception
-from cinder.i18n import _, _LE
+from cinder.i18n import _
 from cinder import quota
 from cinder import rpc
 from cinder import utils
@@ -37,7 +37,7 @@ CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 QUOTAS = quota.QUOTAS
 ENCRYPTION_IGNORED_FIELDS = ['volume_type_id', 'created_at', 'updated_at',
-                             'deleted_at']
+                             'deleted_at', 'encryption_id']
 
 
 def create(context,
@@ -58,7 +58,7 @@ def create(context,
                                               description=description),
                                          projects=projects)
     except db_exc.DBError:
-        LOG.exception(_LE('DB error:'))
+        LOG.exception('DB error:')
         raise exception.VolumeTypeCreateFailed(name=name,
                                                extra_specs=extra_specs)
     return type_ref
@@ -72,11 +72,9 @@ def update(context, id, name, description, is_public=None):
     elevated = context if context.is_admin else context.elevated()
     old_volume_type = get_volume_type(elevated, id)
     try:
-        type_updated = db.volume_type_update(elevated,
-                                             id,
-                                             dict(name=name,
-                                                  description=description,
-                                                  is_public=is_public))
+        db.volume_type_update(elevated, id,
+                              dict(name=name, description=description,
+                                   is_public=is_public))
         # Rename resource in quota if volume type name is changed.
         if name:
             old_type_name = old_volume_type.get('name')
@@ -85,9 +83,8 @@ def update(context, id, name, description, is_public=None):
                                              old_type_name,
                                              name)
     except db_exc.DBError:
-        LOG.exception(_LE('DB error:'))
+        LOG.exception('DB error:')
         raise exception.VolumeTypeUpdateFailed(id=id)
-    return type_updated
 
 
 def destroy(context, id):
@@ -162,8 +159,8 @@ def get_default_volume_type():
             # Couldn't find volume type with the name in default_volume_type
             # flag, record this issue and move on
             # TODO(zhiteng) consider add notification to warn admin
-            LOG.exception(_LE('Default volume type is not found. '
-                          'Please check default_volume_type config:'))
+            LOG.exception('Default volume type is not found. '
+                          'Please check default_volume_type config:')
 
     return vol_type
 
@@ -278,7 +275,7 @@ def volume_types_diff(context, vol_type_id1, vol_type_id2):
     whether there is any difference, and 'diff' is a dictionary with the
     following format:
 
-    .. code-block:: json
+    .. code-block:: default
 
         {
             'extra_specs': {'key1': (value_in_1st_vol_type,

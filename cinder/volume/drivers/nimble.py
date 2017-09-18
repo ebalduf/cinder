@@ -34,10 +34,11 @@ from oslo_log import log as logging
 from oslo_utils import units
 
 from cinder import exception
-from cinder import utils
-from cinder.i18n import _, _LE, _LI, _LW
+from cinder.i18n import _
 from cinder import interface
 from cinder.objects import volume
+from cinder import utils
+from cinder.volume import configuration
 from cinder.volume import driver
 from cinder.volume.drivers.san import san
 from cinder.volume import volume_types
@@ -86,14 +87,14 @@ nimble_opts = [
     cfg.StrOpt('nimble_subnet_label',
                default='*',
                help='Nimble Subnet Label'),
-    cfg.StrOpt('nimble_verify_certificate',
-               default=False,
-               help='Whether to verify Nimble SSL Certificate'),
+    cfg.BoolOpt('nimble_verify_certificate',
+                default=False,
+                help='Whether to verify Nimble SSL Certificate'),
     cfg.StrOpt('nimble_verify_cert_path',
                help='Path to Nimble Array SSL certificate'), ]
 
 CONF = cfg.CONF
-CONF.register_opts(nimble_opts)
+CONF.register_opts(nimble_opts, group=configuration.SHARED_CONF_GROUP)
 
 
 class NimbleDriverException(exception.VolumeDriverException):
@@ -195,8 +196,8 @@ class NimbleBaseVolumeDriver(san.SanDriver):
                     volume_name_prefix, "")
                 if BACKUP_VOL_PREFIX + parent_vol_id in snap_info[
                    'description']:
-                    LOG.info(_LI('Nimble backup-snapshot exists name=%('
-                             'name)s'), {'name': snap_info['name']})
+                    LOG.info('Nimble backup-snapshot exists name=%('
+                             'name)s', {'name': snap_info['name']})
                     snap_vol_name = self.APIExecutor.get_volume_name(
                         snap_info['vol_id'])
                     LOG.debug("snap_vol_name %(snap)s",
@@ -318,14 +319,14 @@ class NimbleBaseVolumeDriver(san.SanDriver):
                                 raise NimbleAPIException(_("Unable to enable"
                                                          " GST"))
                         self._group_target_enabled = True
-                        LOG.info(_LI("Group Scoped Target enabled for "
-                                     "group %(group)s: %(ip)s"),
+                        LOG.info("Group Scoped Target enabled for "
+                                 "group %(group)s: %(ip)s",
                                  {'group': group_info['name'],
                                   'ip': self.configuration.san_ip})
                     elif 'group_target_enabled' not in group_info:
-                        LOG.info(_LI("Group Scoped Target NOT "
-                                     "present for group %(group)s: "
-                                     "%(ip)s"),
+                        LOG.info("Group Scoped Target NOT "
+                                 "present for group %(group)s: "
+                                 "%(ip)s",
                                  {'group': group_info['name'],
                                   'ip': self.configuration.san_ip})
             else:
@@ -374,8 +375,8 @@ class NimbleBaseVolumeDriver(san.SanDriver):
     def extend_volume(self, volume, new_size):
         """Extend an existing volume."""
         volume_name = volume['name']
-        LOG.info(_LI('Entering extend_volume volume=%(vol)s '
-                     'new_size=%(size)s'),
+        LOG.info('Entering extend_volume volume=%(vol)s '
+                 'new_size=%(size)s',
                  {'vol': volume_name, 'size': new_size})
         vol_size = int(new_size) * units.Ki
         reserve = not self.configuration.san_thin_provision
@@ -424,7 +425,7 @@ class NimbleBaseVolumeDriver(san.SanDriver):
             raise exception.InvalidVolume(reason=msg)
 
         new_vol_name = volume['name']
-        LOG.info(_LI("Volume status before managing it : %(status)s"),
+        LOG.info("Volume status before managing it : %(status)s",
                  {'status': vol_info['online']})
         if vol_info['online'] is True:
             msg = (_('Volume %s is online. Set volume to offline for '
@@ -438,7 +439,7 @@ class NimbleBaseVolumeDriver(san.SanDriver):
             if 'access_control_records' in vol_info and (
                vol_info['access_control_records'] is not None):
                 msg = (_('Volume %s has ACL associated with it. Remove ACL '
-                         'for managing using Openstack') % target_vol_name)
+                         'for managing using OpenStack') % target_vol_name)
                 raise exception.InvalidVolume(reason=msg)
             data['data']['agent_type'] = AGENT_TYPE_OPENSTACK_GST
         else:
@@ -502,9 +503,9 @@ class NimbleBaseVolumeDriver(san.SanDriver):
                 group_info = self.APIExecutor.get_group_info()
                 self._enable_group_scoped_target(group_info)
         except Exception:
-            LOG.error(_LE('Failed to create REST client. '
-                          'Check san_ip, username, password'
-                          ' and make sure the array version is compatible'))
+            LOG.error('Failed to create REST client. '
+                      'Check san_ip, username, password'
+                      ' and make sure the array version is compatible')
             raise
         self._update_existing_vols_agent_type(context)
 
@@ -560,8 +561,8 @@ class NimbleBaseVolumeDriver(san.SanDriver):
                                                  AGENT_TYPE_OPENSTACK}}
                                 self.APIExecutor.edit_vol(vol.name, data)
                 except NimbleAPIException:
-                    LOG.warning(_LW('Error updating agent-type for '
-                                    'volume %s.'), vol.name)
+                    LOG.warning('Error updating agent-type for '
+                                'volume %s.', vol.name)
                     raise
 
     def _get_model_info(self, volume_name):
@@ -579,8 +580,8 @@ class NimbleBaseVolumeDriver(san.SanDriver):
     def _create_igroup_for_initiator(self, initiator_name, wwpns):
         """Creates igroup for an initiator and returns the igroup name."""
         igrp_name = 'openstack-' + self._generate_random_string(12)
-        LOG.info(_LI('Creating initiator group %(grp)s '
-                     'with initiator %(iname)s'),
+        LOG.info('Creating initiator group %(grp)s '
+                 'with initiator %(iname)s',
                  {'grp': igrp_name, 'iname': initiator_name})
         if self._storage_protocol == "iSCSI":
             self.APIExecutor.create_initiator_group(igrp_name)
@@ -601,16 +602,16 @@ class NimbleBaseVolumeDriver(san.SanDriver):
                     wwpn = str(initiator['wwpn']).replace(":", "")
                     wwpns_list.append(wwpn)
                 LOG.debug("initiator_wwpns=%(initiator)s "
-                          "wwpns_list_from_array=%(wwpns)s" %
+                          "wwpns_list_from_array=%(wwpns)s",
                           {'initiator': initiator_wwpns,
                            'wwpns': wwpns_list})
                 if set(initiator_wwpns) == set(wwpns_list):
-                    LOG.info(_LI('igroup %(grp)s found for '
-                                 'initiator %(wwpns_list)s'),
+                    LOG.info('igroup %(grp)s found for '
+                             'initiator %(wwpns_list)s',
                              {'grp': initiator_group['name'],
                               'wwpns_list': wwpns_list})
                     return initiator_group['name']
-        LOG.info(_LI('No igroup found for initiators %s'), initiator_wwpns)
+        LOG.info('No igroup found for initiators %s', initiator_wwpns)
         return ''
 
     def _get_igroupname_for_initiator(self, initiator_name):
@@ -620,22 +621,22 @@ class NimbleBaseVolumeDriver(san.SanDriver):
                 if (len(initiator_group['iscsi_initiators']) == 1 and
                     initiator_group['iscsi_initiators'][0]['iqn'] ==
                         initiator_name):
-                    LOG.info(_LI('igroup %(grp)s found for '
-                                 'initiator %(iname)s'),
+                    LOG.info('igroup %(grp)s found for '
+                             'initiator %(iname)s',
                              {'grp': initiator_group['name'],
                               'iname': initiator_name})
                     return initiator_group['name']
-        LOG.info(_LI('No igroup found for initiator %s'), initiator_name)
+        LOG.info('No igroup found for initiator %s', initiator_name)
         return ''
 
     def get_lun_number(self, volume, initiator_group_name):
         vol_info = self.APIExecutor.get_vol_info(volume['name'])
         for acl in vol_info['access_control_records']:
             if (initiator_group_name == acl['initiator_group_name']):
-                LOG.info(_LI("access_control_record =%(acl)s"),
+                LOG.info("access_control_record =%(acl)s",
                          {'acl': acl})
                 lun = acl['lun']
-                LOG.info(_LI("LUN : %(lun)s"), {"lun": lun})
+                LOG.info("LUN : %(lun)s", {"lun": lun})
                 return lun
         raise NimbleAPIException(_("Lun number not found for volume %(vol)s "
                                    "with initiator_group: %(igroup)s") %
@@ -663,8 +664,8 @@ class NimbleISCSIDriver(NimbleBaseVolumeDriver, san.SanISCSIDriver):
 
     def initialize_connection(self, volume, connector):
         """Driver entry point to attach a volume to an instance."""
-        LOG.info(_LI('Entering initialize_connection volume=%(vol)s'
-                     ' connector=%(conn)s location=%(loc)s'),
+        LOG.info('Entering initialize_connection volume=%(vol)s'
+                 ' connector=%(conn)s location=%(loc)s',
                  {'vol': volume,
                   'conn': connector,
                   'loc': volume['provider_location']})
@@ -674,8 +675,8 @@ class NimbleISCSIDriver(NimbleBaseVolumeDriver, san.SanISCSIDriver):
         if not initiator_group_name:
             initiator_group_name = self._create_igroup_for_initiator(
                 initiator_name, None)
-        LOG.info(_LI('Initiator group name is %(grp)s for initiator '
-                     '%(iname)s'),
+        LOG.info('Initiator group name is %(grp)s for initiator '
+                 '%(iname)s',
                  {'grp': initiator_group_name, 'iname': initiator_name})
         self.APIExecutor.add_acl(volume, initiator_group_name)
         (iscsi_portal, iqn) = volume['provider_location'].split()
@@ -697,8 +698,8 @@ class NimbleISCSIDriver(NimbleBaseVolumeDriver, san.SanISCSIDriver):
 
     def terminate_connection(self, volume, connector, **kwargs):
         """Driver entry point to unattach a volume from an instance."""
-        LOG.info(_LI('Entering terminate_connection volume=%(vol)s'
-                     ' connector=%(conn)s location=%(loc)s.'),
+        LOG.info('Entering terminate_connection volume=%(vol)s'
+                 ' connector=%(conn)s location=%(loc)s.',
                  {'vol': volume['name'],
                   'conn': connector,
                   'loc': volume['provider_location']})
@@ -726,35 +727,35 @@ class NimbleISCSIDriver(NimbleBaseVolumeDriver, san.SanISCSIDriver):
             target_ipaddr = self._get_discovery_ip(netconfig)
             iscsi_portal = target_ipaddr + ':3260'
         provider_location = '%s %s' % (iscsi_portal, iqn)
-        LOG.info(_LI('vol_name=%(name)s provider_location=%(loc)s'),
+        LOG.info('vol_name=%(name)s provider_location=%(loc)s',
                  {'name': volume_name, 'loc': provider_location})
         return provider_location
 
     def _get_data_ip(self, netconfig):
         """Get data ip."""
         subnet_label = self.configuration.nimble_subnet_label
-        LOG.debug('subnet_label used %(netlabel)s, netconfig %(netconf)s' %
+        LOG.debug('subnet_label used %(netlabel)s, netconfig %(netconf)s',
                   {'netlabel': subnet_label, 'netconf': netconfig})
         ret_data_ip = ''
         for subnet in netconfig['array_list'][0]['nic_list']:
-            LOG.info(_LI('Exploring array subnet label %s'), subnet[
+            LOG.info('Exploring array subnet label %s', subnet[
                 'subnet_label'])
             if subnet['data_ip']:
                 if subnet_label == '*':
                     # Use the first data subnet, save mgmt+data for later
-                    LOG.info(_LI('Data ip %(data_ip)s is used '
-                                 'on data subnet %(net_label)s'),
+                    LOG.info('Data ip %(data_ip)s is used '
+                             'on data subnet %(net_label)s',
                              {'data_ip': subnet['data_ip'],
                               'net_label': subnet['subnet_label']})
                     return subnet['data_ip']
                 elif subnet_label == subnet['subnet_label']:
-                    LOG.info(_LI('Data ip %(data_ip)s is used'
-                             ' on subnet %(net_label)s'),
+                    LOG.info('Data ip %(data_ip)s is used'
+                             ' on subnet %(net_label)s',
                              {'data_ip': subnet['data_ip'],
                               'net_label': subnet['subnet_label']})
                     return subnet['data_ip']
         if ret_data_ip:
-            LOG.info(_LI('Data ip %s is used on mgmt+data subnet'),
+            LOG.info('Data ip %s is used on mgmt+data subnet',
                      ret_data_ip)
             return ret_data_ip
         else:
@@ -767,30 +768,30 @@ class NimbleISCSIDriver(NimbleBaseVolumeDriver, san.SanISCSIDriver):
                   {'netlabel': subnet_label, 'netconf': netconfig})
         ret_discovery_ip = ''
         for subnet in netconfig['subnet_list']:
-            LOG.info(_LI('Exploring array subnet label %s'), subnet['label'])
+            LOG.info('Exploring array subnet label %s', subnet['label'])
             if subnet_label == '*':
                 # Use the first data subnet, save mgmt+data for later
                 if subnet['type'] == SM_SUBNET_DATA:
-                    LOG.info(_LI('Discovery ip %(disc_ip)s is used '
-                                 'on data subnet %(net_label)s'),
+                    LOG.info('Discovery ip %(disc_ip)s is used '
+                             'on data subnet %(net_label)s',
                              {'disc_ip': subnet['discovery_ip'],
                               'net_label': subnet['label']})
                     return subnet['discovery_ip']
                 elif (subnet['type'] == SM_SUBNET_MGMT_PLUS_DATA):
-                    LOG.info(_LI('Discovery ip %(disc_ip)s is found'
-                                 ' on mgmt+data subnet %(net_label)s'),
+                    LOG.info('Discovery ip %(disc_ip)s is found'
+                             ' on mgmt+data subnet %(net_label)s',
                              {'disc_ip': subnet['discovery_ip'],
                               'net_label': subnet['label']})
                     ret_discovery_ip = subnet['discovery_ip']
             # If subnet is specified and found, use the subnet
             elif subnet_label == subnet['label']:
-                LOG.info(_LI('Discovery ip %(disc_ip)s is used'
-                             ' on subnet %(net_label)s'),
+                LOG.info('Discovery ip %(disc_ip)s is used'
+                         ' on subnet %(net_label)s',
                          {'disc_ip': subnet['discovery_ip'],
                           'net_label': subnet['label']})
                 return subnet['discovery_ip']
         if ret_discovery_ip:
-            LOG.info(_LI('Discovery ip %s is used on mgmt+data subnet'),
+            LOG.info('Discovery ip %s is used on mgmt+data subnet',
                      ret_discovery_ip)
             return ret_discovery_ip
         else:
@@ -811,13 +812,13 @@ class NimbleFCDriver(NimbleBaseVolumeDriver, driver.FibreChannelDriver):
         netconfig = self.APIExecutor.get_netconfig('active')
         array_name = netconfig['group_leader_array']
         provider_location = '%s' % (array_name)
-        LOG.info(_LI('vol_name=%(name)s provider_location=%(loc)s'),
+        LOG.info('vol_name=%(name)s provider_location=%(loc)s',
                  {'name': volume_name, 'loc': provider_location})
         return provider_location
 
     def _build_initiator_target_map(self, target_wwns, connector):
         """Build the target_wwns and the initiator target map."""
-        LOG.debug("_build_initiator_target_map for %(wwns)s" %
+        LOG.debug("_build_initiator_target_map for %(wwns)s",
                   {'wwns': target_wwns})
         init_targ_map = {}
 
@@ -828,7 +829,7 @@ class NimbleFCDriver(NimbleBaseVolumeDriver, driver.FibreChannelDriver):
                 connector['wwpns'],
                 target_wwns)
             map_fabric = dev_map
-            LOG.info(_LI("dev_map =%(fabric)s"), {'fabric': map_fabric})
+            LOG.info("dev_map =%(fabric)s", {'fabric': map_fabric})
 
             for fabric_name in dev_map:
                 fabric = dev_map[fabric_name]
@@ -846,8 +847,8 @@ class NimbleFCDriver(NimbleBaseVolumeDriver, driver.FibreChannelDriver):
     @fczm_utils.add_fc_zone
     def initialize_connection(self, volume, connector):
         """Driver entry point to attach a volume to an instance."""
-        LOG.info(_LI('Entering initialize_connection volume=%(vol)s'
-                     ' connector=%(conn)s location=%(loc)s'),
+        LOG.info('Entering initialize_connection volume=%(vol)s'
+                 ' connector=%(conn)s location=%(loc)s',
                  {'vol': volume,
                   'conn': connector,
                   'loc': volume['provider_location']})
@@ -861,8 +862,8 @@ class NimbleFCDriver(NimbleBaseVolumeDriver, driver.FibreChannelDriver):
             initiator_group_name = self._create_igroup_for_initiator(
                 initiator_name, wwpns)
 
-        LOG.info(_LI('Initiator group name is %(grp)s for initiator '
-                     '%(iname)s'),
+        LOG.info('Initiator group name is %(grp)s for initiator '
+                 '%(iname)s',
                  {'grp': initiator_group_name, 'iname': initiator_name})
         self.APIExecutor.add_acl(volume, initiator_group_name)
         lun = self.get_lun_number(volume, initiator_group_name)
@@ -880,7 +881,7 @@ class NimbleFCDriver(NimbleBaseVolumeDriver, driver.FibreChannelDriver):
                          'target_wwn': target_wwns,
                          'initiator_target_map': init_targ_map}}
 
-        LOG.info(_LI("Return FC data for zone addition: %(data)s."),
+        LOG.info("Return FC data for zone addition: %(data)s.",
                  {'data': data})
 
         return data
@@ -888,8 +889,8 @@ class NimbleFCDriver(NimbleBaseVolumeDriver, driver.FibreChannelDriver):
     @fczm_utils.remove_fc_zone
     def terminate_connection(self, volume, connector, **kwargs):
         """Driver entry point to unattach a volume from an instance."""
-        LOG.info(_LI('Entering terminate_connection volume=%(vol)s'
-                     ' connector=%(conn)s location=%(loc)s.'),
+        LOG.info('Entering terminate_connection volume=%(vol)s'
+                 ' connector=%(conn)s location=%(loc)s.',
                  {'vol': volume,
                   'conn': connector,
                   'loc': volume['provider_location']})
@@ -908,7 +909,7 @@ class NimbleFCDriver(NimbleBaseVolumeDriver, driver.FibreChannelDriver):
             raise NimbleDriverException(
                 _('No initiator group found for initiator %s') %
                 initiator_name)
-        LOG.debug("initiator_target_map %s" % init_targ_map)
+        LOG.debug("initiator_target_map %s", init_targ_map)
         self.APIExecutor.remove_acl(volume, initiator_group_name)
         eventlet.sleep(DEFAULT_SLEEP)
         # FIXME to check for other volumes attached to the host and then
@@ -921,10 +922,10 @@ class NimbleFCDriver(NimbleBaseVolumeDriver, driver.FibreChannelDriver):
 
     def get_wwpns_from_array(self, array_name):
         """Retrieve the wwpns from the array"""
-        LOG.debug("get_wwpns_from_array %s" % array_name)
+        LOG.debug("get_wwpns_from_array %s", array_name)
         target_wwpns = []
         interface_info = self.APIExecutor.get_fc_interface_list(array_name)
-        LOG.info(_LI("interface_info %(interface_info)s"),
+        LOG.info("interface_info %(interface_info)s",
                  {"interface_info": interface_info})
         for wwpn_list in interface_info:
             wwpn = wwpn_list['wwpn']
@@ -947,12 +948,12 @@ def _connection_checker(func):
             except Exception as e:
                 if attempts < 1 and (re.search("Failed to execute",
                                      six.text_type(e))):
-                    LOG.info(_LI('Session might have expired.'
-                                 ' Trying to relogin'))
+                    LOG.info('Session might have expired.'
+                             ' Trying to relogin')
                     self.login()
                     continue
                 else:
-                    LOG.error(_LE('Re-throwing Exception %s'), e)
+                    LOG.error('Re-throwing Exception %s', e)
                     raise
     return inner_connection_checker
 
@@ -1025,12 +1026,12 @@ class NimbleRestAPIExecutor(object):
     def get_performance_policy_id(self, perf_policy_name):
         api = 'performance_policies/'
         filter = {'name': perf_policy_name}
-        LOG.debug("Perfomance policy Name %s" % perf_policy_name)
+        LOG.debug("Performance policy Name %s", perf_policy_name)
         r = self.get_query(api, filter)
         if not r.json()['data']:
             raise NimbleAPIException(_("No performance policy found for:"
                                      "%(perf)s") % {'perf': perf_policy_name})
-        LOG.debug("Performance policy ID :%(perf)s" %
+        LOG.debug("Performance policy ID :%(perf)s",
                   {'perf': r.json()['data'][0]['id']})
         return r.json()['data'][0]['id']
 
@@ -1077,7 +1078,7 @@ class NimbleRestAPIExecutor(object):
     def create_vol(self, volume, pool_name, reserve, protocol, is_gst_enabled):
         response = self._execute_create_vol(volume, pool_name, reserve,
                                             protocol, is_gst_enabled)
-        LOG.info(_LI('Successfully created volume %(name)s'),
+        LOG.info('Successfully created volume %(name)s',
                  {'name': response['name']})
         return response['name']
 
@@ -1278,7 +1279,7 @@ class NimbleRestAPIExecutor(object):
         if 'data' not in r.json():
             raise NimbleAPIException(_("Unable to retrieve initiator group "
                                        "list"))
-        LOG.info(_LI('Successfully retrieved InitiatorGrpList'))
+        LOG.info('Successfully retrieved InitiatorGrpList')
         return r.json()['data']
 
     def get_initiator_grp_id_by_name(self, initiator_group_name):
@@ -1322,7 +1323,7 @@ class NimbleRestAPIExecutor(object):
         except NimbleAPIException as ex:
             LOG.debug("add_acl_exception: %s", ex)
             if SM_OBJ_EXIST_MSG in six.text_type(ex):
-                LOG.warning(_LW('Volume %(vol)s : %(state)s'),
+                LOG.warning('Volume %(vol)s : %(state)s',
                             {'vol': volume['name'],
                              'state': SM_OBJ_EXIST_MSG})
             else:
@@ -1343,8 +1344,8 @@ class NimbleRestAPIExecutor(object):
         return r.json()['data'][0]
 
     def remove_acl(self, volume, initiator_group_name):
-        LOG.info(_LI("removing ACL from volume=%(vol)s"
-                     "and %(igroup)s"),
+        LOG.info("removing ACL from volume=%(vol)s"
+                 "and %(igroup)s",
                  {"vol": volume['name'],
                   "igroup": initiator_group_name})
         initiator_group_id = self.get_initiator_grp_id_by_name(
@@ -1360,7 +1361,7 @@ class NimbleRestAPIExecutor(object):
         except NimbleAPIException as ex:
             LOG.debug("remove_acl_exception: %s", ex)
             if SM_OBJ_ENOENT_MSG in six.text_type(ex):
-                LOG.warning(_LW('Volume %(vol)s : %(state)s'),
+                LOG.warning('Volume %(vol)s : %(state)s',
                             {'vol': volume['name'],
                              'state': SM_OBJ_ENOENT_MSG})
             else:
@@ -1377,7 +1378,7 @@ class NimbleRestAPIExecutor(object):
                                        "snap_id: %(snap)s volume id: %(vol)s")
                                      % {'snap': snap_id,
                                         'vol': vol_id})
-        LOG.debug("SnapInfo :%s" % six.text_type(r.json()['data'][0]))
+        LOG.debug("SnapInfo :%s", r.json()['data'][0])
         return r.json()['data'][0]
 
     def get_snap_info(self, snap_name, vol_name):
@@ -1396,7 +1397,7 @@ class NimbleRestAPIExecutor(object):
         filter = {'id': snap_id}
         r = self.get_query(api, filter)
         if not r.json()['data']:
-            raise NimbleAPIException(_("Snapshot: %s doesnt exist") % snap_id)
+            raise NimbleAPIException(_("Snapshot: %s doesn't exist") % snap_id)
         return r.json()['data'][0]
 
     @utils.retry(NimbleAPIException, 2, 3)
@@ -1409,14 +1410,14 @@ class NimbleRestAPIExecutor(object):
         try:
             LOG.debug("data :%s", data)
             self.put(api, data)
-            LOG.debug("Volume %(vol)s is in requested online state :%(flag)s" %
+            LOG.debug("Volume %(vol)s is in requested online state :%(flag)s",
                       {'vol': volume_name,
                        'flag': online_flag})
         except Exception as ex:
             msg = (_("Error  %s") % ex)
-            LOG.debug("online_vol_exception: %s" % msg)
+            LOG.debug("online_vol_exception: %s", msg)
             if msg.__contains__("Object is %s" % SM_STATE_MSG):
-                LOG.warning(_LW('Volume %(vol)s : %(state)s'),
+                LOG.warning('Volume %(vol)s : %(state)s',
                             {'vol': volume_name,
                              'state': SM_STATE_MSG})
             # TODO(rkumar): Check if we need to ignore the connected
@@ -1433,13 +1434,12 @@ class NimbleRestAPIExecutor(object):
         try:
             self.put(api, data)
             LOG.debug("Snapshot %(snap)s is in requested online state "
-                      ":%(flag)s" % {
-                          'snap': snap_name,
-                          'flag': online_flag})
+                      ":%(flag)s",
+                      {'snap': snap_name, 'flag': online_flag})
         except Exception as ex:
-            LOG.debug("online_snap_exception: %s" % ex)
+            LOG.debug("online_snap_exception: %s", ex)
             if six.text_type(ex).__contains__("Object %s" % SM_STATE_MSG):
-                LOG.warning(_LW('Snapshot %(snap)s :%(state)s'),
+                LOG.warning('Snapshot %(snap)s :%(state)s',
                             {'snap': snap_name,
                              'state': SM_STATE_MSG})
             else:
@@ -1508,12 +1508,12 @@ class NimbleRestAPIExecutor(object):
         else:
             agent_type = AGENT_TYPE_OPENSTACK
 
-        LOG.info(_LI('Cloning volume from snapshot volume=%(vol)s '
-                     'snapshot=%(snap)s clone=%(clone)s snap_size=%(size)s '
-                     'reserve=%(reserve)s' 'agent-type=%(agent-type)s '
-                     'perfpol-name=%(perfpol-name)s '
-                     'encryption=%(encryption)s cipher=%(cipher)s '
-                     'multi-initiator=%(multi-initiator)s'),
+        LOG.info('Cloning volume from snapshot volume=%(vol)s '
+                 'snapshot=%(snap)s clone=%(clone)s snap_size=%(size)s '
+                 'reserve=%(reserve)s' 'agent-type=%(agent-type)s '
+                 'perfpol-name=%(perfpol-name)s '
+                 'encryption=%(encryption)s cipher=%(cipher)s '
+                 'multi-initiator=%(multi-initiator)s',
                  {'vol': volume_name,
                   'snap': snap_name,
                   'clone': clone_name,
@@ -1663,7 +1663,7 @@ class NimbleRestAPIExecutor(object):
         url = self.uri + api
         r = requests.delete(url, headers=self.headers, verify=self.verify)
         if r.status_code != 201 and r.status_code != 200:
-            msg = _("Failed to execute api %(api) : %(msg)s %(code)s") % {
+            msg = _("Failed to execute api %(api)s : %(msg)s %(code)s") % {
                 'api': api,
                 'msg': r.json()['messages'][1]['text'],
                 'code': r.status_code}

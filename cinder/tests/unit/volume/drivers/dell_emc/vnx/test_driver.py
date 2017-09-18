@@ -79,3 +79,15 @@ class TestVNXDriver(test.TestCase):
         _driver._stats = {'consistent_group_snapshot_enabled': False}
         self.assertFalse(_driver.is_consistent_group_snapshot_enabled())
         self.assertFalse(_driver.is_consistent_group_snapshot_enabled())
+
+    def test_enable_replication(self):
+        _driver = self._get_driver('iscsi')
+        _driver.enable_replication(None, 'group', 'volumes')
+
+    def test_disable_replication(self):
+        _driver = self._get_driver('iscsi')
+        _driver.disable_replication(None, 'group', 'volumes')
+
+    def test_failover_replication(self):
+        _driver = self._get_driver('iscsi')
+        _driver.failover_replication(None, 'group', 'volumes', 'backend_id')

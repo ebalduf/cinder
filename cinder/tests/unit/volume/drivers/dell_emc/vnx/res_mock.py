@@ -16,9 +16,11 @@
 import mock
 import six
 
+from cinder import context
 from cinder.tests.unit.consistencygroup import fake_cgsnapshot
 from cinder.tests.unit.consistencygroup import fake_consistencygroup
 from cinder.tests.unit import fake_constants
+from cinder.tests.unit import fake_group
 from cinder.tests.unit import fake_snapshot
 from cinder.tests.unit import fake_volume
 from cinder.tests.unit.volume.drivers.dell_emc.vnx import fake_exception as \
@@ -98,19 +100,23 @@ class DriverResourceMock(dict):
 def _fake_volume_wrapper(*args, **kwargs):
     expected_attrs_key = {'volume_attachment': 'volume_attachment',
                           'volume_metadata': 'metadata'}
+    if 'group' in kwargs:
+        expected_attrs_key['group'] = kwargs['group']
+
     return fake_volume.fake_volume_obj(
-        None,
+        context.get_admin_context(),
         expected_attrs=[
             v for (k, v) in expected_attrs_key.items() if k in kwargs],
         **kwargs)
 
 
 def _fake_cg_wrapper(*args, **kwargs):
-    return fake_consistencygroup.fake_consistencyobject_obj(None, **kwargs)
+    return fake_consistencygroup.fake_consistencyobject_obj(
+        'fake_context', **kwargs)
 
 
 def _fake_snapshot_wrapper(*args, **kwargs):
-    return fake_snapshot.fake_snapshot_obj(None,
+    return fake_snapshot.fake_snapshot_obj('fake_context',
                                            expected_attrs=(
                                                ['volume'] if 'volume' in kwargs
                                                else None),
@@ -119,6 +125,10 @@ def _fake_snapshot_wrapper(*args, **kwargs):
 
 def _fake_cg_snapshot_wrapper(*args, **kwargs):
     return fake_cgsnapshot.fake_cgsnapshot_obj(None, **kwargs)
+
+
+def _fake_group_wrapper(*args, **kwargs):
+    return fake_group.fake_group_obj(None, **kwargs)
 
 
 class EnumBuilder(object):
@@ -137,7 +147,8 @@ class CinderResourceMock(DriverResourceMock):
     fake_func_mapping = {'volume': _fake_volume_wrapper,
                          'cg': _fake_cg_wrapper,
                          'snapshot': _fake_snapshot_wrapper,
-                         'cg_snapshot': _fake_cg_snapshot_wrapper}
+                         'cg_snapshot': _fake_cg_snapshot_wrapper,
+                         'group': _fake_group_wrapper}
 
     def __init__(self, yaml_file):
         super(CinderResourceMock, self).__init__(yaml_file)
@@ -327,6 +338,7 @@ cinder_res = CinderResourceMock('mocked_cinder.yaml')
 DRIVER_RES_MAPPING = {
     'TestResMock': cinder_res,
     'TestCommonAdapter': cinder_res,
+    'TestReplicationAdapter': cinder_res,
     'TestISCSIAdapter': cinder_res,
     'TestFCAdapter': cinder_res,
     'TestUtils': cinder_res,
@@ -349,6 +361,7 @@ STORAGE_RES_MAPPING = {
     'TestCondition': vnx_res,
     'TestClient': vnx_res,
     'TestCommonAdapter': vnx_res,
+    'TestReplicationAdapter': vnx_res,
     'TestISCSIAdapter': vnx_res,
     'TestFCAdapter': vnx_res,
     'TestTaskflow': vnx_res,

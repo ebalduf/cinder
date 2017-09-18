@@ -45,16 +45,19 @@ core_opts = [
 CONF.register_cli_opts(core_opts)
 
 global_opts = [
-    cfg.StrOpt('my_ip',
-               default=netutils.get_my_ipv4(),
-               help='IP address of this host'),
+    cfg.HostAddressOpt('my_ip',
+                       default=netutils.get_my_ipv4(),
+                       help='IP address of this host'),
     cfg.ListOpt('glance_api_servers',
                 default=None,
                 help='A list of the URLs of glance API servers available to '
                      'cinder ([http[s]://][hostname|ip]:port). If protocol '
                      'is not specified it defaults to http.'),
     cfg.IntOpt('glance_api_version',
-               default=1,
+               default=2,
+               deprecated_for_removal=True,
+               deprecated_since="11.0.0",
+               deprecated_reason='Glance v1 support will be removed in Queens',
                help='Version of the glance API to use'),
     cfg.IntOpt('glance_num_retries',
                min=0,
@@ -79,10 +82,6 @@ global_opts = [
                help='http/https timeout value for glance operations. If no '
                     'value (None) is supplied here, the glanceclient default '
                     'value is used.'),
-    cfg.BoolOpt('enable_v1_api',
-                default=False,
-                deprecated_for_removal=True,
-                help="DEPRECATED: Deploy v1 of the Cinder API."),
     cfg.BoolOpt('enable_v2_api',
                 default=True,
                 deprecated_for_removal=True,
@@ -110,14 +109,17 @@ global_opts = [
     cfg.StrOpt('scheduler_manager',
                default='cinder.scheduler.manager.SchedulerManager',
                help='Full class name for the Manager for scheduler'),
-    cfg.StrOpt('host',
-               default=socket.gethostname(),
-               help='Name of this node.  This can be an opaque identifier. '
-                    'It is not necessarily a host name, FQDN, or IP address.'),
+    cfg.HostAddressOpt('host',
+                       default=socket.gethostname(),
+                       help='Name of this node.  This can be an opaque '
+                            'identifier. It is not necessarily a host name, '
+                            'FQDN, or IP address.'),
     # NOTE(vish): default to nova for compatibility with nova installs
     cfg.StrOpt('storage_availability_zone',
                default='nova',
-               help='Availability zone of this node'),
+               help='Availability zone of this node. Can be overridden per '
+                    'volume backend with the option '
+                    '"backend_availability_zone".'),
     cfg.StrOpt('default_availability_zone',
                help='Default availability zone for new volumes. If not set, '
                     'the storage_availability_zone option value is used as '
@@ -180,17 +182,33 @@ global_opts = [
     cfg.StrOpt('os_privileged_user_name',
                help='OpenStack privileged account username. Used for requests '
                     'to other services (such as Nova) that require an account '
-                    'with special rights.'),
+                    'with special rights.',
+               deprecated_for_removal=True,
+               deprecated_since="11.0.0",
+               deprecated_reason='Use the [nova] section for configuring '
+               'Keystone authentication for a privileged user.'),
     cfg.StrOpt('os_privileged_user_password',
                help='Password associated with the OpenStack privileged '
                     'account.',
+               deprecated_for_removal=True,
+               deprecated_since="11.0.0",
+               deprecated_reason='Use the [nova] section to configure '
+               'Keystone authentication for a privileged user.',
                secret=True),
     cfg.StrOpt('os_privileged_user_tenant',
                help='Tenant name associated with the OpenStack privileged '
-                    'account.'),
+                    'account.',
+               deprecated_for_removal=True,
+               deprecated_since="11.0.0",
+               deprecated_reason='Use the [nova] section to configure '
+               'Keystone authentication for a privileged user.'),
     cfg.URIOpt('os_privileged_user_auth_url',
                help='Auth URL associated with the OpenStack privileged '
-                    'account.'),
+                    'account.',
+               deprecated_for_removal=True,
+               deprecated_since="11.0.0",
+               deprecated_reason='Use the [nova] section to configure '
+               'Keystone authentication for a privileged user.')
 ]
 
 CONF.register_opts(core_opts)
@@ -199,28 +217,27 @@ CONF.register_opts(global_opts)
 
 def set_middleware_defaults():
     """Update default configuration options for oslo.middleware."""
-    # CORS Defaults
-    # TODO(krotscheck): Update with https://review.openstack.org/#/c/285368/
-    cfg.set_defaults(cors.CORS_OPTS,
-                     allow_headers=['X-Auth-Token',
-                                    'X-Identity-Status',
-                                    'X-Roles',
-                                    'X-Service-Catalog',
-                                    'X-User-Id',
-                                    'X-Tenant-Id',
-                                    'X-OpenStack-Request-ID',
-                                    'X-Trace-Info',
-                                    'X-Trace-HMAC',
-                                    'OpenStack-API-Version'],
-                     expose_headers=['X-Auth-Token',
-                                     'X-Subject-Token',
-                                     'X-Service-Token',
-                                     'X-OpenStack-Request-ID',
-                                     'OpenStack-API-Version'],
-                     allow_methods=['GET',
-                                    'PUT',
-                                    'POST',
-                                    'DELETE',
-                                    'PATCH',
-                                    'HEAD']
-                     )
+
+    cors.set_defaults(
+        allow_headers=['X-Auth-Token',
+                       'X-Identity-Status',
+                       'X-Roles',
+                       'X-Service-Catalog',
+                       'X-User-Id',
+                       'X-Tenant-Id',
+                       'X-OpenStack-Request-ID',
+                       'X-Trace-Info',
+                       'X-Trace-HMAC',
+                       'OpenStack-API-Version'],
+        expose_headers=['X-Auth-Token',
+                        'X-Subject-Token',
+                        'X-Service-Token',
+                        'X-OpenStack-Request-ID',
+                        'OpenStack-API-Version'],
+        allow_methods=['GET',
+                       'PUT',
+                       'POST',
+                       'DELETE',
+                       'PATCH',
+                       'HEAD']
+    )

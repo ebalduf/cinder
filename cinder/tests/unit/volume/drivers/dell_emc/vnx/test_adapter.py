@@ -13,7 +13,10 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 import mock
+import os
 import re
+
+from oslo_config import cfg
 
 from cinder import context
 from cinder import exception
@@ -42,25 +45,26 @@ class TestCommonAdapter(test.TestCase):
         vnx_utils.init_ops(self.configuration)
         self.configuration.san_ip = '192.168.1.1'
         self.configuration.storage_vnx_authentication_type = 'global'
+        self.configuration.config_group = 'vnx_backend'
         self.ctxt = context.get_admin_context()
-
-    def tearDown(self):
-        super(TestCommonAdapter, self).tearDown()
 
     @res_mock.mock_driver_input
     @res_mock.patch_common_adapter
     def test_create_volume(self, vnx_common, _ignore, mocked_input):
         volume = mocked_input['volume']
-        volume.host.split('#')[1]
-        model_update = vnx_common.create_volume(volume)
-        self.assertEqual('False', model_update.get('metadata')['snapcopy'])
+        with mock.patch.object(vnx_utils, 'get_backend_qos_specs',
+                               return_value=None):
+            model_update = vnx_common.create_volume(volume)
+            self.assertEqual('False', model_update.get('metadata')['snapcopy'])
 
     @res_mock.mock_driver_input
     @res_mock.patch_common_adapter
     def test_create_volume_error(self, vnx_common, _ignore, mocked_input):
-        self.assertRaises(storops_ex.VNXCreateLunError,
-                          vnx_common.create_volume,
-                          mocked_input['volume'])
+        def inner():
+            with mock.patch.object(vnx_utils, 'get_backend_qos_specs',
+                                   return_value=None):
+                vnx_common.create_volume(mocked_input['volume'])
+        self.assertRaises(storops_ex.VNXCreateLunError, inner)
 
     @utils.patch_extra_specs({'provisioning:type': 'thick'})
     @res_mock.mock_driver_input
@@ -68,9 +72,23 @@ class TestCommonAdapter(test.TestCase):
     def test_create_thick_volume(self, vnx_common, _ignore, mocked_input):
         volume = mocked_input['volume']
         expected_pool = volume.host.split('#')[1]
-        vnx_common.create_volume(volume)
+        with mock.patch.object(vnx_utils, 'get_backend_qos_specs',
+                               return_value=None):
+            vnx_common.create_volume(volume)
         vnx_common.client.vnx.get_pool.assert_called_with(
             name=expected_pool)
+
+    @utils.patch_extra_specs({'provisioning:type': 'thin'})
+    @res_mock.mock_driver_input
+    @res_mock.patch_common_adapter
+    def test_create_volume_with_qos(self, vnx_common, _ignore, mocked_input):
+        volume = mocked_input['volume']
+        with mock.patch.object(vnx_utils, 'get_backend_qos_specs',
+                               return_value={'id': 'test',
+                                             'maxBWS': 100,
+                                             'maxIOPS': 123}):
+            model_update = vnx_common.create_volume(volume)
+        self.assertEqual('False', model_update.get('metadata')['snapcopy'])
 
     @res_mock.mock_driver_input
     @res_mock.patch_common_adapter
@@ -293,7 +311,7 @@ class TestCommonAdapter(test.TestCase):
         self.assertTrue(stats['fast_support'])
         self.assertTrue(stats['deduplication_support'])
         self.assertTrue(stats['thin_provisioning_support'])
-        self.assertTrue(stats['consistencygroup_support'])
+        self.assertTrue(stats['consistent_group_snapshot_enabled'])
 
     @res_mock.patch_common_adapter
     def test_get_pool_stats(self, vnx_common, mocked):
@@ -305,13 +323,15 @@ class TestCommonAdapter(test.TestCase):
             'fast_support': True,
             'deduplication_support': True,
             'thin_provisioning_support': True,
-            'consistencygroup_support': True,
+            'consistent_group_snapshot_enabled': True,
+            'consistencygroup_support': True
 
         }
         pool_stats = vnx_common.get_pool_stats(stats)
         self.assertEqual(2, len(pool_stats))
         for stat in pool_stats:
             self.assertTrue(stat['fast_cache_enabled'])
+            self.assertTrue(stat['QoS_support'])
             self.assertIn(stat['pool_name'], [pools[0].name,
                                               pools[1].name])
             self.assertFalse(stat['replication_enabled'])
@@ -335,7 +355,8 @@ class TestCommonAdapter(test.TestCase):
             'fast_support': True,
             'deduplication_support': True,
             'thin_provisioning_support': True,
-            'consistencygroup_support': True,
+            'consistent_group_snapshot_enabled': True,
+            'consistencygroup_support': True
 
         }
         pool_stats = vnx_common.get_pool_stats(stats)
@@ -353,7 +374,8 @@ class TestCommonAdapter(test.TestCase):
             'fast_support': True,
             'deduplication_support': True,
             'thin_provisioning_support': True,
-            'consistencygroup_support': True,
+            'consistent_group_snapshot_enabled': True,
+            'consistencygroup_support': True
 
         }
         vnx_common.reserved_percentage = 15
@@ -1030,11 +1052,11 @@ class TestCommonAdapter(test.TestCase):
     def test_initialize_connection_snapshot(self, common_adapter, mocked_res,
                                             mocked_input):
         common_adapter.client.attach_snapshot = mock.Mock()
-        common_adapter._initialize_connection = mock.Mock()
+        common_adapter._initialize_connection = mock.Mock(return_value='fake')
 
         snapshot = mocked_input['snapshot']
         smp_name = 'tmp-smp-' + snapshot.id
-        common_adapter.initialize_connection_snapshot(snapshot, None)
+        conn = common_adapter.initialize_connection_snapshot(snapshot, None)
         common_adapter.client.attach_snapshot.assert_called_once_with(
             smp_name, snapshot.name)
         lun = mocked_res['lun']
@@ -1044,6 +1066,7 @@ class TestCommonAdapter(test.TestCase):
                              called_volume.vnx_lun_id))
         self.assertIsNone(
             common_adapter._initialize_connection.call_args[0][1])
+        self.assertIs(common_adapter._initialize_connection(), conn)
 
     @res_mock.mock_driver_input
     @res_mock.patch_common_adapter
@@ -1074,6 +1097,33 @@ class TestCommonAdapter(test.TestCase):
         fake_mirror.secondary_client.create_lun.return_value = (
             mocked_res['lun'])
         common_adapter.mirror_view = fake_mirror
+        common_adapter.config.replication_device = (
+            [utils.get_replication_device()])
+        rep_update = common_adapter.setup_lun_replication(
+            vol1, 111)
+        fake_mirror.create_mirror.assert_called_once_with(
+            'mirror_' + vol1.id, 111)
+        fake_mirror.add_image.assert_called_once_with(
+            'mirror_' + vol1.id, mocked_res['lun'].lun_id)
+        self.assertEqual(fields.ReplicationStatus.ENABLED,
+                         rep_update['replication_status'])
+
+    @utils.patch_extra_specs({'replication_enabled': '<is> True'})
+    @utils.patch_group_specs({'consistent_group_replication_enabled':
+                              '<is> True'})
+    @res_mock.mock_driver_input
+    @res_mock.patch_common_adapter
+    def test_setup_lun_replication_in_group(
+            self, common_adapter, mocked_res, mocked_input):
+        vol1 = mocked_input['vol1']
+        group1 = mocked_input['group1']
+        vol1.group = group1
+        fake_mirror = utils.build_fake_mirror_view()
+        fake_mirror.secondary_client.create_lun.return_value = (
+            mocked_res['lun'])
+        common_adapter.mirror_view = fake_mirror
+        common_adapter.config.replication_device = (
+            [utils.get_replication_device()])
         rep_update = common_adapter.setup_lun_replication(
             vol1, 111)
         fake_mirror.create_mirror.assert_called_once_with(
@@ -1155,13 +1205,17 @@ class TestCommonAdapter(test.TestCase):
             fake_mirror.secondary_client.get_serial.return_value = (
                 device['backend_id'])
             fake.return_value = fake_mirror
-            backend_id, updates = common_adapter.failover_host(
-                None, [vol1], device['backend_id'])
+            backend_id, updates, __ = common_adapter.failover_host(
+                None, [vol1], device['backend_id'], [])
             fake_mirror.promote_image.assert_called_once_with(
                 'mirror_' + vol1.id)
             fake_mirror.secondary_client.get_serial.assert_called_with()
             fake_mirror.secondary_client.get_lun.assert_called_with(
                 name=vol1.name)
+            self.assertEqual(fake_mirror.secondary_client,
+                             common_adapter.client)
+            self.assertEqual(device['backend_id'],
+                             common_adapter.active_backend_id)
         self.assertEqual(device['backend_id'], backend_id)
         for update in updates:
             self.assertEqual(fields.ReplicationStatus.FAILED_OVER,
@@ -1174,9 +1228,9 @@ class TestCommonAdapter(test.TestCase):
         common_adapter.config.replication_device = [
             utils.get_replication_device()]
         vol1 = mocked_input['vol1']
-        self.assertRaises(exception.InvalidInput,
+        self.assertRaises(exception.InvalidReplicationTarget,
                           common_adapter.failover_host,
-                          None, [vol1], 'new_id')
+                          None, [vol1], 'new_id', [])
 
     @utils.patch_extra_specs({'replication_enabled': '<is> True'})
     @res_mock.mock_driver_input
@@ -1185,6 +1239,7 @@ class TestCommonAdapter(test.TestCase):
                                     mocked_input):
         device = utils.get_replication_device()
         common_adapter.config.replication_device = [device]
+        common_adapter.active_backend_id = device['backend_id']
         vol1 = mocked_input['vol1']
         lun1 = mocked_res['lun1']
         with mock.patch.object(common_adapter, 'build_mirror_view') as fake:
@@ -1193,13 +1248,61 @@ class TestCommonAdapter(test.TestCase):
             fake_mirror.secondary_client.get_serial.return_value = (
                 device['backend_id'])
             fake.return_value = fake_mirror
-            backend_id, updates = common_adapter.failover_host(
-                None, [vol1], 'default')
+            backend_id, updates, __ = common_adapter.failover_host(
+                None, [vol1], 'default', [])
             fake_mirror.promote_image.assert_called_once_with(
                 'mirror_' + vol1.id)
             fake_mirror.secondary_client.get_serial.assert_called_with()
             fake_mirror.secondary_client.get_lun.assert_called_with(
                 name=vol1.name)
+            self.assertEqual(fake_mirror.secondary_client,
+                             common_adapter.client)
+            self.assertIsNone(common_adapter.active_backend_id)
+            self.assertFalse(fake_mirror.primary_client ==
+                             fake_mirror.secondary_client)
+        self.assertEqual('default', backend_id)
+        for update in updates:
+            self.assertEqual(fields.ReplicationStatus.ENABLED,
+                             update['updates']['replication_status'])
+
+    @utils.patch_group_specs({'consistent_group_replication_enabled':
+                              '<is> True'})
+    @res_mock.mock_driver_input
+    @res_mock.patch_common_adapter
+    def test_failover_host_groups(self, common_adapter, mocked_res,
+                                  mocked_input):
+        device = utils.get_replication_device()
+        common_adapter.config.replication_device = [device]
+        common_adapter.active_backend_id = device['backend_id']
+        mocked_group = mocked_input['group1']
+        group1 = mock.Mock()
+
+        group1.id = mocked_group.id
+        group1.replication_status = mocked_group.replication_status
+        group1.volumes = [mocked_input['vol1'], mocked_input['vol2']]
+        lun1 = mocked_res['lun1']
+        with mock.patch.object(common_adapter, 'build_mirror_view') as fake:
+            fake_mirror = utils.build_fake_mirror_view()
+            fake_mirror.secondary_client.get_lun.return_value = lun1
+            fake_mirror.secondary_client.get_serial.return_value = (
+                device['backend_id'])
+            fake.return_value = fake_mirror
+            backend_id, updates, group_update_list = (
+                common_adapter.failover_host(None, [], 'default', [group1]))
+            fake_mirror.promote_mirror_group.assert_called_once_with(
+                group1.id.replace('-', ''))
+            fake_mirror.secondary_client.get_serial.assert_called_with()
+            fake_mirror.secondary_client.get_lun.assert_called_with(
+                name=mocked_input['vol1'].name)
+            self.assertEqual(fake_mirror.secondary_client,
+                             common_adapter.client)
+            self.assertEqual([{
+                'group_id': group1.id,
+                'updates': {'replication_status':
+                            fields.ReplicationStatus.ENABLED}}],
+                group_update_list)
+            self.assertEqual(2, len(updates))
+            self.assertIsNone(common_adapter.active_backend_id)
         self.assertEqual('default', backend_id)
         for update in updates:
             self.assertEqual(fields.ReplicationStatus.ENABLED,
@@ -1230,6 +1333,15 @@ class TestCommonAdapter(test.TestCase):
         self.assertEqual(mocked_input['new_volume'].provider_location,
                          data['provider_location'])
         self.assertEqual('True', data['metadata']['snapcopy'])
+
+    @res_mock.patch_common_adapter
+    def test_normalize_config_queue_path(self, common_adapter,
+                                         mocked_res):
+        common_adapter._normalize_config()
+        self.assertEqual(os.path.join(cfg.CONF.state_path,
+                                      'vnx',
+                                      'vnx_backend'),
+                         common_adapter.queue_path)
 
     @res_mock.patch_common_adapter
     def test_normalize_config_naviseccli_path(self, common_adapter,

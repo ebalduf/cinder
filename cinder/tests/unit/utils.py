@@ -18,6 +18,7 @@ import socket
 import sys
 import uuid
 
+import mock
 from oslo_config import cfg
 from oslo_service import loopingcall
 from oslo_utils import timeutils
@@ -38,6 +39,19 @@ def get_test_admin_context():
     return context.get_admin_context()
 
 
+def obj_attr_is_set(obj_class):
+    """Method to allow setting the ID on an OVO on creation."""
+    original_method = obj_class.obj_attr_is_set
+
+    def wrapped(self, attr):
+        if attr == 'id' and not hasattr(self, 'id_first_call'):
+            self.id_first_call = False
+            return False
+        else:
+            original_method(self, attr)
+    return wrapped
+
+
 def create_volume(ctxt,
                   host='test_host',
                   display_name='test_volume',
@@ -54,6 +68,9 @@ def create_volume(ctxt,
                   group_id=None,
                   previous_status=None,
                   testcase_instance=None,
+                  id=None,
+                  metadata=None,
+                  cluster_name=None,
                   **kwargs):
     """Create a volume object in the DB."""
     vol = {}
@@ -74,6 +91,8 @@ def create_volume(ctxt,
         vol['group_id'] = group_id
     if volume_type_id:
         vol['volume_type_id'] = volume_type_id
+    if metadata:
+        vol['metadata'] = metadata
     for key in kwargs:
         vol[key] = kwargs[key]
     vol['replication_status'] = replication_status
@@ -84,9 +103,17 @@ def create_volume(ctxt,
         vol['replication_driver_data'] = replication_driver_data
     if previous_status:
         vol['previous_status'] = previous_status
+    if cluster_name:
+        vol['cluster_name'] = cluster_name
 
-    volume = objects.Volume(ctxt, **vol)
-    volume.create()
+    if id:
+        with mock.patch('cinder.objects.Volume.obj_attr_is_set',
+                        obj_attr_is_set(objects.Volume)):
+            volume = objects.Volume(ctxt, id=id, **vol)
+            volume.create()
+    else:
+        volume = objects.Volume(ctxt, **vol)
+        volume.create()
 
     # If we get a TestCase instance we add cleanup
     if testcase_instance:
@@ -118,6 +145,7 @@ def create_snapshot(ctxt,
                     cgsnapshot_id = None,
                     status=fields.SnapshotStatus.CREATING,
                     testcase_instance=None,
+                    id=None,
                     **kwargs):
     vol = db.volume_get(ctxt, volume_id)
     snap = objects.Snapshot(ctxt)
@@ -125,11 +153,20 @@ def create_snapshot(ctxt,
     snap.user_id = ctxt.user_id or fake.USER_ID
     snap.project_id = ctxt.project_id or fake.PROJECT_ID
     snap.status = status
+    snap.metadata = {}
     snap.volume_size = vol['size']
     snap.display_name = display_name
     snap.display_description = display_description
     snap.cgsnapshot_id = cgsnapshot_id
-    snap.create()
+
+    if id:
+        with mock.patch('cinder.objects.Snapshot.obj_attr_is_set',
+                        obj_attr_is_set(objects.Snapshot)):
+            snap.id = id
+            snap.create()
+    else:
+        snap.create()
+
     # We do the update after creating the snapshot in case we want to set
     # deleted field
     snap.update(kwargs)
@@ -306,6 +343,11 @@ def create_backup(ctxt,
                   temp_snapshot_id=None,
                   snapshot_id=None,
                   data_timestamp=None,
+                  size=None,
+                  container=None,
+                  availability_zone=None,
+                  host=None,
+                  metadata=None,
                   **kwargs):
     """Create a backup object."""
     values = {
@@ -315,21 +357,25 @@ def create_backup(ctxt,
         'status': status,
         'display_name': display_name,
         'display_description': display_description,
-        'container': 'fake',
-        'availability_zone': 'fake',
+        'container': container or 'fake',
+        'availability_zone': availability_zone or 'fake',
         'service': 'fake',
-        'size': 5 * 1024 * 1024,
+        'size': size or 5 * 1024 * 1024,
         'object_count': 22,
-        'host': socket.gethostname(),
+        'host': host or socket.gethostname(),
         'parent_id': parent_id,
         'temp_volume_id': temp_volume_id,
         'temp_snapshot_id': temp_snapshot_id,
         'snapshot_id': snapshot_id,
-        'data_timestamp': data_timestamp, }
+        'data_timestamp': data_timestamp,
+        'metadata': metadata or {}, }
 
     values.update(kwargs)
     backup = objects.Backup(ctxt, **values)
     backup.create()
+    if not snapshot_id:
+        backup.data_timestamp = backup.created_at
+        backup.save()
     return backup
 
 
@@ -338,7 +384,7 @@ def create_message(ctxt,
                    request_id='test_backup',
                    resource_type='This is a test backup',
                    resource_uuid='3asf434-3s433df43-434adf3-343df443',
-                   event_id=None,
+                   action=None,
                    message_level='Error'):
     """Create a message in the DB."""
     expires_at = (timeutils.utcnow() + datetime.timedelta(
@@ -347,7 +393,8 @@ def create_message(ctxt,
                       'request_id': request_id,
                       'resource_type': resource_type,
                       'resource_uuid': resource_uuid,
-                      'event_id': event_id,
+                      'action_id': action[0] if action else '',
+                      'event_id': "VOLUME_VOLUME_%s_002" % action[0],
                       'message_level': message_level,
                       'expires_at': expires_at}
     return db.message_create(ctxt, message_record)
@@ -427,7 +474,9 @@ def get_file_spec():
             file_spec = list(set(dir(_io.TextIOWrapper)).union(
                 set(dir(_io.BytesIO))))
         else:
-            file_spec = file
+            # NOTE(jsbryant): Pep8 on py3 based systems will fail because
+            # 'file' has been removed.  Using noqa here to avoid the failure.
+            file_spec = file  # noqa
 
 
 def generate_timeout_series(timeout):

@@ -68,10 +68,9 @@ class BackupNFSShareTestCase(test.TestCase):
         self.mock_object(nfs.NFSBackupDriver, '_init_backup_repo_path',
                          return_value=FAKE_BACKUP_PATH)
 
-        with mock.patch.object(nfs.NFSBackupDriver, '_check_configuration'):
-            driver = nfs.NFSBackupDriver(self.ctxt)
-        self.assertRaises(exception.ConfigNotFound,
-                          driver._check_configuration)
+        driver = nfs.NFSBackupDriver(self.ctxt)
+        self.assertRaises(exception.InvalidConfigurationValue,
+                          driver.check_for_setup_error)
 
     @mock.patch.object(remotefs_brick, 'RemoteFsClient')
     def test_init_backup_repo_path(self, mock_remotefs_client_class):
@@ -81,7 +80,7 @@ class BackupNFSShareTestCase(test.TestCase):
         mock_remotefsclient = mock.Mock()
         mock_remotefsclient.get_mount_point = mock.Mock(
             return_value=FAKE_BACKUP_PATH)
-        self.mock_object(nfs.NFSBackupDriver, '_check_configuration')
+        self.mock_object(nfs.NFSBackupDriver, 'check_for_setup_error')
         mock_remotefs_client_class.return_value = mock_remotefsclient
         self.mock_object(utils, 'get_root_helper')
         with mock.patch.object(nfs.NFSBackupDriver, '_init_backup_repo_path'):
@@ -518,7 +517,7 @@ class BackupNFSSwiftBasedTestCase(test.TestCase):
 
         In backup(), after an exception occurs in
         self._backup_metadata(), we want to check the process when the
-        second exception occurs in self.delete().
+        second exception occurs in self.delete_backup().
         """
         volume_id = fake.VOLUME_ID
 
@@ -539,7 +538,7 @@ class BackupNFSSwiftBasedTestCase(test.TestCase):
             raise exception.BackupOperationError()
 
         # Raise a pseudo exception.BackupOperationError.
-        self.mock_object(nfs.NFSBackupDriver, 'delete', fake_delete)
+        self.mock_object(nfs.NFSBackupDriver, 'delete_backup', fake_delete)
 
         # We expect that the second exception is notified.
         self.assertRaises(exception.BackupOperationError,
@@ -588,7 +587,7 @@ class BackupNFSSwiftBasedTestCase(test.TestCase):
         self._create_backup_db_entry(volume_id=volume_id)
         self.flags(backup_compression_algorithm='zlib')
         self.flags(backup_file_size=(1024 * 3))
-        self.flags(backup_sha_block_size_bytes = 1024)
+        self.flags(backup_sha_block_size_bytes=1024)
         service = nfs.NFSBackupDriver(self.ctxt)
         self.volume_file.seek(0)
         backup = objects.Backup.get_by_id(self.ctxt, fake.BACKUP_ID)
@@ -614,7 +613,7 @@ class BackupNFSSwiftBasedTestCase(test.TestCase):
                          '_generate_object_name_prefix',
                          _fake_generate_object_name_prefix)
 
-        self.flags(backup_file_size =(1024 * 8))
+        self.flags(backup_file_size=(1024 * 8))
         self.flags(backup_sha_block_size_bytes=1024)
 
         container_name = self.temp_dir.replace(tempfile.gettempdir() + '/',
@@ -654,7 +653,7 @@ class BackupNFSSwiftBasedTestCase(test.TestCase):
         self._create_backup_db_entry(volume_id=volume_id)
         service = nfs.NFSBackupDriver(self.ctxt)
         backup = objects.Backup.get_by_id(self.ctxt, fake.BACKUP_ID)
-        service.delete(backup)
+        service.delete_backup(backup)
 
     def test_get_compressor(self):
         service = nfs.NFSBackupDriver(self.ctxt)
@@ -671,7 +670,9 @@ class BackupNFSSwiftBasedTestCase(test.TestCase):
         fake_data = bytearray(size)
         if six.PY2:
             # On Python 2, zlib.compressor() accepts buffer, but not bytearray
-            fake_data = buffer(fake_data)
+            # NOTE(jsbryant): Pep8 fails on py3 based installations as buffer()
+            # was removed. 'noqa' used here to avoid that failure.
+            fake_data = buffer(fake_data)  # noqa
         return fake_data
 
     def test_prepare_output_data_effective_compression(self):

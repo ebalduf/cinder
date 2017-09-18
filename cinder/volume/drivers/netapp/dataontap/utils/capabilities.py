@@ -23,7 +23,7 @@ from oslo_log import log as logging
 import six
 
 from cinder import exception
-from cinder.i18n import _, _LI, _LW
+from cinder.i18n import _
 
 
 LOG = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ SSC_API_MAP = {
         'netapp_dedup',
         'netapp_compression',
     ],
-    ('volume', 'show', 'volume-get-iter'): [
+    ('volume', '*show', 'volume-get-iter'): [
         'netapp_flexvol_encryption',
     ],
 }
@@ -81,10 +81,10 @@ class CapabilitiesLibrary(object):
                 msg = _('User not permitted to query Data ONTAP volumes.')
                 raise exception.VolumeBackendAPIException(data=msg)
             else:
-                LOG.warning(_LW('The configured user account does not have '
-                                'sufficient privileges to use all needed '
-                                'APIs. The following extra specs will fail '
-                                'or be ignored: %s.'), invalid_extra_specs)
+                LOG.warning('The configured user account does not have '
+                            'sufficient privileges to use all needed '
+                            'APIs. The following extra specs will fail '
+                            'or be ignored: %s.', invalid_extra_specs)
 
     def get_ssc(self):
         """Get a copy of the Storage Service Catalog."""
@@ -116,8 +116,8 @@ class CapabilitiesLibrary(object):
         The self.ssc attribute is updated with the following format.
         {<flexvol_name> : {<ssc_key>: <ssc_value>}}
         """
-        LOG.info(_LI("Updating storage service catalog information for "
-                     "backend '%s'"), self.backend_name)
+        LOG.info("Updating storage service catalog information for "
+                 "backend '%s'", self.backend_name)
 
         ssc = {}
 
@@ -279,9 +279,9 @@ class CapabilitiesLibrary(object):
         for key, value in extra_specs.items():
 
             if isinstance(value, six.string_types):
-                if re.match('<is>\s+True', value, re.I):
+                if re.match(r'<is>\s+True', value, re.I):
                     modified_extra_specs[key] = True
-                elif re.match('<is>\s+False', value, re.I):
+                elif re.match(r'<is>\s+False', value, re.I):
                     modified_extra_specs[key] = False
 
         return modified_extra_specs

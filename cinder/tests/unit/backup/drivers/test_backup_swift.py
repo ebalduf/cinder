@@ -144,6 +144,10 @@ class BackupSwiftTestCase(test.TestCase):
                                       u'endpoints': [{
                                           u'adminURL':
                                               u'http://example.com'}]}]
+        self.override_config("backup_swift_auth",
+                             "single_user")
+        self.override_config("backup_swift_user",
+                             "fake_user")
         self.assertRaises(exception.BackupDriverException,
                           swift_dr.SwiftBackupDriver,
                           self.ctxt)
@@ -167,6 +171,16 @@ class BackupSwiftTestCase(test.TestCase):
                                    self.ctxt.project_id),
                          backup.swift_url)
 
+    def test_backup_swift_url_conf_nocatalog(self):
+        self.ctxt.service_catalog = []
+        self.ctxt.project_id = fake.PROJECT_ID
+        self.override_config("backup_swift_url",
+                             "http://public.example.com/")
+        backup = swift_dr.SwiftBackupDriver(self.ctxt)
+        self.assertEqual("%s%s" % (CONF.backup_swift_url,
+                                   self.ctxt.project_id),
+                         backup.swift_url)
+
     def test_backup_swift_auth_url_conf(self):
         self.ctxt.service_catalog = [{u'type': u'object-store',
                                       u'name': u'swift',
@@ -182,6 +196,10 @@ class BackupSwiftTestCase(test.TestCase):
         self.ctxt.project_id = fake.PROJECT_ID
         self.override_config("backup_swift_auth_url",
                              "http://public.example.com")
+        self.override_config("backup_swift_auth",
+                             "single_user")
+        self.override_config("backup_swift_user",
+                             "fake_user")
         backup = swift_dr.SwiftBackupDriver(self.ctxt)
         self.assertEqual(CONF.backup_swift_auth_url, backup.auth_url)
 
@@ -462,7 +480,7 @@ class BackupSwiftTestCase(test.TestCase):
         self._create_backup_db_entry(volume_id=volume_id,
                                      container=container_name,
                                      backup_id=fake.BACKUP2_ID,
-                                     parent_id= fake.BACKUP_ID)
+                                     parent_id=fake.BACKUP_ID)
         self.mock_object(swift, 'Connection',
                          fake_swift_client2.FakeSwiftClient2.Connection)
         service = swift_dr.SwiftBackupDriver(self.ctxt)
@@ -636,7 +654,7 @@ class BackupSwiftTestCase(test.TestCase):
 
         In backup(), after an exception occurs in
         self._backup_metadata(), we want to check the process when the
-        second exception occurs in self.delete().
+        second exception occurs in self.delete_backup().
         """
         volume_id = '2164421d-f181-4db7-b9bd-000000eeb628'
 
@@ -657,7 +675,8 @@ class BackupSwiftTestCase(test.TestCase):
             raise exception.BackupOperationError()
 
         # Raise a pseudo exception.BackupOperationError.
-        self.mock_object(swift_dr.SwiftBackupDriver, 'delete', fake_delete)
+        self.mock_object(swift_dr.SwiftBackupDriver, 'delete_backup',
+                         fake_delete)
 
         # We expect that the second exception is notified.
         self.assertRaises(exception.BackupOperationError,
@@ -757,7 +776,7 @@ class BackupSwiftTestCase(test.TestCase):
                                      service_metadata=object_prefix)
         service = swift_dr.SwiftBackupDriver(self.ctxt)
         backup = objects.Backup.get_by_id(self.ctxt, fake.BACKUP_ID)
-        service.delete(backup)
+        service.delete_backup(backup)
 
     def test_delete_wraps_socket_error(self):
         volume_id = 'f74cb6fa-2900-40df-87ac-0000000f72ea'
@@ -769,7 +788,7 @@ class BackupSwiftTestCase(test.TestCase):
         service = swift_dr.SwiftBackupDriver(self.ctxt)
         backup = objects.Backup.get_by_id(self.ctxt, fake.BACKUP_ID)
         self.assertRaises(exception.SwiftConnectionFailed,
-                          service.delete,
+                          service.delete_backup,
                           backup)
 
     def test_delete_without_object_prefix(self):
@@ -785,7 +804,7 @@ class BackupSwiftTestCase(test.TestCase):
         self._create_backup_db_entry(volume_id=volume_id)
         service = swift_dr.SwiftBackupDriver(self.ctxt)
         backup = objects.Backup.get_by_id(self.ctxt, fake.BACKUP_ID)
-        service.delete(backup)
+        service.delete_backup(backup)
 
     def test_get_compressor(self):
         service = swift_dr.SwiftBackupDriver(self.ctxt)

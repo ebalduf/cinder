@@ -10,10 +10,12 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+import ddt
 import inspect
 
 import mock
 from oslo_utils import encodeutils
+from six.moves import http_client
 import webob
 
 from cinder.api.openstack import wsgi
@@ -232,7 +234,7 @@ class ResourceTest(test.TestCase):
         app = fakes.TestRouter(Controller())
         response = req.get_response(app)
         self.assertEqual(b'off', response.body)
-        self.assertEqual(200, response.status_int)
+        self.assertEqual(http_client.OK, response.status_int)
 
     def test_resource_not_authorized(self):
         class Controller(object):
@@ -242,7 +244,7 @@ class ResourceTest(test.TestCase):
         req = webob.Request.blank('/tests')
         app = fakes.TestRouter(Controller())
         response = req.get_response(app)
-        self.assertEqual(403, response.status_int)
+        self.assertEqual(http_client.FORBIDDEN, response.status_int)
 
     def test_dispatch(self):
         class Controller(object):
@@ -776,21 +778,21 @@ class ResourceTest(test.TestCase):
 class ResponseObjectTest(test.TestCase):
     def test_default_code(self):
         robj = wsgi.ResponseObject({})
-        self.assertEqual(200, robj.code)
+        self.assertEqual(http_client.OK, robj.code)
 
     def test_modified_code(self):
         robj = wsgi.ResponseObject({})
-        robj._default_code = 202
-        self.assertEqual(202, robj.code)
+        robj._default_code = http_client.ACCEPTED
+        self.assertEqual(http_client.ACCEPTED, robj.code)
 
     def test_override_default_code(self):
-        robj = wsgi.ResponseObject({}, code=404)
-        self.assertEqual(404, robj.code)
+        robj = wsgi.ResponseObject({}, code=http_client.NOT_FOUND)
+        self.assertEqual(http_client.NOT_FOUND, robj.code)
 
     def test_override_modified_code(self):
-        robj = wsgi.ResponseObject({}, code=404)
-        robj._default_code = 202
-        self.assertEqual(404, robj.code)
+        robj = wsgi.ResponseObject({}, code=http_client.NOT_FOUND)
+        robj._default_code = http_client.ACCEPTED
+        self.assertEqual(http_client.NOT_FOUND, robj.code)
 
     def test_set_header(self):
         robj = wsgi.ResponseObject({})
@@ -820,6 +822,7 @@ class ResponseObjectTest(test.TestCase):
         self.assertEqual({}, robj.serializers)
 
 
+@ddt.data
 class ValidBodyTest(test.TestCase):
 
     def setUp(self):
@@ -855,51 +858,32 @@ class ValidBodyTest(test.TestCase):
                           name, 'Name', min_length=1, max_length=255,
                           remove_whitespaces=False)
 
-    def test_validate_string_length_with_name_contains_white_spaces(
-            self):
-        body = {'name': 'a' * 255 + "  "}
-        self.controller.validate_string_length(
-            body['name'], 'name', min_length=1, max_length=255,
-            remove_whitespaces=True)
-
-    def test_validate_name_and_description_with_name_too_long(self):
-        body = {'name': 'a' * 256}
+    @ddt.data('name', 'display_name', 'description', 'display_description')
+    def test_validate_name_and_description_with_name_too_long(self, attribute):
+        body = {attribute: 'a' * 256}
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.validate_name_and_description,
                           body)
 
-    def test_validate_name_and_description_with_desc_too_long(self):
-        body = {'description': 'a' * 256}
+    @ddt.data('name', 'display_name', 'description', 'display_description')
+    def test_validate_name_and_description_with_name_as_int(self, attribute):
+        body = {attribute: 1234}
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.validate_name_and_description,
                           body)
 
-    def test_validate_name_and_description_with_name_as_int(self):
-        body = {'name': 1234}
-        self.assertRaises(webob.exc.HTTPBadRequest,
-                          self.controller.validate_name_and_description,
-                          body)
-
-    def test_validate_name_and_description_with_desc_as_int(self):
-        body = {'description': 1234}
-        self.assertRaises(webob.exc.HTTPBadRequest,
-                          self.controller.validate_name_and_description,
-                          body)
-
-    def test_validate_name_and_description_with_name_zero_length(self):
+    @ddt.data('name', 'display_name', 'description', 'display_description')
+    def test_validate_name_and_description_with_name_zero_length(self,
+                                                                 attribute):
         # NOTE(jdg): We allow zero length names currently, particularly
         # from Nova, changes to this require an API version bump
-        body = {'name': ""}
+        body = {attribute: ""}
         self.controller.validate_name_and_description(body)
-        self.assertEqual('', body['name'])
+        self.assertEqual('', body[attribute])
 
-    def test_validate_name_and_description_with_desc_zero_length(self):
-        body = {'description': ""}
-        self.controller.validate_name_and_description(body)
-        self.assertEqual('', body['description'])
-
+    @ddt.data('name', 'display_name', 'description', 'display_description')
     def test_validate_name_and_description_with_name_contains_white_spaces(
-            self):
-        body = {'name': 'a' * 255 + "  "}
+            self, attribute):
+        body = {attribute: 'a' * 255 + "  "}
         self.controller.validate_name_and_description(body)
-        self.assertEqual('a' * 255, body['name'])
+        self.assertEqual('a' * 255, body[attribute])

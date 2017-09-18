@@ -18,6 +18,7 @@
 from oslo_log import log as logging
 from oslo_utils import encodeutils
 from oslo_utils import strutils
+from six.moves import http_client
 import webob
 from webob import exc
 
@@ -25,7 +26,7 @@ from cinder.api import common
 from cinder.api.openstack import wsgi
 from cinder.api.views import snapshots as snapshot_views
 from cinder import exception
-from cinder.i18n import _, _LI
+from cinder.i18n import _
 from cinder import utils
 from cinder import volume
 from cinder.volume import utils as volume_utils
@@ -58,13 +59,13 @@ class SnapshotsController(wsgi.Controller):
         """Delete a snapshot."""
         context = req.environ['cinder.context']
 
-        LOG.info(_LI("Delete snapshot with id: %s"), id)
+        LOG.info("Delete snapshot with id: %s", id)
 
         # Not found exception will be handled at the wsgi level
         snapshot = self.volume_api.get_snapshot(context, id)
         self.volume_api.delete_snapshot(context, snapshot)
 
-        return webob.Response(status_int=202)
+        return webob.Response(status_int=http_client.ACCEPTED)
 
     def index(self, req):
         """Returns a summary list of snapshots."""
@@ -108,7 +109,7 @@ class SnapshotsController(wsgi.Controller):
             snapshots = self._view_builder.summary_list(req, snapshots.objects)
         return snapshots
 
-    @wsgi.response(202)
+    @wsgi.response(http_client.ACCEPTED)
     def create(self, req, body):
         """Creates a new snapshot."""
         kwargs = {}
@@ -127,8 +128,7 @@ class SnapshotsController(wsgi.Controller):
 
         volume = self.volume_api.get(context, volume_id)
         force = snapshot.get('force', False)
-        msg = _LI("Create snapshot from volume %s")
-        LOG.info(msg, volume_id)
+        LOG.info("Create snapshot from volume %s", volume_id)
         self.validate_name_and_description(snapshot)
 
         # NOTE(thingee): v2 API allows name instead of display_name

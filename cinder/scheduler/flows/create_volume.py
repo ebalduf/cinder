@@ -17,10 +17,8 @@ from taskflow.patterns import linear_flow
 
 from cinder import exception
 from cinder import flow_utils
-from cinder.i18n import _LE
 from cinder.message import api as message_api
-from cinder.message import defined_messages
-from cinder.message import resource_types
+from cinder.message import message_field
 from cinder import rpc
 from cinder import utils
 from cinder.volume.flows import common
@@ -67,7 +65,7 @@ class ExtractSchedulerSpecTask(flow_utils.CinderTask):
                 image_id):
         # For RPC version < 1.2 backward compatibility
         if request_spec is None:
-            request_spec = self._populate_request_spec(volume.id,
+            request_spec = self._populate_request_spec(volume,
                                                        snapshot_id, image_id)
         return {
             'request_spec': request_spec,
@@ -96,7 +94,7 @@ class ScheduleCreateVolumeTask(flow_utils.CinderTask):
         try:
             self._notify_failure(context, request_spec, cause)
         finally:
-            LOG.error(_LE("Failed to run task %(name)s: %(cause)s"),
+            LOG.error("Failed to run task %(name)s: %(cause)s",
                       {'cause': cause, 'name': self.name})
 
     @utils.if_notifications_enabled
@@ -114,8 +112,8 @@ class ScheduleCreateVolumeTask(flow_utils.CinderTask):
             rpc.get_notifier('scheduler').error(context, self.FAILURE_TOPIC,
                                                 payload)
         except exception.CinderException:
-            LOG.exception(_LE("Failed notifying on %(topic)s "
-                              "payload %(payload)s"),
+            LOG.exception("Failed notifying on %(topic)s "
+                          "payload %(payload)s",
                           {'topic': self.FAILURE_TOPIC, 'payload': payload})
 
     def execute(self, context, request_spec, filter_properties, volume):
@@ -123,19 +121,17 @@ class ScheduleCreateVolumeTask(flow_utils.CinderTask):
             self.driver_api.schedule_create_volume(context, request_spec,
                                                    filter_properties)
         except Exception as e:
+            self.message_api.create(
+                context,
+                message_field.Action.SCHEDULE_ALLOCATE_VOLUME,
+                resource_uuid=request_spec['volume_id'],
+                exception=e)
             # An error happened, notify on the scheduler queue and log that
             # this happened and set the volume to errored out and reraise the
             # error *if* exception caught isn't NoValidBackend. Otherwise *do
             # not* reraise (since what's the point?)
             with excutils.save_and_reraise_exception(
                     reraise=not isinstance(e, exception.NoValidBackend)):
-                if isinstance(e, exception.NoValidBackend):
-                    self.message_api.create(
-                        context,
-                        defined_messages.EventIds.UNABLE_TO_ALLOCATE,
-                        context.project_id,
-                        resource_type=resource_types.VOLUME,
-                        resource_uuid=request_spec['volume_id'])
                 try:
                     self._handle_failure(context, request_spec, e)
                 finally:

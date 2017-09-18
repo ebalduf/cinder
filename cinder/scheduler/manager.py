@@ -26,6 +26,7 @@ import eventlet
 from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging as messaging
+from oslo_service import periodic_task
 from oslo_utils import excutils
 from oslo_utils import importutils
 from oslo_utils import timeutils
@@ -36,9 +37,11 @@ from cinder import context
 from cinder import db
 from cinder import exception
 from cinder import flow_utils
-from cinder.i18n import _, _LE, _LI
+from cinder.i18n import _
 from cinder import manager
+from cinder.message import api as mess_api
 from cinder import objects
+from cinder.objects import fields
 from cinder import quota
 from cinder import rpc
 from cinder.scheduler.flows import create_volume
@@ -75,6 +78,7 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
         self._startup_delay = True
         self.volume_api = volume_rpcapi.VolumeAPI()
         self.sch_api = scheduler_rpcapi.SchedulerAPI()
+        self.message_api = mess_api.API()
         self.rpc_api_version = versionutils.convert_version_to_int(
             self.RPC_API_VERSION)
 
@@ -90,6 +94,16 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
         self.volume_api = volume_rpcapi.VolumeAPI()
         self.sch_api = scheduler_rpcapi.SchedulerAPI()
         self.driver.reset()
+
+    @periodic_task.periodic_task(spacing=CONF.message_reap_interval,
+                                 run_immediately=True)
+    def _clean_expired_messages(self, context):
+        self.message_api.cleanup_expired_messages(context)
+
+    @periodic_task.periodic_task(spacing=CONF.reservation_clean_interval,
+                                 run_immediately=True)
+    def _clean_expired_reservation(self, context):
+        QUOTAS.expire(context)
 
     def update_service_capabilities(self, context, service_name=None,
                                     host=None, capabilities=None,
@@ -132,28 +146,6 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
         while self._startup_delay and not self.driver.is_ready():
             eventlet.sleep(1)
 
-    def create_consistencygroup(self, context, group, request_spec_list=None,
-                                filter_properties_list=None):
-        self._wait_for_scheduler()
-        try:
-            self.driver.schedule_create_consistencygroup(
-                context, group,
-                request_spec_list,
-                filter_properties_list)
-        except exception.NoValidBackend:
-            LOG.error(_LE("Could not find a backend for consistency group "
-                          "%(group_id)s."),
-                      {'group_id': group.id})
-            group.status = 'error'
-            group.save()
-        except Exception:
-            with excutils.save_and_reraise_exception():
-                LOG.exception(_LE("Failed to create consistency group "
-                                  "%(group_id)s."),
-                              {'group_id': group.id})
-                group.status = 'error'
-                group.save()
-
     def create_group(self, context, group, group_spec=None,
                      group_filter_properties=None, request_spec_list=None,
                      filter_properties_list=None):
@@ -166,17 +158,17 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
                 group_filter_properties,
                 filter_properties_list)
         except exception.NoValidBackend:
-            LOG.error(_LE("Could not find a backend for group "
-                          "%(group_id)s."),
+            LOG.error("Could not find a backend for group "
+                      "%(group_id)s.",
                       {'group_id': group.id})
-            group.status = 'error'
+            group.status = fields.GroupStatus.ERROR
             group.save()
         except Exception:
             with excutils.save_and_reraise_exception():
-                LOG.exception(_LE("Failed to create generic group "
-                                  "%(group_id)s."),
+                LOG.exception("Failed to create generic group "
+                              "%(group_id)s.",
                               {'group_id': group.id})
-                group.status = 'error'
+                group.status = fields.GroupStatus.ERROR
                 group.save()
 
     @objects.Volume.set_workers
@@ -356,9 +348,12 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
 
         filter_properties['new_size'] = new_size
         try:
-            self.driver.backend_passes_filters(context,
-                                               volume.service_topic_queue,
-                                               request_spec, filter_properties)
+            backend_state = self.driver.backend_passes_filters(
+                context,
+                volume.service_topic_queue,
+                request_spec, filter_properties)
+            backend_state.consume_from_volume(
+                {'size': new_size - volume.size})
             volume_rpcapi.VolumeAPI().extend_volume(context, volume, new_size,
                                                     reservations)
         except exception.NoValidBackend as ex:
@@ -370,7 +365,7 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
                                      request_spec, msg=None):
         # TODO(harlowja): move into a task that just does this later.
         if not msg:
-            msg = (_LE("Failed to schedule_%(method)s: %(ex)s") %
+            msg = ("Failed to schedule_%(method)s: %(ex)s" %
                    {'method': method, 'ex': six.text_type(ex)})
         LOG.error(msg)
 
@@ -445,7 +440,7 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
         if self.upgrading_cloud:
             raise exception.UnavailableDuringUpgrade(action='workers cleanup')
 
-        LOG.info(_LI('Workers cleanup request started.'))
+        LOG.info('Workers cleanup request started.')
 
         filters = dict(service_id=cleanup_request.service_id,
                        cluster_name=cleanup_request.cluster_name,
@@ -475,7 +470,7 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
 
             # If it's a scheduler or the service is up, send the request.
             if not dest or dest.is_up:
-                LOG.info(_LI('Sending cleanup for %(binary)s %(dest_name)s.'),
+                LOG.info('Sending cleanup for %(binary)s %(dest_name)s.',
                          {'binary': service.binary,
                           'dest_name': dest_name})
                 cleanup_rpc(context, cleanup_request)
@@ -483,11 +478,11 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
             # We don't send cleanup requests when there are no services alive
             # to do the cleanup.
             else:
-                LOG.info(_LI('No service available to cleanup %(binary)s '
-                             '%(dest_name)s.'),
+                LOG.info('No service available to cleanup %(binary)s '
+                         '%(dest_name)s.',
                          {'binary': service.binary,
                           'dest_name': dest_name})
                 not_requested.append(service)
 
-        LOG.info(_LI('Cleanup requests completed.'))
+        LOG.info('Cleanup requests completed.')
         return requested, not_requested

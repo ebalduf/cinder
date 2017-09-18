@@ -13,23 +13,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_config import cfg
-import testtools
-
 from tempest.api.volume import base as volume_base
 from tempest.common import waiters
 from tempest import config
 from tempest.lib.common.utils import data_utils
-from tempest import test
-
-# TODO(obutenko): Remove this when liberty-eol happens.
-snapshot_backup_opt = cfg.BoolOpt('snapshot_backup',
-                                  default=False,
-                                  help='Creating backup from snapshot not '
-                                  'implemented in Liberty.')
+from tempest.lib import decorators
 
 CONF = config.CONF
-CONF.register_opt(snapshot_backup_opt, group='volume-feature-enabled')
 
 
 class VolumesBackupsTest(volume_base.BaseVolumeTest):
@@ -40,9 +30,7 @@ class VolumesBackupsTest(volume_base.BaseVolumeTest):
         if not CONF.volume_feature_enabled.backup:
             raise cls.skipException("Cinder backup feature disabled")
 
-    @testtools.skipUnless(CONF.volume_feature_enabled.snapshot_backup,
-                          "Skip. Not implemented in Liberty.")
-    @test.idempotent_id('885410c6-cd1d-452c-a409-7c32b7e0be15')
+    @decorators.idempotent_id('885410c6-cd1d-452c-a409-7c32b7e0be15')
     def test_volume_snapshot_backup(self):
         """Create backup from snapshot."""
         volume = self.create_volume()
@@ -55,7 +43,7 @@ class VolumesBackupsTest(volume_base.BaseVolumeTest):
         # Get a given backup
         backup = self.backups_client.show_backup(
             backup['id'])['backup']
-        waiters.wait_for_backup_status(
+        waiters.wait_for_volume_resource_status(
             self.backups_client,
             backup['id'], 'available')
         self.assertEqual(volume['id'], backup['volume_id'])
@@ -67,7 +55,7 @@ class VolumesBackupsTest(volume_base.BaseVolumeTest):
         self.volumes_client.delete_volume(volume['id'])
         self.volumes_client.wait_for_resource_deletion(volume['id'])
 
-    @test.idempotent_id('b5d837b0-7066-455d-88fc-4a721a899306')
+    @decorators.idempotent_id('b5d837b0-7066-455d-88fc-4a721a899306')
     def test_backup_create_and_restore_to_an_existing_volume(self):
         """Test backup create and restore to an existing volume."""
         # Create volume
@@ -78,23 +66,23 @@ class VolumesBackupsTest(volume_base.BaseVolumeTest):
         backup = self.backups_client.create_backup(
             volume_id=src_vol['id'])['backup']
         self.addCleanup(self.backups_client.delete_backup, backup['id'])
-        waiters.wait_for_backup_status(
+        waiters.wait_for_volume_resource_status(
             self.backups_client,
             backup['id'], 'available')
         # Restore to existing volume
         restore = self.backups_client.restore_backup(
             backup_id=backup['id'],
             volume_id=src_vol['id'])['restore']
-        waiters.wait_for_backup_status(
+        waiters.wait_for_volume_resource_status(
             self.backups_client,
             backup['id'], 'available')
-        waiters.wait_for_volume_status(
+        waiters.wait_for_volume_resource_status(
             self.volumes_client,
             src_vol['id'], 'available')
         self.assertEqual(src_vol['id'], restore['volume_id'])
         self.assertEqual(backup['id'], restore['backup_id'])
 
-    @test.idempotent_id('c810fe2c-cb40-43ab-96aa-471b74516a98')
+    @decorators.idempotent_id('c810fe2c-cb40-43ab-96aa-471b74516a98')
     def test_incremental_backup(self):
         """Test create incremental backup."""
         # Create volume from image
@@ -106,9 +94,8 @@ class VolumesBackupsTest(volume_base.BaseVolumeTest):
         # Create backup
         backup = self.backups_client.create_backup(
             volume_id=volume['id'])['backup']
-        waiters.wait_for_backup_status(self.backups_client,
-                                       backup['id'],
-                                       'available')
+        waiters.wait_for_volume_resource_status(self.backups_client,
+                                                backup['id'], 'available')
         # Create a server
         bd_map = [{'volume_id': volume['id'],
                    'delete_on_termination': '0'}]
@@ -122,15 +109,15 @@ class VolumesBackupsTest(volume_base.BaseVolumeTest):
         # Delete VM
         self.servers_client.delete_server(server['id'])
         # Create incremental backup
-        waiters.wait_for_volume_status(self.volumes_client, volume['id'],
-                                       'available')
+        waiters.wait_for_volume_resource_status(self.volumes_client,
+                                                volume['id'], 'available')
         backup_incr = self.backups_client.create_backup(
             volume_id=volume['id'],
             incremental=True)['backup']
 
-        waiters.wait_for_backup_status(self.backups_client,
-                                       backup_incr['id'],
-                                       'available')
+        waiters.wait_for_volume_resource_status(self.backups_client,
+                                                backup_incr['id'],
+                                                'available')
 
         is_incremental = self.backups_client.show_backup(
             backup_incr['id'])['backup']['is_incremental']

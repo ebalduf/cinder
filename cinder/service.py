@@ -41,7 +41,7 @@ from cinder.common import constants
 from cinder import context
 from cinder import coordination
 from cinder import exception
-from cinder.i18n import _, _LE, _LI, _LW
+from cinder.i18n import _
 from cinder import objects
 from cinder.objects import base as objects_base
 from cinder.objects import fields
@@ -104,15 +104,15 @@ def setup_profiler(binary, host):
             host=host
         )
         LOG.warning(
-            _LW("OSProfiler is enabled.\nIt means that person who knows "
-                "any of hmac_keys that are specified in "
-                "/etc/cinder/cinder.conf can trace his requests. \n"
-                "In real life only operator can read this file so there "
-                "is no security issue. Note that even if person can "
-                "trigger profiler, only admin user can retrieve trace "
-                "information.\n"
-                "To disable OSProfiler set in cinder.conf:\n"
-                "[profiler]\nenabled=false"))
+            "OSProfiler is enabled.\nIt means that person who knows "
+            "any of hmac_keys that are specified in "
+            "/etc/cinder/cinder.conf can trace his requests. \n"
+            "In real life only operator can read this file so there "
+            "is no security issue. Note that even if person can "
+            "trigger profiler, only admin user can retrieve trace "
+            "information.\n"
+            "To disable OSProfiler set in cinder.conf:\n"
+            "[profiler]\nenabled=false")
 
 
 class Service(service.Service):
@@ -145,6 +145,11 @@ class Service(service.Service):
             manager_class = profiler.trace_cls("rpc")(manager_class)
 
         self.service = None
+        self.manager = manager_class(host=self.host,
+                                     cluster=self.cluster,
+                                     service_name=service_name,
+                                     *args, **kwargs)
+        self.availability_zone = self.manager.availability_zone
 
         # NOTE(geguileo): We need to create the Service DB entry before we
         # create the manager, otherwise capped versions for serializer and rpc
@@ -178,9 +183,9 @@ class Service(service.Service):
             # TODO(geguileo): In O - Remove self.is_upgrading_to_n part
             if (service_ref.cluster_name != cluster and
                     not self.is_upgrading_to_n):
-                LOG.info(_LI('This service has been moved from cluster '
-                             '%(cluster_svc)s to %(cluster_cfg)s. Resources '
-                             'will %(opt_no)sbe moved to the new cluster'),
+                LOG.info('This service has been moved from cluster '
+                         '%(cluster_svc)s to %(cluster_cfg)s. Resources '
+                         'will %(opt_no)sbe moved to the new cluster',
                          {'cluster_svc': service_ref.cluster_name,
                           'cluster_cfg': cluster,
                           'opt_no': '' if self.added_to_cluster else 'NO '})
@@ -201,10 +206,6 @@ class Service(service.Service):
             # start while we are still doing the rolling upgrade.
             self.added_to_cluster = not self.is_upgrading_to_n
 
-        self.manager = manager_class(host=self.host,
-                                     cluster=self.cluster,
-                                     service_name=service_name,
-                                     *args, **kwargs)
         self.report_interval = report_interval
         self.periodic_interval = periodic_interval
         self.periodic_fuzzy_delay = periodic_fuzzy_delay
@@ -230,7 +231,7 @@ class Service(service.Service):
 
     def start(self):
         version_string = version.version_string()
-        LOG.info(_LI('Starting %(topic)s node (version %(version_string)s)'),
+        LOG.info('Starting %(topic)s node (version %(version_string)s)',
                  {'topic': self.topic, 'version_string': version_string})
         self.model_disconnected = False
 
@@ -269,8 +270,8 @@ class Service(service.Service):
 
         # TODO(geguileo): In O - Remove the is_svc_upgrading_to_n part
         if self.cluster and not self.is_svc_upgrading_to_n(self.binary):
-            LOG.info(_LI('Starting %(topic)s cluster %(cluster)s (version '
-                         '%(version)s)'),
+            LOG.info('Starting %(topic)s cluster %(cluster)s (version '
+                     '%(version)s)',
                      {'topic': self.topic, 'version': version_string,
                       'cluster': self.cluster})
             target = messaging.Target(
@@ -309,11 +310,11 @@ class Service(service.Service):
             if CONF.service_down_time <= self.report_interval:
                 new_down_time = int(self.report_interval * 2.5)
                 LOG.warning(
-                    _LW("Report interval must be less than service down "
-                        "time. Current config service_down_time: "
-                        "%(service_down_time)s, report_interval for this: "
-                        "service is: %(report_interval)s. Setting global "
-                        "service_down_time to: %(new_down_time)s"),
+                    "Report interval must be less than service down "
+                    "time. Current config service_down_time: "
+                    "%(service_down_time)s, report_interval for this: "
+                    "service is: %(report_interval)s. Setting global "
+                    "service_down_time to: %(new_down_time)s",
                     {'service_down_time': CONF.service_down_time,
                      'report_interval': self.report_interval,
                      'new_down_time': new_down_time})
@@ -356,13 +357,12 @@ class Service(service.Service):
                     pass
 
     def _create_service_ref(self, context, rpc_version=None):
-        zone = CONF.storage_availability_zone
         kwargs = {
             'host': self.host,
             'binary': self.binary,
             'topic': self.topic,
             'report_count': 0,
-            'availability_zone': zone,
+            'availability_zone': self.availability_zone,
             'rpc_current_version': rpc_version or self.manager.RPC_API_VERSION,
             'object_current_version': objects_base.OBJ_VERSIONS.get_current(),
         }
@@ -471,22 +471,21 @@ class Service(service.Service):
     def periodic_tasks(self, raise_on_error=False):
         """Tasks to be run at a periodic interval."""
         ctxt = context.get_admin_context()
-        self.manager.periodic_tasks(ctxt, raise_on_error=raise_on_error)
+        self.manager.run_periodic_tasks(ctxt, raise_on_error=raise_on_error)
 
     def report_state(self):
         """Update the state of this service in the datastore."""
         if not self.manager.is_working():
             # NOTE(dulek): If manager reports a problem we're not sending
             # heartbeats - to indicate that service is actually down.
-            LOG.error(_LE('Manager for service %(binary)s %(host)s is '
-                          'reporting problems, not sending heartbeat. '
-                          'Service will appear "down".'),
+            LOG.error('Manager for service %(binary)s %(host)s is '
+                      'reporting problems, not sending heartbeat. '
+                      'Service will appear "down".',
                       {'binary': self.binary,
                        'host': self.host})
             return
 
         ctxt = context.get_admin_context()
-        zone = CONF.storage_availability_zone
         try:
             try:
                 service_ref = objects.Service.get_by_id(ctxt,
@@ -499,32 +498,32 @@ class Service(service.Service):
                                                         Service.service_id)
 
             service_ref.report_count += 1
-            if zone != service_ref.availability_zone:
-                service_ref.availability_zone = zone
+            if self.availability_zone != service_ref.availability_zone:
+                service_ref.availability_zone = self.availability_zone
 
             service_ref.save()
 
             # TODO(termie): make this pattern be more elegant.
             if getattr(self, 'model_disconnected', False):
                 self.model_disconnected = False
-                LOG.error(_LE('Recovered model server connection!'))
+                LOG.error('Recovered model server connection!')
 
         except db_exc.DBConnectionError:
             if not getattr(self, 'model_disconnected', False):
                 self.model_disconnected = True
-                LOG.exception(_LE('model server went away'))
+                LOG.exception('model server went away')
 
         # NOTE(jsbryant) Other DB errors can happen in HA configurations.
         # such errors shouldn't kill this thread, so we handle them here.
         except db_exc.DBError:
             if not getattr(self, 'model_disconnected', False):
                 self.model_disconnected = True
-                LOG.exception(_LE('DBError encountered: '))
+                LOG.exception('DBError encountered: ')
 
         except Exception:
             if not getattr(self, 'model_disconnected', False):
                 self.model_disconnected = True
-                LOG.exception(_LE('Exception encountered: '))
+                LOG.exception('Exception encountered: ')
 
     def reset(self):
         self.manager.reset()
@@ -628,7 +627,7 @@ class WSGIService(service.ServiceBase):
 
 
 def process_launcher():
-    return service.ProcessLauncher(CONF)
+    return service.ProcessLauncher(CONF, restart_method='mutate')
 
 
 # NOTE(vish): the global launcher is to maintain the existing

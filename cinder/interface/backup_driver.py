@@ -57,12 +57,35 @@ class BackupDriver(base.CinderInterface):
         If the parent backup is of different size, a full backup should be
         performed to ensure all data is included.
 
-        TODO(smcginnis) Document backup variable structure.
-
         :param backup: The backup information.
         :param volume_file: The volume or file to write the backup to.
         :param backup_metadata: Whether to include volume metadata in the
                                 backup.
+
+        The variable structure of backup in the following format::
+
+           {
+              'id': id,
+              'availability_zone': availability_zone,
+              'service': driver_name,
+              'user_id': context.user_id,
+              'project_id': context.project_id,
+              'display_name': name,
+              'display_description': description,
+              'volume_id': volume_id,
+              'status': fields.BackupStatus.CREATING,
+              'container': container,
+              'parent_id': parent_id,
+              'size': size,
+              'host': host,
+              'snapshot_id': snapshot_id,
+              'data_timestamp': data_timestamp,
+           }
+
+        service: backup driver
+        parent_id: parent backup id
+        size: equal to volume size
+        data_timestamp: backup creation time
         """
 
     def restore(self, backup, volume_id, volume_file):
@@ -73,7 +96,7 @@ class BackupDriver(base.CinderInterface):
         :param volume_file: The volume or file to read the data from.
         """
 
-    def delete(self, backup):
+    def delete_backup(self, backup):
         """Delete a backup from the backup store.
 
         :param backup: The backup to be deleted.
@@ -106,5 +129,16 @@ class BackupDriver(base.CinderInterface):
         :param backup: backup object to export
         :param driver_info: dictionary with driver specific backup record
                             information
+        :returns: None
+        """
+
+    def check_for_setup_error(self):
+        """Method for checking if backup backend is successfully installed.
+
+        Depends on storage backend limitations and driver implementation this
+        method could check if all needed config options are configurated well
+        or try to connect to the storage to verify driver can do it without
+        any issues.
+
         :returns: None
         """

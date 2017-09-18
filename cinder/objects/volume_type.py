@@ -21,6 +21,7 @@ from cinder import exception
 from cinder.i18n import _
 from cinder import objects
 from cinder.objects import base
+from cinder.volume import utils
 from cinder.volume import volume_types
 
 
@@ -153,6 +154,16 @@ class VolumeType(base.CinderPersistentObject, base.CinderObject,
             self.projects = [x.project_id for x in volume_type_projects]
 
         self.obj_reset_changes(fields=[attrname])
+
+    @classmethod
+    def get_by_name_or_id(cls, context, identity):
+        orm_obj = volume_types.get_by_name_or_id(context, identity)
+        expected_attrs = cls._get_expected_attrs(context)
+        return cls._from_db_object(context, cls(context),
+                                   orm_obj, expected_attrs=expected_attrs)
+
+    def is_replicated(self):
+        return utils.is_replicated_spec(self.extra_specs)
 
 
 @base.CinderObjectRegistry.register

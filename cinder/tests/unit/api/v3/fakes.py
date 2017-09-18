@@ -13,7 +13,6 @@
 import datetime
 import iso8601
 
-from cinder.message import defined_messages
 from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import fake_volume
 from cinder import utils
@@ -31,15 +30,17 @@ DEFAULT_AZ = "fakeaz"
 def fake_message(id, **kwargs):
     message = {
         'id': id,
-        'event_id': defined_messages.EventIds.UNABLE_TO_ALLOCATE,
+        'action_id': "002",
+        'detail_id': "001",
+        'event_id': "VOLUME_VOLUME_002_001",
         'message_level': "ERROR",
         'request_id': FAKE_UUID,
         'updated_at': datetime.datetime(1900, 1, 1, 1, 1, 1,
-                                        tzinfo=iso8601.iso8601.Utc()),
+                                        tzinfo=iso8601.UTC),
         'created_at': datetime.datetime(1900, 1, 1, 1, 1, 1,
-                                        tzinfo=iso8601.iso8601.Utc()),
+                                        tzinfo=iso8601.UTC),
         'expires_at': datetime.datetime(1900, 1, 1, 1, 1, 1,
-                                        tzinfo=iso8601.iso8601.Utc()),
+                                        tzinfo=iso8601.UTC),
     }
 
     message.update(kwargs)
@@ -65,9 +66,9 @@ def create_volume(id, **kwargs):
         'display_name': DEFAULT_VOL_NAME,
         'display_description': DEFAULT_VOL_DESCRIPTION,
         'updated_at': datetime.datetime(1900, 1, 1, 1, 1, 1,
-                                        tzinfo=iso8601.iso8601.Utc()),
+                                        tzinfo=iso8601.UTC),
         'created_at': datetime.datetime(1900, 1, 1, 1, 1, 1,
-                                        tzinfo=iso8601.iso8601.Utc()),
+                                        tzinfo=iso8601.UTC),
         'snapshot_id': None,
         'source_volid': None,
         'volume_type_id': '3e196c20-3c06-11e2-81c1-0800200c9a66',
@@ -76,7 +77,7 @@ def create_volume(id, **kwargs):
                                   {'key': 'readonly', 'value': 'False'}],
         'bootable': False,
         'launched_at': datetime.datetime(1900, 1, 1, 1, 1, 1,
-                                         tzinfo=iso8601.iso8601.Utc()),
+                                         tzinfo=iso8601.UTC),
         'volume_type': fake_volume.fake_db_volume_type(name=DEFAULT_VOL_TYPE),
         'replication_status': 'disabled',
         'replication_extended_status': None,

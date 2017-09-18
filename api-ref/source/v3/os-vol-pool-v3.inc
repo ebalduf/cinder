@@ -12,11 +12,13 @@ List all back-end storage pools
 
 .. rest_method::  GET /v3/{project_id}/scheduler-stats/get_pools
 
-Lists all back-end storage pools.
+Lists all back-end storage pools. Since v3.31 if non-admin users
+specify invalid filters in the url, API will return bad request.
 
 
 Normal response codes: 200
-Error response codes:
+
+Error response codes: badRequest(400)
 
 Request
 -------
@@ -31,6 +33,7 @@ Response Parameters
 
 .. rest_parameters:: parameters.yaml
 
+   - pools: pools
    - updated: updated
    - QoS_support: QoS_support
    - name: name

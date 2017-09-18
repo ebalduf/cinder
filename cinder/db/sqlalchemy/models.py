@@ -25,7 +25,7 @@ from oslo_db.sqlalchemy import models
 from oslo_utils import timeutils
 from sqlalchemy import and_, func, select
 from sqlalchemy import bindparam
-from sqlalchemy import Column, Integer, String, Text, schema
+from sqlalchemy import Column, Integer, String, Text, schema, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import ForeignKey, DateTime, Boolean, UniqueConstraint
 from sqlalchemy.orm import backref, column_property, relationship, validates
@@ -193,6 +193,8 @@ class Group(BASE, CinderBase):
     group_snapshot_id = Column(String(36))
     source_group_id = Column(String(36))
 
+    replication_status = Column(String(255))
+
 
 class Cgsnapshot(BASE, CinderBase):
     """Represents a cgsnapshot."""
@@ -354,6 +356,7 @@ class VolumeAttachment(BASE, CinderBase):
     detach_time = Column(DateTime)
     attach_status = Column(String(255))
     attach_mode = Column(String(255))
+    connection_info = Column(Text)
 
 
 class VolumeTypes(BASE, CinderBase):
@@ -418,7 +421,7 @@ class VolumeTypeProjects(BASE, CinderBase):
         name="uniq_volume_type_projects0volume_type_id0project_id0deleted"),
     )
     id = Column(Integer, primary_key=True)
-    volume_type_id = Column(Integer, ForeignKey('volume_types.id'),
+    volume_type_id = Column(String, ForeignKey('volume_types.id'),
                             nullable=False)
     project_id = Column(String(255))
     deleted = Column(Integer, default=0)
@@ -440,10 +443,9 @@ class GroupTypeProjects(BASE, CinderBase):
         name="uniq_group_type_projects0group_type_id0project_id0deleted"),
     )
     id = Column(Integer, primary_key=True)
-    group_type_id = Column(Integer, ForeignKey('group_types.id'),
+    group_type_id = Column(String, ForeignKey('group_types.id'),
                            nullable=False)
     project_id = Column(String(255))
-    deleted = Column(Integer, default=0)
 
     group_type = relationship(
         GroupTypes,
@@ -451,7 +453,7 @@ class GroupTypeProjects(BASE, CinderBase):
         foreign_keys=group_type_id,
         primaryjoin='and_('
         'GroupTypeProjects.group_type_id == GroupTypes.id,'
-        'GroupTypeProjects.deleted == 0)')
+        'GroupTypeProjects.deleted == False)')
 
 
 class VolumeTypeExtraSpecs(BASE, CinderBase):
@@ -607,6 +609,8 @@ class QuotaUsage(BASE, CinderBase):
     """Represents the current usage for a given resource."""
 
     __tablename__ = 'quota_usages'
+    __table_args__ = (Index('quota_usage_project_resource_idx', 'project_id',
+                            'resource'), CinderBase.__table_args__)
     id = Column(Integer, primary_key=True)
 
     project_id = Column(String(255), index=True)
@@ -752,6 +756,20 @@ class Backup(BASE, CinderBase):
         return fail_reason and fail_reason[:255] or ''
 
 
+class BackupMetadata(BASE, CinderBase):
+    """Represents a metadata key/value pair for a backup."""
+    __tablename__ = 'backup_metadata'
+    id = Column(Integer, primary_key=True)
+    key = Column(String(255))
+    value = Column(String(255))
+    backup_id = Column(String(36), ForeignKey('backups.id'), nullable=False)
+    backup = relationship(Backup, backref="backup_metadata",
+                          foreign_keys=backup_id,
+                          primaryjoin='and_('
+                          'BackupMetadata.backup_id == Backup.id,'
+                          'BackupMetadata.deleted == False)')
+
+
 class Encryption(BASE, CinderBase):
     """Represents encryption requirement for a volume type.
 
@@ -810,15 +828,19 @@ class Message(BASE, CinderBase):
     """Represents a message"""
     __tablename__ = 'messages'
     id = Column(String(36), primary_key=True, nullable=False)
-    project_id = Column(String(36), nullable=False)
+    project_id = Column(String(255), nullable=False)
     # Info/Error/Warning.
     message_level = Column(String(255), nullable=False)
     request_id = Column(String(255), nullable=True)
     resource_type = Column(String(255))
-    # The uuid of the related resource.
+    # The UUID of the related resource.
     resource_uuid = Column(String(36), nullable=True)
     # Operation specific event ID.
     event_id = Column(String(255), nullable=False)
+    # Message detail ID.
+    detail_id = Column(String(10), nullable=True)
+    # Operation specific action.
+    action_id = Column(String(10), nullable=True)
     # After this time the message may no longer exist
     expires_at = Column(DateTime, nullable=True)
 

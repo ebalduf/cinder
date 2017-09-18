@@ -25,9 +25,10 @@ from oslo_log import versionutils
 import six
 
 from cinder import exception
-from cinder.i18n import _, _LE, _LI
+from cinder.i18n import _
 from cinder import interface
 from cinder import utils
+from cinder.volume import configuration
 import cinder.volume.driver
 from cinder.volume.drivers.hitachi import hbsd_basiclib as basic_lib
 from cinder.volume.drivers.hitachi import hbsd_common as common
@@ -51,7 +52,7 @@ volume_opts = [
 ]
 
 CONF = cfg.CONF
-CONF.register_opts(volume_opts)
+CONF.register_opts(volume_opts, group=configuration.SHARED_CONF_GROUP)
 
 
 @interface.volumedriver
@@ -60,6 +61,8 @@ class HBSDISCSIDriver(cinder.volume.driver.ISCSIDriver):
 
     # ThirdPartySystems wiki page
     CI_WIKI_NAME = ["Hitachi_HBSD_CI", "Hitachi_HBSD2_CI"]
+
+    SUPPORTED = False
 
     def __init__(self, *args, **kwargs):
         os.environ['LANG'] = 'C'
@@ -100,7 +103,7 @@ class HBSDISCSIDriver(cinder.volume.driver.ISCSIDriver):
             for opt in volume_opts:
                 if not opt.secret:
                     value = getattr(self.configuration, opt.name)
-                    LOG.info(_LI('\t%(name)-35s : %(value)s'),
+                    LOG.info('\t%(name)-35s : %(value)s',
                              {'name': opt.name, 'value': value})
 
     def _delete_lun_iscsi(self, hostgroups, ldev):
@@ -185,7 +188,7 @@ class HBSDISCSIDriver(cinder.volume.driver.ISCSIDriver):
                                   {'port': port, 'gid': gid})
                         break
             if gid is None:
-                LOG.error(_LE('Failed to add target(port: %s)'), port)
+                LOG.error('Failed to add target(port: %s)', port)
                 continue
             try:
                 if added_hostgroup:

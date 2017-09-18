@@ -36,8 +36,9 @@ from six.moves import http_client
 from six.moves import urllib
 
 from cinder import exception
-from cinder.i18n import _, _LE
+from cinder.i18n import _
 from cinder import interface
+from cinder.volume import configuration
 from cinder.volume.drivers.san import san
 
 LOG = logging.getLogger(__name__)
@@ -53,7 +54,7 @@ qnap_opts = [
 ]
 
 CONF = cfg.CONF
-CONF.register_opts(qnap_opts)
+CONF.register_opts(qnap_opts, group=configuration.SHARED_CONF_GROUP)
 
 
 @interface.volumedriver
@@ -66,7 +67,14 @@ class QnapISCSIDriver(san.SanISCSIDriver):
 
     # ThirdPartySystems wiki page
     CI_WIKI_NAME = "QNAP_CI"
+
+    # TODO(smcginnis) Either remove this if CI requirement are met, or
+    # remove this driver in the Queens release per normal deprecation
+    SUPPORTED = False
+
     VERSION = '1.0.0'
+
+    TIME_INTERVAL = 3
 
     def __init__(self, *args, **kwargs):
         """Initialize QnapISCSIDriver."""
@@ -99,9 +107,9 @@ class QnapISCSIDriver(san.SanISCSIDriver):
         try:
             self.api_executor = self.creat_api_executor()
         except Exception:
-            LOG.error(_LE('Failed to create HTTP client. '
-                          'Check ip, port, username, password'
-                          ' and make sure the array version is compatible'))
+            LOG.error('Failed to create HTTP client. '
+                      'Check ip, port, username, password'
+                      ' and make sure the array version is compatible')
             msg = _('Failed to create HTTP client.')
             raise exception.VolumeDriverException(message=msg)
 
@@ -234,7 +242,6 @@ class QnapISCSIDriver(san.SanISCSIDriver):
             create_lun_name,
             reserve)
 
-        time_interval = 3
         max_wait_sec = 600
         try_times = 0
         lun_naa = ""
@@ -245,7 +252,7 @@ class QnapISCSIDriver(san.SanISCSIDriver):
                 lun_naa = created_lun.find('LUNNAA').text
 
             try_times = try_times + 3
-            eventlet.sleep(time_interval)
+            eventlet.sleep(self.TIME_INTERVAL)
             if(try_times > max_wait_sec or lun_naa is not None):
                 break
 
@@ -379,7 +386,6 @@ class QnapISCSIDriver(san.SanISCSIDriver):
 
         self.api_executor.clone_snapshot(snapshot_id, cloned_lun_name)
 
-        time_interval = 3
         max_wait_sec = 600
         try_times = 0
         lun_naa = ""
@@ -390,7 +396,7 @@ class QnapISCSIDriver(san.SanISCSIDriver):
                 lun_naa = created_lun.find('LUNNAA').text
 
             try_times = try_times + 3
-            eventlet.sleep(time_interval)
+            eventlet.sleep(self.TIME_INTERVAL)
             if(try_times > max_wait_sec or lun_naa is not None):
                 break
 
@@ -423,7 +429,6 @@ class QnapISCSIDriver(san.SanISCSIDriver):
         LOG.debug('create_snapshot_name: %s', create_snapshot_name)
 
         self.api_executor.create_snapshot_api(lun_index, create_snapshot_name)
-        time_interval = 3
         max_wait_sec = 600
         try_times = 0
         snapshot_id = ""
@@ -434,7 +439,7 @@ class QnapISCSIDriver(san.SanISCSIDriver):
                 snapshot_id = created_snapshot.find('snapshot_id').text
 
             try_times = try_times + 3
-            eventlet.sleep(time_interval)
+            eventlet.sleep(self.TIME_INTERVAL)
             if(try_times > max_wait_sec or created_snapshot is not None):
                 break
 
@@ -480,7 +485,6 @@ class QnapISCSIDriver(san.SanISCSIDriver):
         self.api_executor.clone_snapshot(
             snapshot_id, create_lun_name)
 
-        time_interval = 3
         max_wait_sec = 600
         try_times = 0
         lun_naa = ""
@@ -491,7 +495,7 @@ class QnapISCSIDriver(san.SanISCSIDriver):
                 lun_naa = created_lun.find('LUNNAA').text
 
             try_times = try_times + 3
-            eventlet.sleep(time_interval)
+            eventlet.sleep(self.TIME_INTERVAL)
             if(try_times > max_wait_sec or lun_naa is not None):
                 break
 
@@ -747,7 +751,7 @@ class QnapISCSIDriver(san.SanISCSIDriver):
 
         _metadata = self._get_volume_metadata(new_volume)
 
-        # metadata will not be swap after migration wiht liberty version
+        # metadata will not be swap after migration with liberty version
         # , and the metadata of new volume is diifferent with the metadata
         #  of original volume. Therefore, we need to update the migrated volume
         if not hasattr(new_volume, '_orig_metadata'):
@@ -774,7 +778,7 @@ def _connection_checker(func):
                         self._login()
                         continue
 
-                LOG.error(_LE('Re-throwing Exception %s'), e)
+                LOG.error('Re-throwing Exception %s', e)
                 raise
     return inner_connection_checker
 
@@ -911,7 +915,7 @@ class QnapAPIExecutor(object):
     def _get_res_details(self, url, **kwargs):
         sanitized_params = {}
 
-        for key, value in six.iteritems(kwargs):
+        for key, value in kwargs.items():
             LOG.debug('%(key)s = %(val)s',
                       {'key': key, 'val': value})
             if value is not None:
@@ -1149,7 +1153,7 @@ class QnapAPIExecutor(object):
     @_connection_checker
     def get_lun_info(self, **kwargs):
         """Execute get_lun_info API."""
-        for key, value in six.iteritems(kwargs):
+        for key, value in kwargs.items():
             LOG.debug('%(key)s = %(val)s',
                       {'key': key, 'val': value})
         res_details = self._get_res_details(
@@ -1188,7 +1192,7 @@ class QnapAPIExecutor(object):
     @_connection_checker
     def get_snapshot_info(self, **kwargs):
         """Execute get_snapshot_info API."""
-        for key, value in six.iteritems(kwargs):
+        for key, value in kwargs.items():
             LOG.debug('%(key)s = %(val)s',
                       {'key': key, 'val': value})
         res_details = self._get_res_details(
@@ -1474,7 +1478,7 @@ class QnapAPIExecutorTS(QnapAPIExecutor):
     @_connection_checker
     def get_snapshot_info(self, **kwargs):
         """Execute get_snapshot_info API."""
-        for key, value in six.iteritems(kwargs):
+        for key, value in kwargs.items():
             LOG.debug('%(key)s = %(val)s',
                       {'key': key, 'val': value})
         LOG.debug('in get_ethernet_ip')

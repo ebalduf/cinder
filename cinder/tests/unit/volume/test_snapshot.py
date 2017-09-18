@@ -55,7 +55,7 @@ def create_snapshot(volume_id, size=1, metadata=None, ctxt=None,
     snap.user_id = fake.USER_ID
     snap.project_id = fake.PROJECT_ID
     snap.volume_id = volume_id
-    snap.status = "creating"
+    snap.status = fields.SnapshotStatus.CREATING
     if metadata is not None:
         snap.metadata = metadata
     snap.update(kwargs)
@@ -389,9 +389,8 @@ class SnapshotTestCase(base.BaseVolumeTestCase):
         vol_glance_meta = db.volume_glance_metadata_get(ctxt, volume_id)
         self.assertTrue(vol_glance_meta)
         snap = create_snapshot(volume_id)
-        snap_stat = snap.status
-        self.assertTrue(snap.id)
-        self.assertTrue(snap_stat)
+        self.assertEqual(36, len(snap.id))  # dynamically-generated UUID
+        self.assertEqual('creating', snap.status)
 
         # set to return DB exception
         with mock.patch.object(db, 'volume_glance_metadata_copy_to_snapshot')\

@@ -7,9 +7,9 @@ Contents:
 .. toctree::
     :maxdepth: 2
 
-    v1/index
-    v2/index
     v3/index
+    v2/index
+    v1/index
 
 
 Indices and tables

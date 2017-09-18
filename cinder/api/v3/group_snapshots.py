@@ -13,10 +13,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""The group_snapshots api."""
+"""The group_snapshots API."""
 
 from oslo_log import log as logging
 import six
+from six.moves import http_client
 import webob
 from webob import exc
 
@@ -25,7 +26,7 @@ from cinder.api.openstack import wsgi
 from cinder.api.v3.views import group_snapshots as group_snapshot_views
 from cinder import exception
 from cinder import group as group_api
-from cinder.i18n import _, _LI
+from cinder.i18n import _
 from cinder import rpc
 from cinder.volume import group_types
 
@@ -71,7 +72,7 @@ class GroupSnapshotsController(wsgi.Controller):
         LOG.debug('delete called for member %s', id)
         context = req.environ['cinder.context']
 
-        LOG.info(_LI('Delete group_snapshot with id: %s'), id, context=context)
+        LOG.info('Delete group_snapshot with id: %s', id, context=context)
 
         try:
             group_snapshot = self.group_snapshot_api.get_group_snapshot(
@@ -90,7 +91,7 @@ class GroupSnapshotsController(wsgi.Controller):
             LOG.exception(msg)
             raise exc.HTTPBadRequest(explanation=msg)
 
-        return webob.Response(status_int=202)
+        return webob.Response(status_int=http_client.ACCEPTED)
 
     @wsgi.Controller.api_version(GROUP_SNAPSHOT_API_VERSION)
     def index(self, req):
@@ -104,16 +105,30 @@ class GroupSnapshotsController(wsgi.Controller):
 
     def _get_group_snapshots(self, req, is_detail):
         """Returns a list of group_snapshots through view builder."""
-        context = req.environ['cinder.context']
-        group_snapshots = self.group_snapshot_api.get_all_group_snapshots(
-            context)
-        limited_list = common.limited(group_snapshots, req)
 
+        context = req.environ['cinder.context']
+        req_version = req.api_version_request
+        filters = marker = limit = offset = sort_keys = sort_dirs = None
+        if req_version.matches("3.29"):
+            filters = req.params.copy()
+            marker, limit, offset = common.get_pagination_params(filters)
+            sort_keys, sort_dirs = common.get_sort_params(filters)
+
+        if req_version.matches(common.FILTERING_VERSION):
+            support_like = (True if req_version.matches(
+                common.LIKE_FILTER_VERSION) else False)
+            common.reject_invalid_filters(context, filters, 'group_snapshot',
+                                          support_like)
+
+        group_snapshots = self.group_snapshot_api.get_all_group_snapshots(
+            context, filters=filters, marker=marker, limit=limit,
+            offset=offset, sort_keys=sort_keys, sort_dirs=sort_dirs)
         if is_detail:
-            group_snapshots = self._view_builder.detail_list(req, limited_list)
+            group_snapshots = self._view_builder.detail_list(req,
+                                                             group_snapshots)
         else:
             group_snapshots = self._view_builder.summary_list(req,
-                                                              limited_list)
+                                                              group_snapshots)
 
         new_group_snapshots = []
         for grp_snap in group_snapshots['group_snapshots']:
@@ -127,10 +142,11 @@ class GroupSnapshotsController(wsgi.Controller):
                 # Skip migrated group snapshot
                 pass
 
-        return {'group_snapshots': new_group_snapshots}
+        group_snapshots['group_snapshots'] = new_group_snapshots
+        return group_snapshots
 
     @wsgi.Controller.api_version(GROUP_SNAPSHOT_API_VERSION)
-    @wsgi.response(202)
+    @wsgi.response(http_client.ACCEPTED)
     def create(self, req, body):
         """Create a new group_snapshot."""
         LOG.debug('Creating new group_snapshot %s', body)
@@ -151,7 +167,7 @@ class GroupSnapshotsController(wsgi.Controller):
         name = group_snapshot.get('name', None)
         description = group_snapshot.get('description', None)
 
-        LOG.info(_LI("Creating group_snapshot %(name)s."),
+        LOG.info("Creating group_snapshot %(name)s.",
                  {'name': name},
                  context=context)
 
@@ -208,7 +224,7 @@ class GroupSnapshotsController(wsgi.Controller):
                            {'error_message': error.msg,
                             'id': id})
             raise exc.HTTPBadRequest(explanation=error.msg)
-        return webob.Response(status_int=202)
+        return webob.Response(status_int=http_client.ACCEPTED)
 
 
 def create_resource():

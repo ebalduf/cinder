@@ -36,7 +36,7 @@ import six
 
 from cinder.backup import driver
 from cinder import exception
-from cinder.i18n import _, _LE, _LI, _LW
+from cinder.i18n import _
 from cinder import objects
 from cinder.objects import fields
 from cinder.volume import utils as volume_utils
@@ -46,6 +46,9 @@ LOG = logging.getLogger(__name__)
 chunkedbackup_service_opts = [
     cfg.StrOpt('backup_compression_algorithm',
                default='zlib',
+               choices=['none', 'off', 'no',
+                        'zlib', 'gzip',
+                        'bz2', 'bzip2'],
                help='Compression algorithm (None to disable)'),
 ]
 
@@ -87,8 +90,8 @@ class ChunkedBackupDriver(driver.BackupDriver):
 
     def __init__(self, context, chunk_size_bytes, sha_block_size_bytes,
                  backup_default_container, enable_progress_timer,
-                 db_driver=None):
-        super(ChunkedBackupDriver, self).__init__(context, db_driver)
+                 db=None):
+        super(ChunkedBackupDriver, self).__init__(context, db)
         self.chunk_size_bytes = chunk_size_bytes
         self.sha_block_size_bytes = sha_block_size_bytes
         self.backup_default_container = backup_default_container
@@ -269,7 +272,7 @@ class ChunkedBackupDriver(driver.BackupDriver):
         if six.PY3:
             sha256file_json = sha256file_json.decode('utf-8')
         sha256file = json.loads(sha256file_json)
-        LOG.debug('_read_sha256file finished (%s).', sha256file)
+        LOG.debug('_read_sha256file finished.')
         return sha256file
 
     def _prepare_backup(self, backup):
@@ -487,7 +490,7 @@ class ChunkedBackupDriver(driver.BackupDriver):
                 is_backup_canceled = True
                 # To avoid the chunk left when deletion complete, need to
                 # clean up the object of chunk again.
-                self.delete(backup)
+                self.delete_backup(backup)
                 LOG.debug('Cancel the backup process of %s.', backup.id)
                 break
             data_offset = volume_file.tell()
@@ -572,11 +575,10 @@ class ChunkedBackupDriver(driver.BackupDriver):
             try:
                 self._backup_metadata(backup, object_meta)
             # Whatever goes wrong, we want to log, cleanup, and re-raise.
-            except Exception as err:
+            except Exception:
                 with excutils.save_and_reraise_exception():
-                    LOG.exception(_LE("Backup volume metadata failed: %s."),
-                                  err)
-                    self.delete(backup)
+                    LOG.exception("Backup volume metadata failed.")
+                    self.delete_backup(backup)
 
         self._finalize_backup(backup, container, object_meta, object_sha256)
 
@@ -635,9 +637,8 @@ class ChunkedBackupDriver(driver.BackupDriver):
             try:
                 fileno = volume_file.fileno()
             except IOError:
-                LOG.info(_LI("volume_file does not support "
-                             "fileno() so skipping "
-                             "fsync()"))
+                LOG.info("volume_file does not support fileno() so skipping "
+                         "fsync()")
             else:
                 os.fsync(fileno)
 
@@ -707,7 +708,7 @@ class ChunkedBackupDriver(driver.BackupDriver):
         LOG.debug('restore %(backup_id)s to %(volume_id)s finished.',
                   {'backup_id': backup_id, 'volume_id': volume_id})
 
-    def delete(self, backup):
+    def delete_backup(self, backup):
         """Delete the given backup."""
         container = backup['container']
         object_prefix = backup['service_metadata']
@@ -722,8 +723,8 @@ class ChunkedBackupDriver(driver.BackupDriver):
             try:
                 object_names = self._generate_object_names(backup)
             except Exception:
-                LOG.warning(_LW('Error while listing objects, continuing'
-                                ' with delete.'))
+                LOG.warning('Error while listing objects, continuing'
+                            ' with delete.')
 
             for object_name in object_names:
                 self.delete_object(container, object_name)

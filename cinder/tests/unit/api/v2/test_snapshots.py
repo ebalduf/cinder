@@ -16,6 +16,7 @@
 import ddt
 import mock
 from oslo_config import cfg
+from six.moves import http_client
 from six.moves.urllib import parse as urllib
 import webob
 
@@ -191,12 +192,12 @@ class SnapshotApiTest(test.TestCase):
     @mock.patch.object(volume.api.API, "update_snapshot",
                        side_effect=v2_fakes.fake_snapshot_update)
     @mock.patch('cinder.db.snapshot_metadata_get', return_value=dict())
-    @mock.patch('cinder.objects.Volume.get_by_id')
+    @mock.patch('cinder.db.volume_get')
     @mock.patch('cinder.objects.Snapshot.get_by_id')
     @mock.patch(
         'cinder.api.openstack.wsgi.Controller.validate_name_and_description')
     def test_snapshot_update(
-            self, mock_validate, snapshot_get_by_id, volume_get_by_id,
+            self, mock_validate, snapshot_get_by_id, volume_get,
             snapshot_metadata_get, update_snapshot):
         snapshot = {
             'id': UUID,
@@ -211,7 +212,7 @@ class SnapshotApiTest(test.TestCase):
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctx, **snapshot)
         fake_volume_obj = fake_volume.fake_volume_obj(ctx)
         snapshot_get_by_id.return_value = snapshot_obj
-        volume_get_by_id.return_value = fake_volume_obj
+        volume_get.return_value = fake_volume_obj
 
         updates = {
             "name": "Updated Test Name",
@@ -283,7 +284,7 @@ class SnapshotApiTest(test.TestCase):
         snapshot_id = UUID
         req = fakes.HTTPRequest.blank('/v2/snapshots/%s' % snapshot_id)
         resp = self.controller.delete(req, snapshot_id)
-        self.assertEqual(202, resp.status_int)
+        self.assertEqual(http_client.ACCEPTED, resp.status_int)
 
     def test_snapshot_delete_invalid_id(self):
         self.mock_object(volume.api.API, "delete_snapshot",

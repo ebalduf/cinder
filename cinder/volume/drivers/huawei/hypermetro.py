@@ -17,7 +17,8 @@
 from oslo_log import log as logging
 
 from cinder import exception
-from cinder.i18n import _, _LI, _LW
+from cinder.i18n import _
+from cinder.objects import fields
 from cinder.volume.drivers.huawei import constants
 from cinder.volume.drivers.huawei import huawei_utils
 
@@ -58,8 +59,8 @@ class HuaweiHyperMetro(object):
                                                           local_lun_id,
                                                           remote_lun_id)
 
-                LOG.info(_LI("Hypermetro id: %(metro_id)s. "
-                             "Remote lun id: %(remote_lun_id)s."),
+                LOG.info("Hypermetro id: %(metro_id)s. "
+                         "Remote lun id: %(remote_lun_id)s.",
                          {'metro_id': hypermetro['ID'],
                           'remote_lun_id': remote_lun_id})
 
@@ -74,7 +75,7 @@ class HuaweiHyperMetro(object):
 
     def delete_hypermetro(self, volume):
         """Delete hypermetro."""
-        metadata = huawei_utils.get_volume_metadata(volume)
+        metadata = huawei_utils.get_lun_metadata(volume)
         metro_id = metadata['hypermetro_id']
         remote_lun_id = metadata['remote_lun_id']
 
@@ -103,32 +104,24 @@ class HuaweiHyperMetro(object):
     def connect_volume_fc(self, volume, connector):
         """Create map between a volume and a host for FC."""
         wwns = connector['wwpns']
-        volume_name = huawei_utils.encode_name(volume.id)
-
-        LOG.info(_LI(
-            'initialize_connection_fc, initiator: %(wwpns)s,'
-            ' volume name: %(volume)s.'),
+        LOG.info(
+            'initialize_connection_fc, initiator: %(wwpns)s, '
+            'volume id: %(id)s.',
             {'wwpns': wwns,
-             'volume': volume_name})
+             'id': volume.id})
 
-        metadata = huawei_utils.get_volume_metadata(volume)
-        lun_id = metadata['remote_lun_id']
-
+        metadata = huawei_utils.get_lun_metadata(volume)
+        lun_id = metadata.get('remote_lun_id')
         if lun_id is None:
-            lun_id = self.rmt_client.get_lun_id_by_name(volume_name)
-        if lun_id is None:
-            msg = _("Can't get volume id. Volume name: %s.") % volume_name
+            msg = _("Can't get volume id. Volume name: %s.") % volume.id
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
         original_host_name = connector['host']
-        host_name = huawei_utils.encode_host_name(original_host_name)
-        host_id = self.client.add_host_with_check(host_name,
-                                                  original_host_name)
+        host_id = self.client.add_host_with_check(original_host_name)
 
         # Create hostgroup if not exist.
-        host_id = self.rmt_client.add_host_with_check(
-            host_name, original_host_name)
+        host_id = self.rmt_client.add_host_with_check(original_host_name)
 
         online_wwns_in_host = (
             self.rmt_client.get_host_online_fc_initiators(host_id))
@@ -156,9 +149,8 @@ class HuaweiHyperMetro(object):
 
         # Add host into hostgroup.
         hostgroup_id = self.rmt_client.add_host_to_hostgroup(host_id)
-        map_info = self.rmt_client.do_mapping(lun_id,
-                                              hostgroup_id,
-                                              host_id)
+        map_info = self.rmt_client.do_mapping(lun_id, hostgroup_id, host_id,
+                                              hypermetro_lun=True)
         if not map_info:
             msg = _('Map info is None due to array version '
                     'not supporting hypermetro.')
@@ -177,30 +169,28 @@ class HuaweiHyperMetro(object):
                             'map_info': map_info},
                    }
 
-        LOG.info(_LI('Remote return FC info is: %s.'), fc_info)
+        LOG.info('Remote return FC info is: %s.', fc_info)
 
         return fc_info
 
     def disconnect_volume_fc(self, volume, connector):
         """Delete map between a volume and a host for FC."""
         wwns = connector['wwpns']
-        volume_name = huawei_utils.encode_name(volume.id)
-        metadata = huawei_utils.get_volume_metadata(volume)
-        lun_id = metadata['remote_lun_id']
+        metadata = huawei_utils.get_lun_metadata(volume)
+        lun_id = metadata.get('remote_lun_id')
         host_name = connector['host']
         left_lunnum = -1
         lungroup_id = None
         view_id = None
 
-        LOG.info(_LI('terminate_connection_fc: volume name: %(volume)s, '
-                     'wwpns: %(wwns)s, '
-                     'lun_id: %(lunid)s.'),
-                 {'volume': volume_name,
+        LOG.info('terminate_connection_fc: volume: %(id)s, '
+                 'wwpns: %(wwns)s, '
+                 'lun_id: %(lunid)s.',
+                 {'id': volume.id,
                   'wwns': wwns,
                   'lunid': lun_id},)
 
-        host_name = huawei_utils.encode_host_name(host_name)
-        hostid = self.rmt_client.get_host_id_by_name(host_name)
+        hostid = huawei_utils.get_host_id(self.rmt_client, host_name)
         if hostid:
             mapping_view_name = constants.MAPPING_VIEW_PREFIX + hostid
             view_id = self.rmt_client.find_mapping_view(
@@ -217,16 +207,16 @@ class HuaweiHyperMetro(object):
                     self.rmt_client.remove_lun_from_lungroup(
                         lungroup_id, lun_id)
                 else:
-                    LOG.warning(_LW("Lun is not in lungroup. "
-                                    "Lun id: %(lun_id)s, "
-                                    "lungroup id: %(lungroup_id)s"),
+                    LOG.warning("Lun is not in lungroup. "
+                                "Lun id: %(lun_id)s, "
+                                "lungroup id: %(lungroup_id)s",
                                 {"lun_id": lun_id,
                                  "lungroup_id": lungroup_id})
 
         (tgt_port_wwns, init_targ_map) = (
             self.rmt_client.get_init_targ_map(wwns))
 
-        hostid = self.rmt_client.get_host_id_by_name(host_name)
+        hostid = huawei_utils.get_host_id(self.rmt_client, host_name)
         if hostid:
             mapping_view_name = constants.MAPPING_VIEW_PREFIX + hostid
             view_id = self.rmt_client.find_mapping_view(
@@ -269,7 +259,7 @@ class HuaweiHyperMetro(object):
         pass
 
     def create_consistencygroup(self, group):
-        LOG.info(_LI("Create Consistency Group: %(group)s."),
+        LOG.info("Create Consistency Group: %(group)s.",
                  {'group': group.id})
         group_name = huawei_utils.encode_name(group.id)
         domain_name = self.configuration.metro_domain_name
@@ -282,11 +272,11 @@ class HuaweiHyperMetro(object):
         self.client.create_metrogroup(group_name, group.id, domain_id)
 
     def delete_consistencygroup(self, context, group, volumes):
-        LOG.info(_LI("Delete Consistency Group: %(group)s."),
+        LOG.info("Delete Consistency Group: %(group)s.",
                  {'group': group.id})
         model_update = {}
         volumes_model_update = []
-        model_update['status'] = group.status
+        model_update['status'] = fields.GroupStatus.DELETED
         metrogroup_id = self.check_consistencygroup_need_to_stop(group)
         if metrogroup_id:
             self.client.delete_metrogroup(metrogroup_id)
@@ -301,11 +291,9 @@ class HuaweiHyperMetro(object):
 
     def update_consistencygroup(self, context, group,
                                 add_volumes, remove_volumes):
-        LOG.info(_LI("Update Consistency Group: %(group)s. "
-                     "This adds or removes volumes from a CG."),
+        LOG.info("Update Consistency Group: %(group)s. "
+                 "This adds or removes volumes from a CG.",
                  {'group': group.id})
-        model_update = {}
-        model_update['status'] = group.status
         metrogroup_id = self.check_consistencygroup_need_to_stop(group)
         if metrogroup_id:
             # Deal with add volumes to CG
@@ -333,7 +321,7 @@ class HuaweiHyperMetro(object):
             raise exception.VolumeBackendAPIException(data=msg)
 
     def check_metro_need_to_stop(self, volume):
-        metadata = huawei_utils.get_volume_metadata(volume)
+        metadata = huawei_utils.get_lun_metadata(volume)
         metro_id = metadata['hypermetro_id']
         metro_existed = self.client.check_hypermetro_exist(metro_id)
 
@@ -349,10 +337,18 @@ class HuaweiHyperMetro(object):
 
         return metro_id
 
-    def check_consistencygroup_need_to_stop(self, group):
-        group_name = huawei_utils.encode_name(group.id)
+    def _get_metro_group_id(self, id):
+        group_name = huawei_utils.encode_name(id)
         metrogroup_id = self.client.get_metrogroup_by_name(group_name)
 
+        if not metrogroup_id:
+            group_name = huawei_utils.old_encode_name(id)
+            metrogroup_id = self.client.get_metrogroup_by_name(group_name)
+
+        return metrogroup_id
+
+    def check_consistencygroup_need_to_stop(self, group):
+        metrogroup_id = self._get_metro_group_id(group.id)
         if metrogroup_id:
             metrogroup_info = self.client.get_metrogroup_by_id(metrogroup_id)
             health_status = metrogroup_info['HEALTHSTATUS']

@@ -29,43 +29,41 @@ DEFAULT_ISCSI_PORT = "3260"
 LOG = logging.getLogger(__name__)
 
 
+# As of Pike, the DotHill driver is no longer considered supported,
+# but the code remains as it is still subclassed by other drivers.
+# The __init__() function prevents any direct instantiation.
 @interface.volumedriver
 class DotHillISCSIDriver(cinder.volume.driver.ISCSIDriver):
     """OpenStack iSCSI cinder drivers for DotHill Arrays.
 
-    Version history:
-        0.1    - Base structure for DotHill iSCSI drivers based on HPMSA FC
-                 drivers:
-                     "https://github.com/openstack/cinder/tree/stable/juno/
-                      cinder/volume/drivers/san/hp"
-        1.0    - Version developed for DotHill arrays with the following
-                 modifications:
-                     - added iSCSI support
-                     - added CHAP support in iSCSI
-                     - added support for v3 API(virtual pool feature)
-                     - added support for retype volume
-                     - added support for manage/unmanage volume
-                     - added https support
-        1.6    - Add management path redundancy and reduce load placed
-                 on management controller.
+    .. code:: text
+
+      Version history:
+          0.1    - Base structure for DotHill iSCSI drivers based on HPMSA FC
+                   drivers:
+                       "https://github.com/openstack/cinder/tree/stable/juno/
+                        cinder/volume/drivers/san/hp"
+          1.0    - Version developed for DotHill arrays with the following
+                   modifications:
+                       - added iSCSI support
+                       - added CHAP support in iSCSI
+                       - added support for v3 API(virtual pool feature)
+                       - added support for retype volume
+                       - added support for manage/unmanage volume
+                       - added https support
+          1.6    - Add management path redundancy and reduce load placed
+                   on management controller.
+          1.7    - Modified so it can't be invoked except as a superclass
+
     """
 
-    VERSION = "1.6"
-
-    # ThirdPartySystems CI wiki
-    CI_WIKI_NAME = "Vedams_DotHillDriver_CI"
-
-    # TODO(smcginnis) Either remove this if CI requirements are met, or
-    # remove this driver in the Pike release per normal deprecation
-    SUPPORTED = False
-
     def __init__(self, *args, **kwargs):
+        # Make sure we're not invoked directly
+        if type(self) == DotHillISCSIDriver:
+            raise exception.DotHillDriverNotSupported
         super(DotHillISCSIDriver, self).__init__(*args, **kwargs)
         self.common = None
-        self.configuration.append_config_values(dothillcommon.common_opts)
-        self.configuration.append_config_values(dothillcommon.iscsi_opts)
         self.configuration.append_config_values(san.san_opts)
-        self.iscsi_ips = self.configuration.dothill_iscsi_ips
 
     def _init_common(self):
         return dothillcommon.DotHillCommon(self.configuration)
@@ -153,7 +151,8 @@ class DotHillISCSIDriver(cinder.volume.driver.ISCSIDriver):
             self.common.client_logout()
 
     def terminate_connection(self, volume, connector, **kwargs):
-        self.common.unmap_volume(volume, connector, 'initiator')
+        if type(connector) == dict and 'initiator' in connector:
+            self.common.unmap_volume(volume, connector, 'initiator')
 
     def get_volume_stats(self, refresh=False):
         stats = self.common.get_volume_stats(refresh)

@@ -12,6 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
 import copy
 import errno
 import os
@@ -56,10 +57,6 @@ class VZStorageTestCase(test.TestCase):
     def setUp(self):
         super(VZStorageTestCase, self).setUp()
 
-        self._remotefsclient = mock.patch.object(remotefs,
-                                                 'RemoteFsClient').start()
-        get_mount_point = mock.Mock(return_value=self._FAKE_MNT_POINT)
-        self._remotefsclient.get_mount_point = get_mount_point
         cfg = copy.copy(self._FAKE_VZ_CONFIG)
         self._vz_driver = vzstorage.VZStorageDriver(configuration=cfg)
         self._vz_driver._local_volume_dir = mock.Mock(
@@ -168,31 +165,45 @@ class VZStorageTestCase(test.TestCase):
         self.assertRaises(exception.VzStorageException,
                           self._vz_driver._ensure_share_mounted, ':')
 
-    def test_ensure_share_mounted(self):
+    @mock.patch.object(remotefs.RemoteFsClient, 'mount')
+    def test_ensure_share_mounted(self, mock_mount):
         drv = self._vz_driver
-        share = self._FAKE_SHARE
-        drv.shares = {'1': '["1", "2", "3"]', share: '["some", "options"]'}
+        share = 'test'
+        expected_calls = [
+            mock.call(share, ['-u', 'cinder', '-g', 'root', '-l',
+                              '/var/log/vstorage/%s/cinder.log.gz' % share]),
+            mock.call(share, ['-l', '/var/log/dummy.log'])
+        ]
+
+        share_flags = '["-u", "cinder", "-g", "root"]'
+        drv.shares[share] = share_flags
         drv._ensure_share_mounted(share)
+
+        share_flags = '["-l", "/var/log/dummy.log"]'
+        drv.shares[share] = share_flags
+        drv._ensure_share_mounted(share)
+
+        mock_mount.assert_has_calls(expected_calls)
 
     def test_find_share(self):
         drv = self._vz_driver
         drv._mounted_shares = [self._FAKE_SHARE]
         with mock.patch.object(drv, '_is_share_eligible', return_value=True):
-            ret = drv._find_share(1)
+            ret = drv._find_share(self.vol)
             self.assertEqual(self._FAKE_SHARE, ret)
 
     def test_find_share_no_shares_mounted(self):
         drv = self._vz_driver
         with mock.patch.object(drv, '_is_share_eligible', return_value=True):
             self.assertRaises(exception.VzStorageNoSharesMounted,
-                              drv._find_share, 1)
+                              drv._find_share, self.vol)
 
     def test_find_share_no_shares_suitable(self):
         drv = self._vz_driver
         drv._mounted_shares = [self._FAKE_SHARE]
         with mock.patch.object(drv, '_is_share_eligible', return_value=False):
             self.assertRaises(exception.VzStorageNoSuitableShareFound,
-                              drv._find_share, 1)
+                              drv._find_share, self.vol)
 
     def test_is_share_eligible_false(self):
         drv = self._vz_driver
@@ -352,3 +363,122 @@ class VZStorageTestCase(test.TestCase):
         )
         self._vz_driver.delete_snapshot(self.snap)
         self.assertFalse(mock_delete_snapshot.called)
+
+    def test_extend_volume_ploop(self):
+        drv = self._vz_driver
+        drv.local_path = mock.Mock(
+            return_value=self._FAKE_VOLUME_PATH)
+        drv.get_volume_format = mock.Mock(
+            return_value=vzstorage.DISK_FORMAT_PLOOP)
+        drv._is_share_eligible = mock.Mock(
+            return_value=True)
+        drv.extend_volume(self.vol, 100)
+        drv._execute.assert_called_once_with(
+            'ploop', 'resize', '-s', '100G',
+            '%s/DiskDescriptor.xml' % self._FAKE_VOLUME_PATH,
+            run_as_root=True)
+
+    @mock.patch.object(os.path, 'exists', return_value=False)
+    def test_do_create_volume_with_volume_type(self, mock_exists):
+        drv = self._vz_driver
+        drv.local_path = mock.Mock(
+            return_value=self._FAKE_VOLUME_PATH)
+        drv._write_info_file = mock.Mock()
+        drv._qemu_img_info = mock.Mock()
+        drv._create_qcow2_file = mock.Mock()
+        drv._create_ploop = mock.Mock()
+
+        volume_type = fake_volume.fake_volume_type_obj(self.context)
+        volume_type.extra_specs = {
+            'vz:volume_format': 'qcow2'
+        }
+        volume1 = fake_volume.fake_volume_obj(self.context)
+        volume1.size = 1024
+        volume1.volume_type = volume_type
+        volume2 = copy.deepcopy(volume1)
+        volume2.metadata = {
+            'volume_format': 'ploop'
+        }
+
+        drv._do_create_volume(volume1)
+        drv._create_qcow2_file.assert_called_once_with(
+            self._FAKE_VOLUME_PATH, 1024)
+
+        drv._do_create_volume(volume2)
+        drv._create_ploop.assert_called_once_with(
+            self._FAKE_VOLUME_PATH, 1024)
+
+    @mock.patch('cinder.volume.drivers.remotefs.RemoteFSSnapDriver.'
+                '_create_cloned_volume')
+    @mock.patch.object(vzstorage.VZStorageDriver, 'get_volume_format',
+                       return_value='qcow2')
+    def test_create_cloned_volume_qcow2(self,
+                                        mock_get_volume_format,
+                                        mock_remotefs_create_cloned_volume,
+                                        ):
+        drv = self._vz_driver
+        volume = fake_volume.fake_volume_obj(self.context)
+        src_vref_id = '375e32b2-804a-49f2-b282-85d1d5a5b9e1'
+        src_vref = fake_volume.fake_volume_obj(
+            self.context,
+            id=src_vref_id,
+            name='volume-%s' % src_vref_id,
+            provider_location=self._FAKE_SHARE)
+
+        mock_remotefs_create_cloned_volume.return_value = {
+            'provider_location': self._FAKE_SHARE}
+        ret = drv.create_cloned_volume(volume, src_vref)
+        mock_remotefs_create_cloned_volume.assert_called_once_with(
+            volume, src_vref)
+        self.assertEqual(ret, {'provider_location': self._FAKE_SHARE})
+
+    @mock.patch.object(vzstorage.VZStorageDriver, '_local_path_volume_info')
+    @mock.patch.object(vzstorage.VZStorageDriver, '_create_snapshot_ploop')
+    @mock.patch.object(vzstorage.VZStorageDriver, 'delete_snapshot')
+    @mock.patch.object(vzstorage.VZStorageDriver, '_write_info_file')
+    @mock.patch.object(vzstorage.VZStorageDriver, '_copy_volume_from_snapshot')
+    @mock.patch.object(vzstorage.VZStorageDriver, 'get_volume_format',
+                       return_value='ploop')
+    def test_create_cloned_volume_ploop(self,
+                                        mock_get_volume_format,
+                                        mock_copy_volume_from_snapshot,
+                                        mock_write_info_file,
+                                        mock_delete_snapshot,
+                                        mock_create_snapshot_ploop,
+                                        mock_local_path_volume_info,
+                                        ):
+        drv = self._vz_driver
+        volume = fake_volume.fake_volume_obj(self.context)
+        src_vref_id = '375e32b2-804a-49f2-b282-85d1d5a5b9e1'
+        src_vref = fake_volume.fake_volume_obj(
+            self.context,
+            id=src_vref_id,
+            name='volume-%s' % src_vref_id,
+            provider_location=self._FAKE_SHARE)
+
+        snap_attrs = ['volume_name', 'size', 'volume_size', 'name',
+                      'volume_id', 'id', 'volume']
+        Snapshot = collections.namedtuple('Snapshot', snap_attrs)
+
+        snap_ref = Snapshot(volume_name=volume.name,
+                            name='clone-snap-%s' % src_vref.id,
+                            size=src_vref.size,
+                            volume_size=src_vref.size,
+                            volume_id=src_vref.id,
+                            id=src_vref.id,
+                            volume=src_vref)
+
+        def _check_provider_location(volume):
+            self.assertEqual(volume.provider_location, self._FAKE_SHARE)
+            return mock.sentinel.fake_info_path
+        mock_local_path_volume_info.side_effect = _check_provider_location
+
+        ret = drv.create_cloned_volume(volume, src_vref)
+        self.assertEqual(ret, {'provider_location': self._FAKE_SHARE})
+
+        mock_write_info_file.assert_called_once_with(
+            mock.sentinel.fake_info_path, {'active': 'volume-%s' % volume.id})
+        mock_create_snapshot_ploop.assert_called_once_with(snap_ref)
+        mock_copy_volume_from_snapshot.assert_called_once_with(
+            snap_ref, volume, volume.size)
+        mock_delete_snapshot.assert_called_once_with(snap_ref)

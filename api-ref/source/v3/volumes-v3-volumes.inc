@@ -23,11 +23,19 @@ status values are:
 +------------------+--------------------------------------------------------+
 | available        | The volume is ready to attach to an instance.          |
 +------------------+--------------------------------------------------------+
+| reserved         | The volume is reserved for attaching or shelved.       |
++------------------+--------------------------------------------------------+
 | attaching        | The volume is attaching to an instance.                |
++------------------+--------------------------------------------------------+
+| detaching        | The volume is detaching from an instance.              |
 +------------------+--------------------------------------------------------+
 | in-use           | The volume is attached to an instance.                 |
 +------------------+--------------------------------------------------------+
+| maintenance      | The volume is locked and being migrated.               |
++------------------+--------------------------------------------------------+
 | deleting         | The volume is being deleted.                           |
++------------------+--------------------------------------------------------+
+| awaiting-transfer| The volume is awaiting for transfer.                   |
 +------------------+--------------------------------------------------------+
 | error            | A volume creation error occurred.                      |
 +------------------+--------------------------------------------------------+
@@ -37,22 +45,35 @@ status values are:
 +------------------+--------------------------------------------------------+
 | restoring-backup | A backup is being restored to the volume.              |
 +------------------+--------------------------------------------------------+
+| error_backing-up | A backup error occurred.                               |
++------------------+--------------------------------------------------------+
 | error_restoring  | A backup restoration error occurred.                   |
 +------------------+--------------------------------------------------------+
 | error_extending  | An error occurred while attempting to extend a volume. |
 +------------------+--------------------------------------------------------+
+| downloading      | The volume is downloading an image.                    |
++------------------+--------------------------------------------------------+
+| uploading        | The volume is being uploaded to an image.              |
++------------------+--------------------------------------------------------+
+| retyping         | The volume is changing type to another volume type.    |
++------------------+--------------------------------------------------------+
+| extending        | The volume is being extended.                          |
++------------------+--------------------------------------------------------+
 
 
-List accessbile volumes with details
+List accessible volumes with details
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. rest_method::  GET /v3/{project_id}/volumes/detail
 
-Lists all Block Storage volumes, with details, that the project can access.
+Lists all Block Storage volumes, with details, that the project can access,
+since v3.31 if non-admin users specify invalid filters in the url, API will
+return bad request.
 
 
 Normal response codes: 200
-Error response codes:
+
+Error response codes: badRequest(400)
 
 
 Request
@@ -63,6 +84,7 @@ Request
    - project_id: project_id_path
    - sort: sort
    - limit: limit
+   - offset: offset
    - marker: marker
 
 
@@ -73,7 +95,7 @@ Response Parameters
 
    - migration_status: migration_status
    - attachments: attachments
-   - links: links
+   - links: links_3
    - availability_zone: availability_zone
    - os-vol-host-attr:host: os-vol-host-attr:host
    - encrypted: encrypted
@@ -81,7 +103,7 @@ Response Parameters
    - os-volume-replication:extended_status: os-volume-replication:extended_status
    - replication_status: replication_status
    - snapshot_id: snapshot_id
-   - id: id
+   - id: id_5
    - size: size
    - user_id: user_id
    - os-vol-tenant-attr:tenant_id: os-vol-tenant-attr:tenant_id
@@ -93,7 +115,7 @@ Response Parameters
    - source_volid: source_volid
    - consistencygroup_id: consistencygroup_id
    - os-vol-mig-status-attr:name_id: os-vol-mig-status-attr:name_id
-   - name: name
+   - name: name_13
    - bootable: bootable_response
    - created_at: created_at
    - os-volume-replication:driver_data: os-volume-replication:driver_data
@@ -147,7 +169,7 @@ Troubleshooting
 - The storage node needs enough free storage space to match the size
   of the volume creation request.
 
-Error response codes:202,
+Normal response codes: 202
 
 
 Request
@@ -155,21 +177,20 @@ Request
 
 .. rest_parameters:: parameters.yaml
 
+   - project_id: project_id_path
+   - volume: volume
    - size: size
-   - description: description
-   - imageRef: imageRef
-   - multiattach: multiattach
    - availability_zone: availability_zone
    - source_volid: source_volid
-   - name: name
-   - volume: volume
-   - consistencygroup_id: consistencygroup_id
-   - volume_type: volume_type
+   - description: description
+   - multiattach: multiattach
    - snapshot_id: snapshot_id
-   - OS-SCH-HNT:scheduler_hints: OS-SCH-HNT:scheduler_hints
-   - source_replica: source_replica
+   - name: name_13
+   - imageRef: imageRef
+   - volume_type: volume_type
    - metadata: metadata
-   - project_id: project_id_path
+   - consistencygroup_id: consistencygroup_id
+   - OS-SCH-HNT:scheduler_hints: OS-SCH-HNT:scheduler_hints
 
 Request Example
 ---------------
@@ -186,13 +207,13 @@ Response Parameters
 
    - migration_status: migration_status
    - attachments: attachments
-   - links: links
+   - links: links_3
    - availability_zone: availability_zone
    - encrypted: encrypted
    - updated_at: updated_at
    - replication_status: replication_status
    - snapshot_id: snapshot_id
-   - id: id
+   - id: id_5
    - size: size
    - user_id: user_id
    - metadata: metadata
@@ -202,13 +223,16 @@ Response Parameters
    - source_volid: source_volid
    - volume: volume
    - consistencygroup_id: consistencygroup_id
-   - name: name
+   - name: name_13
    - bootable: bootable_response
    - created_at: created_at
    - volume_type: volume_type
 
+Response Example
+----------------
 
-
+.. literalinclude:: ./samples/volume-create-response.json
+   :language: javascript
 
 
 List accessible volumes
@@ -216,11 +240,14 @@ List accessible volumes
 
 .. rest_method::  GET /v3/{project_id}/volumes
 
-Lists summary information for all Block Storage volumes that the project can access.
+Lists summary information for all Block Storage volumes that the
+project can access, since v3.31 if non-admin users specify invalid
+filters in the url, API will return bad request.
 
 
 Normal response codes: 200
-Error response codes:
+
+Error response codes: badRequest(400)
 
 
 Request
@@ -231,6 +258,7 @@ Request
    - project_id: project_id_path
    - sort: sort
    - limit: limit
+   - offset: offset
    - marker: marker
 
 
@@ -240,9 +268,9 @@ Response Parameters
 .. rest_parameters:: parameters.yaml
 
    - volumes: volumes
-   - id: id
-   - links: links
-   - name: name
+   - id: id_5
+   - links: links_3
+   - name: name_13
 
 
 
@@ -268,7 +296,6 @@ Preconditions
 
 
 Normal response codes: 200
-Error response codes:
 
 
 Request
@@ -277,7 +304,7 @@ Request
 .. rest_parameters:: parameters.yaml
 
    - project_id: project_id_path
-   - volume_id: volume_id
+   - volume_id: volume_id_path
 
 
 Response Parameters
@@ -287,7 +314,7 @@ Response Parameters
 
    - migration_status: migration_status
    - attachments: attachments
-   - links: links
+   - links: links_3
    - availability_zone: availability_zone
    - os-vol-host-attr:host: os-vol-host-attr:host
    - encrypted: encrypted
@@ -295,7 +322,7 @@ Response Parameters
    - os-volume-replication:extended_status: os-volume-replication:extended_status
    - replication_status: replication_status
    - snapshot_id: snapshot_id
-   - id: id
+   - id: id_5
    - size: size
    - user_id: user_id
    - os-vol-tenant-attr:tenant_id: os-vol-tenant-attr:tenant_id
@@ -308,7 +335,7 @@ Response Parameters
    - volume: volume
    - consistencygroup_id: consistencygroup_id
    - os-vol-mig-status-attr:name_id: os-vol-mig-status-attr:name_id
-   - name: name
+   - name: name_13
    - bootable: bootable_response
    - created_at: created_at
    - os-volume-replication:driver_data: os-volume-replication:driver_data
@@ -334,7 +361,6 @@ Updates a volume.
 
 
 Normal response codes: 200
-Error response codes:
 
 
 Request
@@ -342,12 +368,12 @@ Request
 
 .. rest_parameters:: parameters.yaml
 
+   - project_id: project_id_path
+   - volume_id: volume_id_path
    - volume: volume
    - description: description
-   - name: name
+   - name: name_8
    - metadata: metadata
-   - project_id: project_id_path
-   - volume_id: volume_id
 
 Request Example
 ---------------
@@ -364,13 +390,13 @@ Response Parameters
 
    - migration_status: migration_status
    - attachments: attachments
-   - links: links
+   - links: links_3
    - availability_zone: availability_zone
    - encrypted: encrypted
    - updated_at: updated_at
    - replication_status: replication_status
    - snapshot_id: snapshot_id
-   - id: id
+   - id: id_5
    - size: size
    - user_id: user_id
    - metadata: metadata
@@ -380,7 +406,7 @@ Response Parameters
    - source_volid: source_volid
    - volume: volume
    - consistencygroup_id: consistencygroup_id
-   - name: name
+   - name: name_13
    - bootable: bootable_response
    - created_at: created_at
    - volume_type: volume_type
@@ -428,7 +454,7 @@ Troubleshooting
 - The volume managed by OpenStack Block Storage is not deleted from
   the storage system.
 
-Error response codes:202,
+Normal response codes: 202
 
 
 Request
@@ -437,7 +463,9 @@ Request
 .. rest_parameters:: parameters.yaml
 
    - project_id: project_id_path
-   - volume_id: volume_id
+   - volume_id: volume_id_path
+   - cascade: cascade
+   - force: force_5
 
 
 
@@ -449,9 +477,10 @@ Create metadata for volume
 
 .. rest_method::  POST /v3/{project_id}/volumes/{volume_id}/metadata
 
-Creates metadata for a volume.
+Creates or replaces metadata for a volume. Does not modify items that are not
+in the request.
 
-Error response codes:202,
+Normal response codes: 202
 
 
 Request
@@ -459,9 +488,9 @@ Request
 
 .. rest_parameters:: parameters.yaml
 
-   - metadata: metadata_3
    - project_id: project_id_path
-   - volume_id: volume_id
+   - volume_id: volume_id_path
+   - metadata: metadata_3
 
 Request Example
 ---------------
@@ -497,7 +526,6 @@ Shows metadata for a volume.
 
 
 Normal response codes: 200
-Error response codes:
 
 
 Request
@@ -506,7 +534,7 @@ Request
 .. rest_parameters:: parameters.yaml
 
    - project_id: project_id_path
-   - volume_id: volume_id
+   - volume_id: volume_id_path
 
 
 Response Parameters
@@ -532,14 +560,10 @@ Update a volume's metadata
 
 .. rest_method::  PUT /v3/{project_id}/volumes/{volume_id}/metadata
 
-Updates metadata for a volume.
-
-Replaces metadata items that match keys. Does not modify items that
-are not in the request.
+Replaces all the volume's metadata with the key-value pairs in the request.
 
 
 Normal response codes: 200
-Error response codes:
 
 
 Request
@@ -547,9 +571,9 @@ Request
 
 .. rest_parameters:: parameters.yaml
 
-   - metadata: metadata_3
    - project_id: project_id_path
-   - volume_id: volume_id
+   - volume_id: volume_id_path
+   - metadata: metadata_3
 
 Request Example
 ---------------
@@ -575,6 +599,102 @@ Response Example
    :language: javascript
 
 
+Show a volume's metadata for a specific key
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. rest_method::  GET /v3/{project_id}/volumes/{volume_id}/metadata/{key}
+
+Shows metadata for a volume for a specific key.
+
+Normal response codes: 200
+
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+   - project_id: project_id_path
+   - volume_id: volume_id_path
+   - key: key_2
+
+
+Response Parameters
+-------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - meta: meta
+
+
+
+Response Example
+----------------
+
+.. literalinclude:: ./samples/volume-metadata-show-key-response.json
+   :language: javascript
+
+
+
+Delete a volume's metadata
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. rest_method::  DELETE /v3/{project_id}/volumes/{volume_id}/metadata/{key}
+
+Deletes metadata for a volume.
+
+Normal response codes: 200
+
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+   - project_id: project_id_path
+   - volume_id: volume_id_path
+   - key: key_1
+
+
+Update a volume's metadata for a specific key
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. rest_method::  PUT /v3/{project_id}/volumes/{volume_id}/metadata/{key}
+
+Update metadata for a volume for a specific key.
+
+Normal response codes: 200
+
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+   - project_id: project_id_path
+   - volume_id: volume_id_path
+   - key: key_3
+   - meta: meta
+
+Request Example
+---------------
+
+.. literalinclude:: ./samples/volume-metadata-update-key-request.json
+   :language: javascript
+
+Response Parameters
+-------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - meta: meta
+
+Response Example
+----------------
+
+.. literalinclude:: ./samples/volume-metadata-update-key-response.json
+   :language: javascript
+
 
 Get volumes summary
 ~~~~~~~~~~~~~~~~~~~
@@ -585,7 +705,6 @@ Display volumes summary with total number of volumes and total size in GB
 
 
 Normal response codes: 200
-Error response codes:
 
 
 Request
@@ -604,6 +723,7 @@ Response Parameters
    - volume-summary: volume-summary
    - total_size: total_size
    - total_count: total_count
+   - metadata: summary_metadata
 
 
 Response Example

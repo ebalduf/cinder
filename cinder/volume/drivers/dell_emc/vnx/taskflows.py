@@ -16,7 +16,6 @@
 from oslo_log import log as logging
 from oslo_utils import importutils
 
-storops = importutils.try_import('storops')
 
 import taskflow.engines
 from taskflow.patterns import linear_flow
@@ -24,10 +23,12 @@ from taskflow import task
 from taskflow.types import failure
 
 from cinder import exception
+from cinder.i18n import _
 from cinder.volume.drivers.dell_emc.vnx import common
 from cinder.volume.drivers.dell_emc.vnx import const
 from cinder.volume.drivers.dell_emc.vnx import utils
-from cinder.i18n import _, _LI, _LW
+
+storops = importutils.try_import('storops')
 
 LOG = logging.getLogger(__name__)
 
@@ -60,8 +61,8 @@ class MigrateLunTask(task.Task):
 
     def revert(self, result, client, src_id, dst_id, *args, **kwargs):
         method_name = '%s.revert' % self.__class__.__name__
-        LOG.warning(_LW('%(method)s: cleanup migration session: '
-                        '%(src_id)s -> %(dst_id)s.'),
+        LOG.warning('%(method)s: cleanup migration session: '
+                    '%(src_id)s -> %(dst_id)s.',
                     {'method': method_name,
                      'src_id': src_id,
                      'dst_id': dst_id})
@@ -98,7 +99,7 @@ class CreateLunTask(task.Task):
         if isinstance(result, failure.Failure):
             return
         else:
-            LOG.warning(_LW('%(method_name)s: delete lun %(lun_name)s'),
+            LOG.warning('%(method_name)s: delete lun %(lun_name)s',
                         {'method_name': method_name, 'lun_name': lun_name})
             client.delete_lun(lun_name)
 
@@ -117,9 +118,9 @@ class CopySnapshotTask(task.Task):
     def revert(self, result, client, snap_name, new_snap_name,
                *args, **kwargs):
         method_name = '%s.revert' % self.__class__.__name__
-        LOG.warning(_LW('%(method_name)s: delete the '
-                        'copied snapshot %(new_name)s of '
-                        '%(source_name)s.'),
+        LOG.warning('%(method_name)s: delete the '
+                    'copied snapshot %(new_name)s of '
+                    '%(source_name)s.',
                     {'method_name': method_name,
                      'new_name': new_snap_name,
                      'source_name': snap_name})
@@ -146,7 +147,7 @@ class CreateSMPTask(task.Task):
 
     def revert(self, result, client, smp_name, *args, **kwargs):
         method_name = '%s.revert' % self.__class__.__name__
-        LOG.warning(_LW('%(method_name)s: delete mount point %(name)s'),
+        LOG.warning('%(method_name)s: delete mount point %(name)s',
                     {'method_name': method_name,
                      'name': smp_name})
         client.delete_lun(smp_name)
@@ -164,7 +165,7 @@ class AttachSnapTask(task.Task):
 
     def revert(self, result, client, smp_name, *args, **kwargs):
         method_name = '%s.revert' % self.__class__.__name__
-        LOG.warning(_LW('%(method_name)s: detach mount point %(smp_name)s'),
+        LOG.warning('%(method_name)s: detach mount point %(smp_name)s',
                     {'method_name': method_name,
                      'smp_name': smp_name})
         client.detach_snapshot(smp_name)
@@ -178,15 +179,15 @@ class CreateSnapshotTask(task.Task):
     def execute(self, client, snap_name, lun_id, keep_for=None,
                 *args, **kwargs):
         LOG.debug('%s.execute', self.__class__.__name__)
-        LOG.info(_LI('Create snapshot: %(snapshot)s: lun: %(lun)s'),
+        LOG.info('Create snapshot: %(snapshot)s: lun: %(lun)s',
                  {'snapshot': snap_name,
                   'lun': lun_id})
         client.create_snapshot(lun_id, snap_name, keep_for=keep_for)
 
     def revert(self, result, client, snap_name, *args, **kwargs):
         method_name = '%s.revert' % self.__class__.__name__
-        LOG.warning(_LW('%(method_name)s: '
-                        'delete temp snapshot %(snap_name)s'),
+        LOG.warning('%(method_name)s: '
+                    'delete temp snapshot %(snap_name)s',
                     {'method_name': method_name,
                      'snap_name': snap_name})
         client.delete_snapshot(snap_name)
@@ -201,8 +202,8 @@ class ModifySnapshotTask(task.Task):
 
     def revert(self, result, client, snap_name, *args, **kwargs):
         method_name = '%s.revert' % self.__class__.__name__
-        LOG.warning(_LW('%(method_name)s: '
-                        'setting snapshot %(snap_name)s to read-only.'),
+        LOG.warning('%(method_name)s: '
+                    'setting snapshot %(snap_name)s to read-only.',
                     {'method_name': method_name,
                      'snap_name': snap_name})
         client.modify_snapshot(snap_name, allow_rw=False)
@@ -268,8 +269,8 @@ class CreateCGSnapshotTask(task.Task):
 
     def revert(self, client, cg_snap_name, cg_name, *args, **kwargs):
         method_name = '%s.revert' % self.__class__.__name__
-        LOG.warning(_LW('%(method_name)s: '
-                        'deleting CG snapshot %(snap_name)s.'),
+        LOG.warning('%(method_name)s: '
+                    'deleting CG snapshot %(snap_name)s.',
                     {'method_name': method_name,
                      'snap_name': cg_snap_name})
         client.delete_cg_snapshot(cg_snap_name)
@@ -288,8 +289,8 @@ class CreateMirrorTask(task.Task):
     def revert(self, result, mirror, mirror_name,
                *args, **kwargs):
         method_name = '%s.revert' % self.__class__.__name__
-        LOG.warning(_LW('%(method)s: removing mirror '
-                        'view %(name)s.'),
+        LOG.warning('%(method)s: removing mirror '
+                    'view %(name)s.',
                     {'method': method_name,
                      'name': mirror_name})
         mirror.delete_mirror(mirror_name)
@@ -308,11 +309,33 @@ class AddMirrorImageTask(task.Task):
     def revert(self, result, mirror, mirror_name,
                *args, **kwargs):
         method_name = '%s.revert' % self.__class__.__name__
-        LOG.warning(_LW('%(method)s: removing secondary image '
-                        'from %(name)s.'),
+        LOG.warning('%(method)s: removing secondary image '
+                    'from %(name)s.',
                     {'method': method_name,
                      'name': mirror_name})
         mirror.remove_image(mirror_name)
+
+
+class ExtendSMPTask(task.Task):
+    """Extend the SMP if needed.
+
+    If the SMP is thin and the new size is larger than the old one, then
+    extend it.
+    """
+    def execute(self, client, smp_name, lun_size, *args, **kwargs):
+        LOG.debug('%s.execute', self.__class__.__name__)
+        smp = client.get_lun(name=smp_name)
+        if lun_size > smp.total_capacity_gb:
+            if smp.primary_lun.is_thin_lun:
+                client.expand_lun(smp_name, lun_size)
+            else:
+                LOG.warning('Not extending the SMP: %s, because its base lun '
+                            'is not thin.', smp_name)
+        else:
+            LOG.info('Not extending the SMP: %(smp)s, size: %(size)s, because'
+                     'the new size: %(new_size)s is smaller.',
+                     {'smp': smp_name, 'size': smp.total_capacity_gb,
+                      'new_size': lun_size})
 
 
 def run_migration_taskflow(client,
@@ -410,6 +433,7 @@ def create_volume_from_snapshot(client, src_snap_name, lun_name,
     work_flow.add(CreateSMPTask(),
                   AttachSnapTask(rebind={'snap_name': 'new_snap_name'})
                   if new_snap_name else AttachSnapTask(),
+                  ExtendSMPTask(),
                   CreateLunTask(),
                   MigrateLunTask(
                       rebind={'src_id': 'smp_id',
@@ -464,6 +488,7 @@ def create_cloned_volume(client, snap_name, lun_id, lun_name,
         CreateSnapshotTask(),
         CreateSMPTask(),
         AttachSnapTask(),
+        ExtendSMPTask(),
         CreateLunTask(),
         MigrateLunTask(
             rebind={'src_id': 'smp_id', 'dst_id': 'new_lun_id'}))

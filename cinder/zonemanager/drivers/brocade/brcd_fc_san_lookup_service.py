@@ -19,7 +19,7 @@ from oslo_utils import excutils
 from oslo_utils import importutils
 
 from cinder import exception
-from cinder.i18n import _, _LE
+from cinder.i18n import _
 from cinder.zonemanager.drivers.brocade import brcd_fabric_opts as fabric_opts
 from cinder.zonemanager import fc_san_lookup_service as fc_service
 from cinder.zonemanager import utils as fczm_utils
@@ -69,7 +69,7 @@ class BrcdFCSanLookupService(fc_service.FCSanLookupService):
         :param target_wwn_list: List of target port WWN
         :returns: List -- device wwn map in following format
 
-        .. code-block:: json
+        .. code-block:: default
 
             {
                 <San name>: {
@@ -80,7 +80,7 @@ class BrcdFCSanLookupService(fc_service.FCSanLookupService):
                 }
             }
 
-        :raises: Exception when connection to fabric is failed
+        :raises Exception: when connection to fabric is failed
         """
         device_map = {}
         formatted_target_list = []
@@ -117,8 +117,8 @@ class BrcdFCSanLookupService(fc_service.FCSanLookupService):
                     nsinfo = conn.get_nameserver_info()
                 except exception.FCSanLookupServiceException:
                     with excutils.save_and_reraise_exception():
-                        LOG.error(_LE("Failed collecting name server info from"
-                                      " fabric %s"), fabric_ip)
+                        LOG.error("Failed collecting name server info from"
+                                  " fabric %s", fabric_ip)
                 except Exception as e:
                     msg = _("SSH connection failed "
                             "for %(fabric)s with error: %(err)s"

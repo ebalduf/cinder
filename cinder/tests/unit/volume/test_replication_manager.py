@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import uuid
+
 import ddt
 
 import mock
@@ -24,12 +26,14 @@ from cinder.common import constants
 from cinder import exception
 from cinder import objects
 from cinder.objects import fields
+from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import fake_service
 from cinder.tests.unit import utils
 from cinder.tests.unit import volume as base
 import cinder.volume
 from cinder.volume import manager
 from cinder.volume import rpcapi as volume_rpcapi
+from cinder.volume import utils as vol_utils
 
 
 CONF = cfg.CONF
@@ -70,8 +74,9 @@ class ReplicationTestCase(base.BaseVolumeTestCase):
         mock_getall.assert_called_once_with(self.context,
                                             filters={'host': self.host})
         mock_failover.assert_called_once_with(self.context,
-                                              mock_getall.return_value,
-                                              secondary_id=new_backend)
+                                              [],
+                                              secondary_id=new_backend,
+                                              groups=[])
 
         db_svc = objects.Service.get_by_id(self.context, svc.id)
         self.assertEqual(expected, db_svc.replication_status)
@@ -112,7 +117,7 @@ class ReplicationTestCase(base.BaseVolumeTestCase):
     @mock.patch.object(cinder.db, 'service_get_all')
     def test_failover_unexpected_status(self, mock_db_get_all, mock_db_update,
                                         mock_failover):
-        """Test replication failover unxepected status."""
+        """Test replication failover unexpected status."""
 
         mock_db_get_all.return_value = [fake_service.fake_service_obj(
             self.context,
@@ -266,14 +271,14 @@ class ReplicationTestCase(base.BaseVolumeTestCase):
                 called, not_called = not_called, called
 
             called.return_value = ('secondary', [{'volume_id': vol.id,
-                                   'updates': {'status': 'error'}}])
+                                   'updates': {'status': 'error'}}], [])
 
             self.volume.failover(self.context,
                                  secondary_backend_id='secondary')
 
         not_called.assert_not_called()
         called.assert_called_once_with(self.context, [vol],
-                                       secondary_id='secondary')
+                                       secondary_id='secondary', groups=[])
 
         expected_update = {'replication_status': rep_field.FAILED_OVER,
                            'active_backend_id': 'secondary',
@@ -439,3 +444,222 @@ class ReplicationTestCase(base.BaseVolumeTestCase):
         self.assertEqual(rep_field.ENABLED, cluster.replication_status)
 
         failover_mock.assert_not_called()
+
+    def _check_failover_db(self, get_method, expected_results):
+        db_data = get_method.get_all(self.context, None)
+        db_data = {e.id: e for e in db_data}
+        for expected in expected_results:
+            id_ = expected['id']
+            for key, value in expected.items():
+                self.assertEqual(value, getattr(db_data[id_], key),
+                                 '(%s) ref=%s != act=%s' % (
+                                     key, expected, dict(db_data[id_])))
+
+    def _test_failover_model_updates(self, in_volumes, in_snapshots,
+                                     driver_volumes, driver_result,
+                                     out_volumes, out_snapshots,
+                                     in_groups=None, out_groups=None,
+                                     driver_group_result=None,
+                                     secondary_id=None):
+        host = vol_utils.extract_host(self.manager.host)
+        utils.create_service(self.context, {'host': host,
+                                            'binary': 'cinder-volume'})
+        for volume in in_volumes:
+            utils.create_volume(self.context, self.manager.host, **volume)
+
+        for snapshot in in_snapshots:
+            utils.create_snapshot(self.context, **snapshot)
+
+        for group in in_groups:
+            utils.create_group(self.context, self.manager.host, **group)
+
+        with mock.patch.object(
+                self.manager.driver, 'failover_host',
+                return_value=(secondary_id, driver_result,
+                              driver_group_result)) as driver_mock:
+            self.manager.failover_host(self.context, secondary_id)
+
+            self.assertSetEqual(driver_volumes,
+                                {v.id for v in driver_mock.call_args[0][1]})
+
+        self._check_failover_db(objects.VolumeList, out_volumes)
+        self._check_failover_db(objects.SnapshotList, out_snapshots)
+        self._check_failover_db(objects.GroupList, out_groups)
+
+    @mock.patch('cinder.volume.utils.is_group_a_type')
+    def test_failover_host_model_updates(self, mock_group_type):
+        status = fields.ReplicationStatus
+        mock_group_type.return_value = True
+        in_groups = [
+            {'id': str(uuid.uuid4()), 'status': 'available',
+             'group_type_id': fake.GROUP_TYPE_ID,
+             'volume_type_ids': [fake.VOLUME_TYPE_ID],
+             'replication_status': status.FAILOVER_ERROR},
+            {'id': str(uuid.uuid4()), 'status': 'available',
+             'group_type_id': fake.GROUP_TYPE_ID,
+             'volume_type_ids': [fake.VOLUME_TYPE_ID],
+             'replication_status': status.ENABLED},
+        ]
+        driver_group_result = [
+            {'group_id': in_groups[0]['id'],
+             'updates': {'replication_status': status.FAILOVER_ERROR}},
+            {'group_id': in_groups[1]['id'],
+             'updates': {'replication_status': status.FAILED_OVER}},
+        ]
+        out_groups = [
+            {'id': in_groups[0]['id'], 'status': 'error',
+             'replication_status': status.FAILOVER_ERROR},
+            {'id': in_groups[1]['id'], 'status': in_groups[1]['status'],
+             'replication_status': status.FAILED_OVER},
+        ]
+
+        # test volumes
+        in_volumes = [
+            {'id': str(uuid.uuid4()), 'status': 'available',
+             'replication_status': status.DISABLED},
+            {'id': str(uuid.uuid4()), 'status': 'in-use',
+             'replication_status': status.NOT_CAPABLE},
+            {'id': str(uuid.uuid4()), 'status': 'available',
+             'replication_status': status.FAILOVER_ERROR},
+            {'id': str(uuid.uuid4()), 'status': 'in-use',
+             'replication_status': status.ENABLED},
+            {'id': str(uuid.uuid4()), 'status': 'available',
+             'replication_status': status.FAILOVER_ERROR},
+            {'id': str(uuid.uuid4()), 'status': 'in-use',
+             'replication_status': status.ENABLED},
+            {'id': str(uuid.uuid4()), 'status': 'available',
+             'group_id': in_groups[0]['id'],
+             'replication_status': status.FAILOVER_ERROR},
+            {'id': str(uuid.uuid4()), 'status': 'available',
+             'group_id': in_groups[1]['id'],
+             'replication_status': status.ENABLED},
+        ]
+        in_snapshots = [
+            {'id': v['id'], 'volume_id': v['id'], 'status': 'available'}
+            for v in in_volumes
+        ]
+        driver_volumes = {
+            v['id'] for v in in_volumes
+            if v['replication_status'] not in (status.DISABLED,
+                                               status.NOT_CAPABLE)}
+        driver_result = [
+            {'volume_id': in_volumes[3]['id'],
+             'updates': {'status': 'error'}},
+            {'volume_id': in_volumes[4]['id'],
+             'updates': {'replication_status': status.FAILOVER_ERROR}},
+            {'volume_id': in_volumes[5]['id'],
+             'updates': {'replication_status': status.FAILED_OVER}},
+            {'volume_id': in_volumes[6]['id'],
+             'updates': {'replication_status': status.FAILOVER_ERROR}},
+            {'volume_id': in_volumes[7]['id'],
+             'updates': {'replication_status': status.FAILED_OVER}},
+        ]
+        out_volumes = [
+            {'id': in_volumes[0]['id'], 'status': 'error',
+             'replication_status': status.NOT_CAPABLE,
+             'previous_status': in_volumes[0]['status']},
+            {'id': in_volumes[1]['id'], 'status': 'error',
+             'replication_status': status.NOT_CAPABLE,
+             'previous_status': in_volumes[1]['status']},
+            {'id': in_volumes[2]['id'], 'status': in_volumes[2]['status'],
+             'replication_status': status.FAILED_OVER},
+            {'id': in_volumes[3]['id'], 'status': 'error',
+             'previous_status': in_volumes[3]['status'],
+             'replication_status': status.FAILOVER_ERROR},
+            {'id': in_volumes[4]['id'], 'status': 'error',
+             'previous_status': in_volumes[4]['status'],
+             'replication_status': status.FAILOVER_ERROR},
+            {'id': in_volumes[5]['id'], 'status': in_volumes[5]['status'],
+             'replication_status': status.FAILED_OVER},
+            {'id': in_volumes[6]['id'], 'status': 'error',
+             'previous_status': in_volumes[6]['status'],
+             'replication_status': status.FAILOVER_ERROR},
+            {'id': in_volumes[7]['id'], 'status': in_volumes[7]['status'],
+             'replication_status': status.FAILED_OVER},
+        ]
+        out_snapshots = [
+            {'id': ov['id'],
+             'status': 'error' if ov['status'] == 'error' else 'available'}
+            for ov in out_volumes
+        ]
+
+        self._test_failover_model_updates(in_volumes, in_snapshots,
+                                          driver_volumes, driver_result,
+                                          out_volumes, out_snapshots,
+                                          in_groups, out_groups,
+                                          driver_group_result)
+
+    def test_failback_host_model_updates(self):
+        status = fields.ReplicationStatus
+        # IDs will be overwritten with UUIDs, but they help follow the code
+        in_volumes = [
+            {'id': 0, 'status': 'available',
+             'replication_status': status.DISABLED},
+            {'id': 1, 'status': 'in-use',
+             'replication_status': status.NOT_CAPABLE},
+            {'id': 2, 'status': 'available',
+             'replication_status': status.FAILOVER_ERROR},
+            {'id': 3, 'status': 'in-use',
+             'replication_status': status.ENABLED},
+            {'id': 4, 'status': 'available',
+             'replication_status': status.FAILOVER_ERROR},
+            {'id': 5, 'status': 'in-use',
+             'replication_status': status.FAILED_OVER},
+        ]
+        # Generate real volume IDs
+        for volume in in_volumes:
+            volume['id'] = str(uuid.uuid4())
+        in_snapshots = [
+            {'id': in_volumes[0]['id'], 'volume_id': in_volumes[0]['id'],
+             'status': fields.SnapshotStatus.ERROR_DELETING},
+            {'id': in_volumes[1]['id'], 'volume_id': in_volumes[1]['id'],
+             'status': fields.SnapshotStatus.AVAILABLE},
+            {'id': in_volumes[2]['id'], 'volume_id': in_volumes[2]['id'],
+             'status': fields.SnapshotStatus.CREATING},
+            {'id': in_volumes[3]['id'], 'volume_id': in_volumes[3]['id'],
+             'status': fields.SnapshotStatus.DELETING},
+            {'id': in_volumes[4]['id'], 'volume_id': in_volumes[4]['id'],
+             'status': fields.SnapshotStatus.CREATING},
+            {'id': in_volumes[5]['id'], 'volume_id': in_volumes[5]['id'],
+             'status': fields.SnapshotStatus.CREATING},
+        ]
+        driver_volumes = {
+            v['id'] for v in in_volumes
+            if v['replication_status'] not in (status.DISABLED,
+                                               status.NOT_CAPABLE)}
+        driver_result = [
+            {'volume_id': in_volumes[3]['id'],
+             'updates': {'status': 'error'}},
+            {'volume_id': in_volumes[4]['id'],
+             'updates': {'replication_status': status.FAILOVER_ERROR}},
+            {'volume_id': in_volumes[5]['id'],
+             'updates': {'replication_status': status.FAILED_OVER}},
+        ]
+        out_volumes = [
+            {'id': in_volumes[0]['id'], 'status': in_volumes[0]['status'],
+             'replication_status': in_volumes[0]['replication_status'],
+             'previous_status': None},
+            {'id': in_volumes[1]['id'], 'status': in_volumes[1]['status'],
+             'replication_status': in_volumes[1]['replication_status'],
+             'previous_status': None},
+            {'id': in_volumes[2]['id'], 'status': in_volumes[2]['status'],
+             'replication_status': status.ENABLED},
+            {'id': in_volumes[3]['id'], 'status': 'error',
+             'previous_status': in_volumes[3]['status'],
+             'replication_status': status.FAILOVER_ERROR},
+            {'id': in_volumes[4]['id'], 'status': 'error',
+             'previous_status': in_volumes[4]['status'],
+             'replication_status': status.FAILOVER_ERROR},
+            {'id': in_volumes[5]['id'], 'status': in_volumes[5]['status'],
+             'replication_status': status.ENABLED},
+        ]
+        # Snapshot status is preserved except for those that error the failback
+        out_snapshots = in_snapshots[:]
+        out_snapshots[3]['status'] = fields.SnapshotStatus.ERROR
+        out_snapshots[4]['status'] = fields.SnapshotStatus.ERROR
+
+        self._test_failover_model_updates(in_volumes, in_snapshots,
+                                          driver_volumes, driver_result,
+                                          out_volumes, out_snapshots,
+                                          [], [], [],
+                                          self.manager.FAILBACK_SENTINEL)

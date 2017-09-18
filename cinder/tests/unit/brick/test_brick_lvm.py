@@ -12,6 +12,7 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+import ddt
 import mock
 from oslo_concurrency import processutils
 
@@ -21,6 +22,7 @@ from cinder import test
 from cinder.volume import configuration as conf
 
 
+@ddt.ddt
 class BrickLvmTestCase(test.TestCase):
     def setUp(self):
         if not hasattr(self, 'configuration'):
@@ -345,19 +347,36 @@ class BrickLvmTestCase(test.TestCase):
 
         See bug #1220286 for more info.
         """
-
         vg_name = "vg-name"
         pool_name = vg_name + "-pool"
-        pool_path = "%s/%s" % (vg_name, pool_name)
-
-        def executor(obj, *cmd, **kwargs):
-            self.assertEqual(pool_path, cmd[-1])
-
-        self.vg._executor = executor
         self.vg.create_thin_pool(pool_name, "1G")
-        self.vg.create_volume("test", "1G", lv_type='thin')
 
+        with mock.patch.object(self.vg, '_execute'):
+            self.vg.create_volume("test", "1G", lv_type='thin')
+            if self.configuration.lvm_suppress_fd_warnings is False:
+                self.vg._execute.assert_called_once_with(
+                    'env', 'LC_ALL=C', 'lvcreate', '-T', '-V',
+                    '1G', '-n', 'test', 'fake-vg/vg-name-pool',
+                    root_helper='sudo', run_as_root=True)
+            else:
+                self.vg._execute.assert_called_once_with(
+                    'env', 'LC_ALL=C', 'LVM_SUPPRESS_FD_WARNINGS=1',
+                    'lvcreate', '-T', '-V', '1G', '-n', 'test',
+                    'fake-vg/vg-name-pool', root_helper='sudo',
+                    run_as_root=True)
         self.assertEqual(pool_name, self.vg.vg_thin_pool)
+
+    def test_volume_create_when_executor_failed(self):
+        def fail(*args, **kwargs):
+            raise processutils.ProcessExecutionError()
+        self.vg._execute = fail
+
+        with mock.patch.object(self.vg, 'get_all_volume_groups') as m_gavg:
+            self.assertRaises(
+                processutils.ProcessExecutionError,
+                self.vg.create_volume, "test", "1G"
+            )
+            m_gavg.assert_called()
 
     def test_lv_has_snapshot(self):
         self.assertTrue(self.vg.lv_has_snapshot('fake-vg'))
@@ -389,20 +408,23 @@ class BrickLvmTestCase(test.TestCase):
     def test_get_mirrored_available_capacity(self):
         self.assertEqual(2.0, self.vg.vg_mirror_free_space(1))
 
-    def test_lv_extend(self):
-        self.vg.deactivate_lv = mock.MagicMock()
+    @ddt.data(True, False)
+    def test_lv_extend(self, has_snapshot):
+        with mock.patch.object(self.vg, '_execute'):
+            with mock.patch.object(self.vg, 'lv_has_snapshot'):
+                self.vg.deactivate_lv = mock.MagicMock()
+                self.vg.activate_lv = mock.MagicMock()
 
-        # Extend lv with snapshot and make sure deactivate called
-        self.vg.create_volume("test", "1G")
-        self.vg.extend_volume("test", "2G")
-        self.vg.deactivate_lv.assert_called_once_with('test')
-        self.vg.deactivate_lv.reset_mock()
+                self.vg.lv_has_snapshot.return_value = has_snapshot
+                self.vg.extend_volume("test", "2G")
 
-        # Extend lv without snapshot so deactivate should not be called
-        self.vg.create_volume("test", "1G")
-        self.vg.vg_name = "test-volumes"
-        self.vg.extend_volume("test", "2G")
-        self.assertFalse(self.vg.deactivate_lv.called)
+                self.vg.lv_has_snapshot.assert_called_once_with("test")
+                if has_snapshot:
+                    self.vg.activate_lv.assert_called_once_with("test")
+                    self.vg.deactivate_lv.assert_called_once_with("test")
+                else:
+                    self.vg.activate_lv.assert_not_called()
+                    self.vg.deactivate_lv.assert_not_called()
 
     def test_lv_deactivate(self):
         with mock.patch.object(self.vg, '_execute'):
@@ -412,7 +434,8 @@ class BrickLvmTestCase(test.TestCase):
             self.vg.create_volume('test', '1G')
             self.vg.deactivate_lv('test')
 
-    def test_lv_deactivate_timeout(self):
+    @mock.patch('time.sleep')
+    def test_lv_deactivate_timeout(self, _mock_sleep):
         with mock.patch.object(self.vg, '_execute'):
             is_active_mock = mock.Mock()
             is_active_mock.return_value = True

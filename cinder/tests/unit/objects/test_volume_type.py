@@ -65,6 +65,14 @@ class TestVolumeType(test_objects.BaseObjectsTestCase):
                                                    fake.VOLUME_TYPE_ID)
         self._compare(self, db_volume_type, volume_type)
 
+    @mock.patch('cinder.volume.volume_types.get_by_name_or_id')
+    def test_get_by_name_or_id(self, volume_type_get):
+        db_volume_type = fake_volume.fake_db_volume_type()
+        volume_type_get.return_value = db_volume_type
+        volume_type = objects.VolumeType.get_by_name_or_id(
+            self.context, fake.VOLUME_TYPE_ID)
+        self._compare(self, db_volume_type, volume_type)
+
     @ddt.data('1.0', '1.1')
     def test_obj_make_compatible(self, version):
         volume_type = objects.VolumeType(context=self.context)
@@ -201,6 +209,23 @@ class TestVolumeType(test_objects.BaseObjectsTestCase):
 
         self.assertEqual(get_specs_mock.return_value, volume_type.extra_specs)
         get_specs_mock.assert_called_once_with(self.context, vol_type['id'])
+
+    @ddt.data('<is> True', '<is> true', '<is> yes')
+    def test_is_replicated_true(self, enabled):
+        volume_type = fake_volume.fake_volume_type_obj(
+            self.context, extra_specs={'replication_enabled': enabled})
+        self.assertTrue(volume_type.is_replicated())
+
+    def test_is_replicated_no_specs(self):
+        volume_type = fake_volume.fake_volume_type_obj(
+            self.context, extra_specs={})
+        self.assertFalse(volume_type.is_replicated())
+
+    @ddt.data('<is> False', '<is> false', '<is> f', 'baddata', 'bad data')
+    def test_is_replicated_specs_false(self, not_enabled):
+        volume_type = fake_volume.fake_volume_type_obj(
+            self.context, extra_specs={'replication_enabled': not_enabled})
+        self.assertFalse(volume_type.is_replicated())
 
 
 class TestVolumeTypeList(test_objects.BaseObjectsTestCase):

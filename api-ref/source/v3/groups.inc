@@ -22,11 +22,13 @@ List groups
 
 .. rest_method::  GET /v3/{project_id}/groups
 
-Lists groups.
+Lists groups. Since v3.31 if non-admin users specify
+invalid filters in the url, API will return bad request.
 
 
 Normal response codes: 200
-Error response codes:
+
+Error response codes: badRequest(400)
 
 
 Request
@@ -35,9 +37,9 @@ Request
 .. rest_parameters:: parameters.yaml
 
    - project_id: project_id_path
-   - sort_key: sort_key
-   - sort_dir: sort_dir
+   - sort: sort
    - limit: limit
+   - offset: offset
    - marker: marker
 
 
@@ -46,8 +48,9 @@ Response Parameters
 
 .. rest_parameters:: parameters.yaml
 
+   - groups: groups
    - id: id
-   - name: name
+   - name: group_name
 
 Response Example
 ----------------
@@ -64,6 +67,7 @@ Create group
 Creates a group.
 
 Normal response codes: 202
+
 Error response codes: badRequest(400), itemNotFound(404)
 
 
@@ -72,12 +76,13 @@ Request
 
 .. rest_parameters:: parameters.yaml
 
+   - project_id: project_id_path
+   - group: group
    - description: description
    - availability_zone: availability_zone
    - group_type: group_type
    - volume_types: volume_types
-   - name: name
-   - project_id: project_id_path
+   - name: group_name
 
 Request Example
 ---------------
@@ -94,6 +99,7 @@ Show group details
 Shows details for a group.
 
 Normal response codes: 200
+
 Error response codes: itemNotFound(404)
 
 Request
@@ -109,6 +115,7 @@ Response Parameters
 
 .. rest_parameters:: parameters.yaml
 
+   - group: group
    - status: status_8
    - description: description
    - availability_zone: availability_zone
@@ -116,7 +123,8 @@ Response Parameters
    - group_type: group_type
    - volume_types: volume_types
    - id: id
-   - name: name
+   - name: group_name
+   - replication_status: group_replication_status
 
 Response Example
 ----------------
@@ -133,6 +141,7 @@ Create group from source
 Creates a group from source.
 
 Normal response codes: 202
+
 Error response codes: badRequest(400), itemNotFound(404)
 
 
@@ -141,11 +150,12 @@ Request
 
 .. rest_parameters:: parameters.yaml
 
-   - description: description
-   - group_snapshot_id: group_snapshot_id
-   - source_group_id: source_group_id
-   - name: name
    - project_id: project_id_path
+   - create-from-src: create-from-src
+   - description: description
+   - group_snapshot_id: group_snapshot_id_1
+   - source_group_id: source_group_id
+   - name: group_name
 
 Request Example
 ---------------
@@ -162,6 +172,7 @@ Delete group
 Deletes a group.
 
 Normal response codes: 202
+
 Error response codes: badRequest(400), itemNotFound(404)
 
 
@@ -170,9 +181,10 @@ Request
 
 .. rest_parameters:: parameters.yaml
 
-   - delete-volumes: delete-volumes
    - project_id: project_id_path
    - group_id: group_id
+   - delete: delete
+   - delete-volumes: delete-volumes
 
 Request Example
 ---------------
@@ -186,11 +198,13 @@ List groups with details
 
 .. rest_method::  GET /v3/{project_id}/groups/detail
 
-Lists groups with details.
+Lists groups with details, since v3.31 if non-admin
+users specify invalid filters in the url, API will return bad request.
 
 
 Normal response codes: 200
-Error response codes:
+
+Error response codes: badRequest(400)
 
 
 Request
@@ -199,9 +213,9 @@ Request
 .. rest_parameters:: parameters.yaml
 
    - project_id: project_id_path
-   - sort_key: sort_key
-   - sort_dir: sort_dir
+   - sort: sort
    - limit: limit
+   - offset: offset
    - marker: marker
 
 
@@ -210,13 +224,14 @@ Response Parameters
 
 .. rest_parameters:: parameters.yaml
 
+   - groups: groups
    - status: status_8
    - description: description
    - availability_zone: availability_zone
    - created_at: created_at
    - group_type: group_type
    - volume_types: volume_types
-   - id: id
+   - id: group_id
    - name: name
 
 Response Example
@@ -234,6 +249,7 @@ Update group
 Updates a group.
 
 Normal response codes: 202
+
 Error response codes: badRequest(400), itemNotFound(404)
 
 
@@ -242,15 +258,45 @@ Request
 
 .. rest_parameters:: parameters.yaml
 
+   - project_id: project_id_path
+   - group_id: group_id
+   - group: group
    - remove_volumes: remove_volumes
    - description: description
    - add_volumes: add_volumes
-   - name: name
-   - project_id: project_id_path
-   - group_id: group_id
+   - name: group_name
 
 Request Example
 ---------------
 
 .. literalinclude:: ./samples/group-update-request.json
+   :language: javascript
+
+
+Reset group status
+~~~~~~~~~~~~~~~~~~
+
+.. rest_method::  POST /v3/{project_id}/groups/{group_id}/action
+
+Resets the status for a group. Specify the ``reset_status`` action in the request body.
+
+Normal response codes: 202
+
+Error response codes: badRequest(400), itemNotFound(404)
+
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+   - project_id: project_id
+   - group_id: group_id
+   - reset_status: reset_status
+   - status: status
+
+Request Example
+---------------
+
+.. literalinclude:: ./samples/group-reset-status-request.json
    :language: javascript

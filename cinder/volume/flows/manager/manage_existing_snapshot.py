@@ -20,8 +20,9 @@ from taskflow.types import failure as ft
 
 from cinder import exception
 from cinder import flow_utils
-from cinder.i18n import _, _LE, _LI
+from cinder.i18n import _
 from cinder import objects
+from cinder.objects import fields
 from cinder import quota
 from cinder import quota_utils
 from cinder.volume.flows import common as flow_common
@@ -61,7 +62,7 @@ class ExtractSnapshotRefTask(flow_utils.CinderTask):
             return
 
         flow_common.error_out(result)
-        LOG.error(_LE("Snapshot %s: create failed"), result.id)
+        LOG.error("Snapshot %s: create failed", result.id)
 
 
 class NotifySnapshotActionTask(flow_utils.CinderTask):
@@ -87,8 +88,8 @@ class NotifySnapshotActionTask(flow_utils.CinderTask):
             # If notification sending of snapshot database entry reading fails
             # then we shouldn't error out the whole workflow since this is
             # not always information that must be sent for snapshots to operate
-            LOG.exception(_LE("Failed notifying about the snapshot "
-                              "action %(event)s for snapshot %(snp_id)s."),
+            LOG.exception("Failed notifying about the snapshot "
+                          "action %(event)s for snapshot %(snp_id)s.",
                           {'event': self.event_suffix,
                            'snp_id': snapshot_id})
 
@@ -107,8 +108,8 @@ class PrepareForQuotaReservationTask(flow_utils.CinderTask):
         if not self.driver.initialized:
             driver_name = (self.driver.configuration.
                            safe_get('volume_backend_name'))
-            LOG.error(_LE("Unable to manage existing snapshot. "
-                          "Volume driver %s not initialized."), driver_name)
+            LOG.error("Unable to manage existing snapshot. "
+                      "Volume driver %s not initialized.", driver_name)
             flow_common.error_out(snapshot_ref, reason=_("Volume driver %s "
                                                          "not initialized.") %
                                   driver_name)
@@ -141,12 +142,16 @@ class QuotaReserveTask(flow_utils.CinderTask):
     def __init__(self):
         super(QuotaReserveTask, self).__init__(addons=[ACTION])
 
-    def execute(self, context, size, optional_args):
+    def execute(self, context, size, snapshot_ref, optional_args):
         try:
             if CONF.no_snapshot_gb_quota:
                 reserve_opts = {'snapshots': 1}
             else:
                 reserve_opts = {'snapshots': 1, 'gigabytes': size}
+            volume = objects.Volume.get_by_id(context, snapshot_ref.volume_id)
+            QUOTAS.add_volume_type_opts(context,
+                                        reserve_opts,
+                                        volume.volume_type_id)
             reservations = QUOTAS.reserve(context, **reserve_opts)
             return {
                 'reservations': reservations,
@@ -174,8 +179,8 @@ class QuotaReserveTask(flow_utils.CinderTask):
         except exception.CinderException:
             # We are already reverting, therefore we should silence this
             # exception since a second exception being active will be bad.
-            LOG.exception(_LE("Failed rolling back quota for"
-                              " %s reservations."), reservations)
+            LOG.exception("Failed rolling back quota for"
+                          " %s reservations.", reservations)
 
 
 class QuotaCommitTask(flow_utils.CinderTask):
@@ -218,8 +223,8 @@ class QuotaCommitTask(flow_utils.CinderTask):
                 QUOTAS.commit(context, reservations,
                               project_id=context.project_id)
         except Exception:
-            LOG.exception(_LE("Failed to update quota while deleting "
-                              "snapshots: %s"), snapshot['id'])
+            LOG.exception("Failed to update quota while deleting "
+                          "snapshots: %s", snapshot['id'])
 
 
 class ManageExistingTask(flow_utils.CinderTask):
@@ -238,22 +243,22 @@ class ManageExistingTask(flow_utils.CinderTask):
             existing_ref=manage_existing_ref)
         if not model_update:
             model_update = {}
-        model_update.update({'size': size})
+        model_update['volume_size'] = size
         try:
             snapshot_object = objects.Snapshot.get_by_id(context,
                                                          snapshot_ref['id'])
             snapshot_object.update(model_update)
             snapshot_object.save()
         except exception.CinderException:
-            LOG.exception(_LE("Failed updating model of snapshot "
-                              "%(snapshot_id)s with creation provided model "
-                              "%(model)s."),
+            LOG.exception("Failed updating model of snapshot "
+                          "%(snapshot_id)s with creation provided model "
+                          "%(model)s.",
                           {'snapshot_id': snapshot_ref['id'],
                            'model': model_update})
             raise
 
         return {'snapshot': snapshot_ref,
-                'new_status': 'available'}
+                'new_status': fields.SnapshotStatus.AVAILABLE}
 
 
 class CreateSnapshotOnFinishTask(NotifySnapshotActionTask):
@@ -287,11 +292,11 @@ class CreateSnapshotOnFinishTask(NotifySnapshotActionTask):
             # Now use the parent to notify.
             super(CreateSnapshotOnFinishTask, self).execute(context, snapshot)
         except exception.CinderException:
-            LOG.exception(_LE("Failed updating snapshot %(snapshot_id)s with "
-                              "%(update)s."), {'snapshot_id': snapshot_id,
-                                               'update': update})
+            LOG.exception("Failed updating snapshot %(snapshot_id)s with "
+                          "%(update)s.", {'snapshot_id': snapshot_id,
+                                          'update': update})
         # Even if the update fails, the snapshot is ready.
-        LOG.info(_LI("Snapshot %s created successfully."), snapshot_id)
+        LOG.info("Snapshot %s created successfully.", snapshot_id)
 
 
 def get_flow(context, db, driver, host, snapshot_id, ref):

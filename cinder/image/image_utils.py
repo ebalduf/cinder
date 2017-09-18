@@ -34,7 +34,6 @@ import tempfile
 from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_log import log as logging
-from oslo_utils import excutils
 from oslo_utils import fileutils
 from oslo_utils import imageutils
 from oslo_utils import timeutils
@@ -42,7 +41,7 @@ from oslo_utils import units
 import psutil
 
 from cinder import exception
-from cinder.i18n import _, _LE, _LI, _LW
+from cinder.i18n import _
 from cinder import utils
 from cinder.volume import throttling
 from cinder.volume import utils as volume_utils
@@ -58,37 +57,53 @@ CONF = cfg.CONF
 CONF.register_opts(image_helper_opts)
 
 QEMU_IMG_LIMITS = processutils.ProcessLimits(
-    cpu_time=2,
+    cpu_time=8,
     address_space=1 * units.Gi)
 
-# NOTE(abhishekk): qemu-img convert command supports raw, qcow2, qed,
-# vdi, vmdk, vhd and vhdx disk-formats but glance doesn't support qed
-# disk-format.
-# Ref: http://docs.openstack.org/image-guide/convert-images.html
 VALID_DISK_FORMATS = ('raw', 'vmdk', 'vdi', 'qcow2',
                       'vhd', 'vhdx', 'parallels')
+
+QEMU_IMG_FORMAT_MAP = {
+    # Convert formats of Glance images to how they are processed with qemu-img.
+    'iso': 'raw',
+    'vhd': 'vpc',
+}
 
 
 def validate_disk_format(disk_format):
     return disk_format in VALID_DISK_FORMATS
 
 
+def fixup_disk_format(disk_format):
+    """Return the format to be provided to qemu-img convert."""
+
+    return QEMU_IMG_FORMAT_MAP.get(disk_format, disk_format)
+
+
 def qemu_img_info(path, run_as_root=True):
     """Return an object containing the parsed output from qemu-img info."""
-    cmd = ('env', 'LC_ALL=C', 'qemu-img', 'info', path)
+    cmd = ['env', 'LC_ALL=C', 'qemu-img', 'info', path]
+
     if os.name == 'nt':
         cmd = cmd[2:]
     out, _err = utils.execute(*cmd, run_as_root=run_as_root,
                               prlimit=QEMU_IMG_LIMITS)
-    return imageutils.QemuImgInfo(out)
+    info = imageutils.QemuImgInfo(out)
+
+    # From Cinder's point of view, any 'luks' formatted images
+    # should be treated as 'raw'.
+    if info.file_format == 'luks':
+        info.file_format = 'raw'
+
+    return info
 
 
 def get_qemu_img_version():
-    info = utils.execute('qemu-img', '--help', check_exit_code=False)[0]
+    info = utils.execute('qemu-img', '--version', check_exit_code=False)[0]
     pattern = r"qemu-img version ([0-9\.]*)"
     version = re.match(pattern, info)
     if not version:
-        LOG.warning(_LW("qemu-img is not installed."))
+        LOG.warning("qemu-img is not installed.")
         return None
     return _get_version_from_string(version.groups()[0])
 
@@ -114,7 +129,8 @@ def check_qemu_img_version(minimum_version):
         raise exception.VolumeBackendAPIException(data=_msg)
 
 
-def _convert_image(prefix, source, dest, out_format, run_as_root=True):
+def _convert_image(prefix, source, dest, out_format,
+                   src_format=None, run_as_root=True):
     """Convert image to other format."""
 
     cmd = prefix + ('qemu-img', 'convert',
@@ -134,8 +150,16 @@ def _convert_image(prefix, source, dest, out_format, run_as_root=True):
                                                    dest,
                                                    'oflag=direct')):
         cmd = prefix + ('qemu-img', 'convert',
-                        '-t', 'none',
-                        '-O', out_format, source, dest)
+                        '-t', 'none')
+
+        # AMI images can be raw or qcow2 but qemu-img doesn't accept "ami" as
+        # an image format, so we use automatic detection.
+        # TODO(geguileo): This fixes unencrypted AMI image case, but we need to
+        # fix the encrypted case.
+        if (src_format or '').lower() not in ('', 'ami'):
+            cmd += ('-f', src_format)  # prevent detection of format
+
+        cmd += ('-O', out_format, source, dest)
 
     start_time = timeutils.utcnow()
     utils.execute(*cmd, run_as_root=run_as_root)
@@ -149,8 +173,8 @@ def _convert_image(prefix, source, dest, out_format, run_as_root=True):
         image_size = qemu_img_info(source,
                                    run_as_root=run_as_root).virtual_size
     except ValueError as e:
-        msg = _LI("The image was successfully converted, but image size "
-                  "is unavailable. src %(src)s, dest %(dest)s. %(error)s")
+        msg = ("The image was successfully converted, but image size "
+               "is unavailable. src %(src)s, dest %(dest)s. %(error)s")
         LOG.info(msg, {"src": source,
                        "dest": dest,
                        "error": e})
@@ -165,17 +189,20 @@ def _convert_image(prefix, source, dest, out_format, run_as_root=True):
                     "duration": duration,
                     "dest": dest})
 
-    msg = _LI("Converted %(sz).2f MB image at %(mbps).2f MB/s")
+    msg = "Converted %(sz).2f MB image at %(mbps).2f MB/s"
     LOG.info(msg, {"sz": fsz_mb, "mbps": mbps})
 
 
-def convert_image(source, dest, out_format, run_as_root=True, throttle=None):
+def convert_image(source, dest, out_format, src_format=None,
+                  run_as_root=True, throttle=None):
     if not throttle:
         throttle = throttling.Throttle.get_default()
     with throttle.subcommand(source, dest) as throttle_cmd:
         _convert_image(tuple(throttle_cmd['prefix']),
                        source, dest,
-                       out_format, run_as_root=run_as_root)
+                       out_format,
+                       src_format=src_format,
+                       run_as_root=run_as_root)
 
 
 def resize_image(source, size, run_as_root=False):
@@ -195,14 +222,15 @@ def fetch(context, image_service, image_id, path, _user_id, _project_id):
             try:
                 image_service.download(context, image_id, image_file)
             except IOError as e:
-                with excutils.save_and_reraise_exception():
-                    if e.errno == errno.ENOSPC:
-                        # TODO(eharney): Fire an async error message for this
-                        LOG.error(_LE("No space left in image_conversion_dir "
-                                      "path (%(path)s) while fetching "
-                                      "image %(image)s."),
-                                  {'path': os.path.dirname(path),
-                                   'image': image_id})
+                if e.errno == errno.ENOSPC:
+                    params = {'path': os.path.dirname(path),
+                              'image': image_id}
+                    reason = _("No space left in image_conversion_dir "
+                               "path (%(path)s) while fetching "
+                               "image %(image)s.") % params
+                    LOG.exception(reason)
+                    raise exception.ImageTooBig(image_id=image_id,
+                                                reason=reason)
 
     duration = timeutils.delta_seconds(start_time, timeutils.utcnow())
 
@@ -217,8 +245,40 @@ def fetch(context, image_service, image_id, path, _user_id, _project_id):
     LOG.debug(msg, {"dest": image_file.name,
                     "sz": fsz_mb,
                     "duration": duration})
-    msg = _LI("Image download %(sz).2f MB at %(mbps).2f MB/s")
+    msg = "Image download %(sz).2f MB at %(mbps).2f MB/s"
     LOG.info(msg, {"sz": fsz_mb, "mbps": mbps})
+
+
+def get_qemu_data(image_id, has_meta, disk_format_raw, dest, run_as_root):
+    # We may be on a system that doesn't have qemu-img installed.  That
+    # is ok if we are working with a RAW image.  This logic checks to see
+    # if qemu-img is installed.  If not we make sure the image is RAW and
+    # throw an exception if not.  Otherwise we stop before needing
+    # qemu-img.  Systems with qemu-img will always progress through the
+    # whole function.
+    try:
+        # Use the empty tmp file to make sure qemu_img_info works.
+        data = qemu_img_info(dest, run_as_root=run_as_root)
+    # There are a lot of cases that can cause a process execution
+    # error, but until we do more work to separate out the various
+    # cases we'll keep the general catch here
+    except processutils.ProcessExecutionError:
+        data = None
+        if has_meta:
+            if not disk_format_raw:
+                raise exception.ImageUnacceptable(
+                    reason=_("qemu-img is not installed and image is of "
+                             "type %s.  Only RAW images can be used if "
+                             "qemu-img is not installed.") %
+                    disk_format_raw,
+                    image_id=image_id)
+        else:
+            raise exception.ImageUnacceptable(
+                reason=_("qemu-img is not installed and the disk "
+                         "format is not specified.  Only RAW images "
+                         "can be used if qemu-img is not installed."),
+                image_id=image_id)
+    return data
 
 
 def fetch_verify_image(context, image_service, image_id, dest,
@@ -226,30 +286,41 @@ def fetch_verify_image(context, image_service, image_id, dest,
                        run_as_root=True):
     fetch(context, image_service, image_id, dest,
           None, None)
+    image_meta = image_service.show(context, image_id)
 
     with fileutils.remove_path_on_error(dest):
-        data = qemu_img_info(dest, run_as_root=run_as_root)
-        fmt = data.file_format
-        if fmt is None:
-            raise exception.ImageUnacceptable(
-                reason=_("'qemu-img info' parsing failed."),
-                image_id=image_id)
+        has_meta = False if not image_meta else True
+        try:
+            format_raw = True if image_meta['disk_format'] == 'raw' else False
+        except TypeError:
+            format_raw = False
+        data = get_qemu_data(image_id, has_meta, format_raw,
+                             dest, run_as_root)
+        # We can only really do verification of the image if we have
+        # qemu data to use
+        if data is not None:
+            fmt = data.file_format
+            if fmt is None:
+                raise exception.ImageUnacceptable(
+                    reason=_("'qemu-img info' parsing failed."),
+                    image_id=image_id)
 
-        backing_file = data.backing_file
-        if backing_file is not None:
-            raise exception.ImageUnacceptable(
-                image_id=image_id,
-                reason=(_("fmt=%(fmt)s backed by: %(backing_file)s") %
-                        {'fmt': fmt, 'backing_file': backing_file}))
+            backing_file = data.backing_file
+            if backing_file is not None:
+                raise exception.ImageUnacceptable(
+                    image_id=image_id,
+                    reason=(_("fmt=%(fmt)s backed by: %(backing_file)s") %
+                            {'fmt': fmt, 'backing_file': backing_file}))
 
-        # NOTE(xqueralt): If the image virtual size doesn't fit in the
-        # requested volume there is no point on resizing it because it will
-        # generate an unusable image.
-        if size is not None and data.virtual_size > size:
-            params = {'image_size': data.virtual_size, 'volume_size': size}
-            reason = _("Size is %(image_size)dGB and doesn't fit in a "
-                       "volume of size %(volume_size)dGB.") % params
-            raise exception.ImageUnacceptable(image_id=image_id, reason=reason)
+            # NOTE(xqueralt): If the image virtual size doesn't fit in the
+            # requested volume there is no point on resizing it because it will
+            # generate an unusable image.
+            if size is not None and data.virtual_size > size:
+                params = {'image_size': data.virtual_size, 'volume_size': size}
+                reason = _("Size is %(image_size)dGB and doesn't fit in a "
+                           "volume of size %(volume_size)dGB.") % params
+                raise exception.ImageUnacceptable(image_id=image_id,
+                                                  reason=reason)
 
 
 def fetch_to_vhd(context, image_service,
@@ -280,31 +351,15 @@ def fetch_to_volume_format(context, image_service,
     # Unfortunately it seems that you can't pipe to 'qemu-img convert' because
     # it seeks. Maybe we can think of something for a future version.
     with temporary_file() as tmp:
-        # We may be on a system that doesn't have qemu-img installed.  That
-        # is ok if we are working with a RAW image.  This logic checks to see
-        # if qemu-img is installed.  If not we make sure the image is RAW and
-        # throw an exception if not.  Otherwise we stop before needing
-        # qemu-img.  Systems with qemu-img will always progress through the
-        # whole function.
+        has_meta = False if not image_meta else True
         try:
-            # Use the empty tmp file to make sure qemu_img_info works.
-            qemu_img_info(tmp, run_as_root=run_as_root)
-        except processutils.ProcessExecutionError:
+            format_raw = True if image_meta['disk_format'] == 'raw' else False
+        except TypeError:
+            format_raw = False
+        data = get_qemu_data(image_id, has_meta, format_raw,
+                             tmp, run_as_root)
+        if data is None:
             qemu_img = False
-            if image_meta:
-                if image_meta['disk_format'] != 'raw':
-                    raise exception.ImageUnacceptable(
-                        reason=_("qemu-img is not installed and image is of "
-                                 "type %s.  Only RAW images can be used if "
-                                 "qemu-img is not installed.") %
-                        image_meta['disk_format'],
-                        image_id=image_id)
-            else:
-                raise exception.ImageUnacceptable(
-                    reason=_("qemu-img is not installed and the disk "
-                             "format is not specified.  Only RAW images "
-                             "can be used if qemu-img is not installed."),
-                    image_id=image_id)
 
         tmp_images = TemporaryImages.for_image_service(image_service)
         tmp_image = tmp_images.get(context, image_id)
@@ -353,7 +408,7 @@ def fetch_to_volume_format(context, image_service,
                 % {'fmt': fmt, 'backing_file': backing_file, })
 
         # NOTE(e0ne): check for free space in destination directory before
-        # image convertion.
+        # image conversion.
         check_available_space(dest, virt_size, image_id)
 
         # NOTE(jdg): I'm using qemu-img convert to write
@@ -364,18 +419,11 @@ def fetch_to_volume_format(context, image_service,
         # image and not a different format with a backing file, which may be
         # malicious.
         LOG.debug("%s was %s, converting to %s ", image_id, fmt, volume_format)
+        disk_format = fixup_disk_format(image_meta['disk_format'])
+
         convert_image(tmp, dest, volume_format,
+                      src_format=disk_format,
                       run_as_root=run_as_root)
-
-        data = qemu_img_info(dest, run_as_root=run_as_root)
-
-        if not _validate_file_format(data, volume_format):
-            raise exception.ImageUnacceptable(
-                image_id=image_id,
-                reason=_("Converted to %(vol_format)s, but format is "
-                         "now %(file_format)s") % {'vol_format': volume_format,
-                                                   'file_format': data.
-                                                   file_format})
 
 
 def _validate_file_format(image_data, expected_format):
@@ -420,9 +468,12 @@ def upload_volume(context, image_service, image_meta, volume_path,
                 % {'fmt': fmt, 'backing_file': backing_file})
 
         out_format = image_meta['disk_format']
-        # qemu-img accepts 'vpc' as argument for vhd format
+        # qemu-img accepts 'vpc' as argument for 'vhd 'format and 'parallels'
+        # as argument for 'ploop'.
         if out_format == 'vhd':
             out_format = 'vpc'
+        if out_format == 'ploop':
+            out_format = 'parallels'
 
         convert_image(volume_path, tmp, out_format,
                       run_as_root=run_as_root)
@@ -463,7 +514,7 @@ def check_available_space(dest, image_size, image_id):
         msg = ('There is no space to convert image. '
                'Requested: %(image_size)s, available: %(free_space)s'
                ) % {'image_size': image_size, 'free_space': free_space}
-        raise exception.ImageUnacceptable(image_id=image_id, reason=msg)
+        raise exception.ImageTooBig(image_id=image_id, reason=msg)
 
 
 def is_xenserver_format(image_meta):
@@ -530,8 +581,8 @@ def cleanup_temporary_file(backend_name):
                 path = os.path.join(temp_dir, tmp_file)
                 os.remove(path)
     except OSError as e:
-        LOG.warning(_LW("Exception caught while clearing temporary image "
-                        "files: %s"), e)
+        LOG.warning("Exception caught while clearing temporary image "
+                    "files: %s", e)
 
 
 @contextlib.contextmanager

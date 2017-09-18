@@ -21,11 +21,13 @@ This driver requires VPSA with API version 15.07 or higher.
 from lxml import etree
 from oslo_config import cfg
 from oslo_log import log as logging
-from six.moves import http_client
+import requests
+import six
 
 from cinder import exception
-from cinder.i18n import _, _LE, _LW
+from cinder.i18n import _
 from cinder import interface
+from cinder.volume import configuration
 from cinder.volume import driver
 
 LOG = logging.getLogger(__name__)
@@ -43,6 +45,10 @@ zadara_opts = [
     cfg.BoolOpt('zadara_vpsa_use_ssl',
                 default=False,
                 help='VPSA - Use SSL connection'),
+    cfg.BoolOpt('zadara_ssl_cert_verify',
+                default=True,
+                help='If set to True the http client will validate the SSL '
+                     'certificate of the VPSA endpoint.'),
     cfg.StrOpt('zadara_user',
                default=None,
                help='VPSA - Username'),
@@ -64,7 +70,7 @@ zadara_opts = [
                 help="VPSA - Attach snapshot policy for volumes")]
 
 CONF = cfg.CONF
-CONF.register_opts(zadara_opts)
+CONF.register_opts(zadara_opts, group=configuration.SHARED_CONF_GROUP)
 
 
 class ZadaraVPSAConnection(object):
@@ -234,22 +240,35 @@ class ZadaraVPSAConnection(object):
         LOG.debug('Invoking %(cmd)s using %(method)s request.',
                   {'cmd': cmd, 'method': method})
 
-        if self.conf.zadara_vpsa_use_ssl:
-            connection = (http_client.HTTPSConnection(
-                          self.conf.zadara_vpsa_host,
-                          self.conf.zadara_vpsa_port))
+        host = self.conf.zadara_vpsa_host
+        port = int(self.conf.zadara_vpsa_port)
+
+        protocol = "https" if self.conf.zadara_vpsa_use_ssl else "http"
+        if protocol == "https":
+            if not self.conf.zadara_ssl_cert_verify:
+                verify = False
+            else:
+                cert = ((self.conf.driver_ssl_cert_path) or None)
+                verify = cert if cert else True
         else:
-            connection = http_client.HTTPConnection(self.conf.zadara_vpsa_host,
-                                                    self.conf.zadara_vpsa_port)
-        connection.request(method, url, body)
-        response = connection.getresponse()
+            verify = False
 
-        if response.status != 200:
-            connection.close()
-            raise exception.BadHTTPResponseStatus(status=response.status)
-        data = response.read()
-        connection.close()
+        if port:
+            api_url = "%s://%s:%d%s" % (protocol, host, port, url)
+        else:
+            api_url = "%s://%s%s" % (protocol, host, url)
 
+        try:
+            response = requests.request(method, api_url, data=body,
+                                        verify=verify)
+        except requests.exceptions.RequestException as e:
+            message = (_('Exception: %s') % six.text_type(e))
+            raise exception.VolumeDriverException(message=message)
+
+        if response.status_code != 200:
+            raise exception.BadHTTPResponseStatus(status=response.status_code)
+
+        data = response.content
         xml_tree = etree.fromstring(data)
         status = xml_tree.findtext('status')
         if status != '0':
@@ -263,9 +282,14 @@ class ZadaraVPSAConnection(object):
 
 @interface.volumedriver
 class ZadaraVPSAISCSIDriver(driver.ISCSIDriver):
-    """Zadara VPSA iSCSI/iSER volume driver."""
+    """Zadara VPSA iSCSI/iSER volume driver.
 
-    VERSION = '15.07'
+    Version history:
+        15.07 - Initial driver
+        16.05 - Move from httplib to requests
+    """
+
+    VERSION = '16.05'
 
     # ThirdPartySystems wiki page
     CI_WIKI_NAME = "ZadaraStorage_VPSA_CI"
@@ -413,8 +437,8 @@ class ZadaraVPSAISCSIDriver(driver.ISCSIDriver):
         name = self.configuration.zadara_vol_name_template % volume['name']
         vpsa_vol = self._get_vpsa_volume_name(name)
         if not vpsa_vol:
-            LOG.warning(_LW('Volume %s could not be found. '
-                            'It might be already deleted'), name)
+            LOG.warning('Volume %s could not be found. '
+                        'It might be already deleted', name)
             return
 
         # Check attachment info and detach from all
@@ -462,16 +486,16 @@ class ZadaraVPSAISCSIDriver(driver.ISCSIDriver):
         cg_name = self._get_volume_cg_name(volume_name)
         if not cg_name:
             # If the volume isn't present, then don't attempt to delete
-            LOG.warning(_LW('snapshot: original volume %s not found, '
-                            'skipping delete operation'),
+            LOG.warning('snapshot: original volume %s not found, '
+                        'skipping delete operation',
                         volume_name)
             return
 
         snap_id = self._get_snap_id(cg_name, snapshot['name'])
         if not snap_id:
             # If the snapshot isn't present, then don't attempt to delete
-            LOG.warning(_LW('snapshot: snapshot %s not found, '
-                            'skipping delete operation'), snapshot['name'])
+            LOG.warning('snapshot: snapshot %s not found, '
+                        'skipping delete operation', snapshot['name'])
             return
 
         self.vpsa.send_cmd('delete_snapshot',
@@ -487,12 +511,12 @@ class ZadaraVPSAISCSIDriver(driver.ISCSIDriver):
                        % snapshot['volume_name'])
         cg_name = self._get_volume_cg_name(volume_name)
         if not cg_name:
-            LOG.error(_LE('Volume %(name)s not found'), {'name': volume_name})
+            LOG.error('Volume %(name)s not found', {'name': volume_name})
             raise exception.VolumeNotFound(volume_id=volume['id'])
 
         snap_id = self._get_snap_id(cg_name, snapshot['name'])
         if not snap_id:
-            LOG.error(_LE('Snapshot %(name)s not found'),
+            LOG.error('Snapshot %(name)s not found',
                       {'name': snapshot['name']})
             raise exception.SnapshotNotFound(snapshot_id=snapshot['id'])
 
@@ -515,7 +539,7 @@ class ZadaraVPSAISCSIDriver(driver.ISCSIDriver):
                        % src_vref['name'])
         cg_name = self._get_volume_cg_name(volume_name)
         if not cg_name:
-            LOG.error(_LE('Volume %(name)s not found'), {'name': volume_name})
+            LOG.error('Volume %(name)s not found', {'name': volume_name})
             raise exception.VolumeNotFound(volume_id=volume['id'])
 
         self.vpsa.send_cmd('create_clone',

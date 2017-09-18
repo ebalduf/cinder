@@ -28,6 +28,7 @@ from oslo_utils import units
 import requests
 from requests import exceptions
 import six
+from six.moves import http_client
 
 from cinder import exception
 from cinder.i18n import _
@@ -49,7 +50,7 @@ URI_TASKS_BY_OPID = '/vdc/tasks/{0}'
 def _decode_list(data):
     rv = []
     for item in data:
-        if isinstance(item, unicode):
+        if isinstance(item, six.text_type):
             item = item.encode('utf-8')
         elif isinstance(item, list):
             item = _decode_list(item)
@@ -62,9 +63,9 @@ def _decode_list(data):
 def _decode_dict(data):
     rv = {}
     for key, value in data.items():
-        if isinstance(key, unicode):
+        if isinstance(key, six.text_type):
             key = key.encode('utf-8')
-        if isinstance(value, unicode):
+        if isinstance(value, six.text_type):
             value = value.encode('utf-8')
         elif isinstance(value, list):
             value = _decode_list(value)
@@ -98,7 +99,7 @@ def service_json_request(ip_addr, port, http_method, uri, body,
     :param uri: the request URI
     :param body: the request payload
     :returns: a tuple of two elements: (response body, response headers)
-    :raises: CoprHdError in case of HTTP errors with err_code 3
+    :raises CoprHdError: in case of HTTP errors with err_code 3
     """
 
     SEC_AUTHTOKEN_HEADER = 'X-SDS-AUTH-TOKEN'
@@ -137,21 +138,21 @@ def service_json_request(ip_addr, port, http_method, uri, body,
                               (_("Unknown/Unsupported HTTP method: %s") %
                                http_method))
 
-        if (response.status_code == requests.codes['ok'] or
-                response.status_code == 202):
+        if (response.status_code == http_client.OK or
+                response.status_code == http_client.ACCEPTED):
             return (response.text, response.headers)
 
         error_msg = None
-        if response.status_code == 500:
+        if response.status_code == http_client.INTERNAL_SERVER_ERROR:
             response_text = json_decode(response.text)
             error_details = ""
             if 'details' in response_text:
                 error_details = response_text['details']
             error_msg = (_("CoprHD internal server error. Error details: %s"),
                          error_details)
-        elif response.status_code == 401:
+        elif response.status_code == http_client.UNAUTHORIZED:
             error_msg = _("Access forbidden: Authentication required")
-        elif response.status_code == 403:
+        elif response.status_code == http_client.FORBIDDEN:
             error_msg = ""
             error_details = ""
             error_description = ""
@@ -177,11 +178,11 @@ def service_json_request(ip_addr, port, http_method, uri, body,
                               " sufficient privileges to perform this"
                               " operation")
 
-        elif response.status_code == 404:
+        elif response.status_code == http_client.NOT_FOUND:
             error_msg = "Requested resource not found"
-        elif response.status_code == 405:
+        elif response.status_code == http_client.METHOD_NOT_ALLOWED:
             error_msg = six.text_type(response.text)
-        elif response.status_code == 503:
+        elif response.status_code == http_client.SERVICE_UNAVAILABLE:
             error_msg = ""
             error_details = ""
             error_description = ""
@@ -204,7 +205,7 @@ def service_json_request(ip_addr, port, http_method, uri, body,
                               " service your request")
         else:
             error_msg = response.text
-            if isinstance(error_msg, unicode):
+            if isinstance(error_msg, six.text_type):
                 error_msg = error_msg.encode('utf-8')
         raise CoprHdError(CoprHdError.HTTP_ERR,
                           (_("HTTP code: %(status_code)s"
@@ -325,8 +326,9 @@ def get_node_value(json_object, parent_node_name, child_node_name=None):
     """Returns value of given child_node.
 
     If child_node is not given, then value of parent node is returned
-    returns None: If json_object or parent_node is not given,
-                  If child_node is not found under parent_node
+
+    :returns: None If json_object or parent_node is not given,
+                   If child_node is not found under parent_node
     """
     if not json_object:
         return None

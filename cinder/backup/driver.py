@@ -24,7 +24,7 @@ import six
 
 from cinder.db import base
 from cinder import exception
-from cinder.i18n import _, _LI, _LW
+from cinder.i18n import _
 from cinder import keymgr as key_manager
 
 service_opts = [
@@ -54,8 +54,8 @@ class BackupMetadataAPI(base.Base):
     TYPE_TAG_VOL_META = 'volume-metadata'
     TYPE_TAG_VOL_GLANCE_META = 'volume-glance-metadata'
 
-    def __init__(self, context, db_driver=None):
-        super(BackupMetadataAPI, self).__init__(db_driver)
+    def __init__(self, context, db=None):
+        super(BackupMetadataAPI, self).__init__(db)
         self.context = context
 
     @staticmethod
@@ -64,7 +64,7 @@ class BackupMetadataAPI(base.Base):
         try:
             jsonutils.dumps(value)
         except TypeError:
-            LOG.info(_LI("Value with type=%s is not serializable"),
+            LOG.info("Value with type=%s is not serializable",
                      type(value))
             return False
 
@@ -84,14 +84,14 @@ class BackupMetadataAPI(base.Base):
             for key, value in meta:
                 # Exclude fields that are "not JSON serializable"
                 if not self._is_serializable(value):
-                    LOG.info(_LI("Unable to serialize field '%s' - excluding "
-                                 "from backup"), key)
+                    LOG.info("Unable to serialize field '%s' - excluding "
+                             "from backup", key)
                     continue
-                # Copy the encryption key uuid for backup
+                # Copy the encryption key UUID for backup
                 if key is 'encryption_key_id' and value is not None:
                     km = key_manager.API(CONF)
                     value = km.store(self.context, km.get(self.context, value))
-                    LOG.debug("Copying encryption key uuid for backup.")
+                    LOG.debug("Copying encryption key UUID for backup.")
                 container[type_tag][key] = value
 
             LOG.debug("Completed fetching metadata type '%s'", type_tag)
@@ -112,8 +112,8 @@ class BackupMetadataAPI(base.Base):
             for entry in meta:
                 # Exclude fields that are "not JSON serializable"
                 if not self._is_serializable(meta[entry]):
-                    LOG.info(_LI("Unable to serialize field '%s' - excluding "
-                                 "from backup"), entry)
+                    LOG.info("Unable to serialize field '%s' - excluding "
+                             "from backup", entry)
                     continue
                 container[type_tag][entry] = meta[entry]
 
@@ -136,8 +136,8 @@ class BackupMetadataAPI(base.Base):
                 for entry in meta:
                     # Exclude fields that are "not JSON serializable"
                     if not self._is_serializable(entry.value):
-                        LOG.info(_LI("Unable to serialize field '%s' - "
-                                     "excluding from backup"), entry)
+                        LOG.info("Unable to serialize field '%s' - "
+                                 "excluding from backup", entry)
                         continue
                     container[type_tag][entry.key] = entry.value
 
@@ -153,7 +153,7 @@ class BackupMetadataAPI(base.Base):
 
         :param metadata: master set of metadata
         :param fields: list of fields we want to extract
-        :param excludes: fields to be exluded
+        :param excludes: fields to be excluded
         :returns: filtered metadata
         """
         if not fields:
@@ -234,9 +234,9 @@ class BackupMetadataAPI(base.Base):
             else:
                 # Volume type id's do not match, and destination volume
                 # has a volume type. Throw exception.
-                LOG.warning(_LW("Destination volume type is different from "
-                                "source volume type for an encrypted volume. "
-                                "Encrypted backup restore has failed."))
+                LOG.warning("Destination volume type is different from "
+                            "source volume type for an encrypted volume. "
+                            "Encrypted backup restore has failed.")
                 msg = (_("The source volume type '%(src)s' is different "
                          "than the destination volume type '%(dest)s'.") %
                        {'src': src_volume_type_id,
@@ -347,10 +347,10 @@ class BackupMetadataAPI(base.Base):
 @six.add_metaclass(abc.ABCMeta)
 class BackupDriver(base.Base):
 
-    def __init__(self, context, db_driver=None):
-        super(BackupDriver, self).__init__(db_driver)
+    def __init__(self, context, db=None):
+        super(BackupDriver, self).__init__(db)
         self.context = context
-        self.backup_meta_api = BackupMetadataAPI(context, db_driver)
+        self.backup_meta_api = BackupMetadataAPI(context, db)
         # This flag indicates if backup driver supports force
         # deletion. So it should be set to True if the driver that inherits
         # from BackupDriver supports the force deletion function.
@@ -373,7 +373,7 @@ class BackupDriver(base.Base):
         return
 
     @abc.abstractmethod
-    def delete(self, backup):
+    def delete_backup(self, backup):
         """Delete a saved backup."""
         return
 
@@ -410,6 +410,10 @@ class BackupDriver(base.Base):
         """
         return
 
+    def check_for_setup_error(self):
+        """Method for checking if backup backend is successfully installed."""
+        return
+
 
 @six.add_metaclass(abc.ABCMeta)
 class BackupDriverWithVerify(BackupDriver):
@@ -421,6 +425,6 @@ class BackupDriverWithVerify(BackupDriver):
         operation.
 
         :param backup: backup id of the backup to verify
-        :raises: InvalidBackup, NotImplementedError
+        :raises InvalidBackup, NotImplementedError:
         """
         return

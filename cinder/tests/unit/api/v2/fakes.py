@@ -52,9 +52,9 @@ def create_fake_volume(id, **kwargs):
         'display_name': DEFAULT_VOL_NAME,
         'display_description': DEFAULT_VOL_DESCRIPTION,
         'updated_at': datetime.datetime(1900, 1, 1, 1, 1, 1,
-                                        tzinfo=iso8601.iso8601.Utc()),
+                                        tzinfo=iso8601.UTC),
         'created_at': datetime.datetime(1900, 1, 1, 1, 1, 1,
-                                        tzinfo=iso8601.iso8601.Utc()),
+                                        tzinfo=iso8601.UTC),
         'snapshot_id': None,
         'source_volid': None,
         'volume_type_id': '3e196c20-3c06-11e2-81c1-0800200c9a66',
@@ -63,7 +63,7 @@ def create_fake_volume(id, **kwargs):
                                   {'key': 'readonly', 'value': 'False'}],
         'bootable': False,
         'launched_at': datetime.datetime(1900, 1, 1, 1, 1, 1,
-                                         tzinfo=iso8601.iso8601.Utc()),
+                                         tzinfo=iso8601.UTC),
         'volume_type': fake_volume.fake_db_volume_type(name=DEFAULT_VOL_TYPE),
         'replication_status': 'disabled',
         'replication_extended_status': None,
@@ -238,7 +238,7 @@ def fake_snapshot_get(self, context, snapshot_id):
 
 
 def fake_consistencygroup_get_notfound(self, context, cg_id):
-    raise exc.ConsistencyGroupNotFound(consistencygroup_id=cg_id)
+    raise exc.GroupNotFound(group_id=cg_id)
 
 
 def fake_volume_type_get(context, id, *args, **kwargs):

@@ -18,26 +18,34 @@ Driver for Dell EMC ScaleIO based on ScaleIO remote CLI.
 
 import base64
 import binascii
+from distutils import version
 import json
 import math
-
 from os_brick.initiator import connector
 from oslo_config import cfg
 from oslo_log import log as logging
+from oslo_log import versionutils
 from oslo_utils import units
+import re
 import requests
 import six
+from six.moves import http_client
 from six.moves import urllib
 
 from cinder import context
 from cinder import exception
-from cinder.i18n import _, _LI, _LW, _LE
+from cinder.i18n import _
 from cinder.image import image_utils
 from cinder import interface
+from cinder import objects
 from cinder import utils
+
+from cinder.objects import fields
+from cinder.volume import configuration
 from cinder.volume import driver
 from cinder.volume.drivers.san import san
 from cinder.volume import qos_specs
+from cinder.volume import utils as volume_utils
 from cinder.volume import volume_types
 
 CONF = cfg.CONF
@@ -59,16 +67,30 @@ scaleio_opts = [
     cfg.BoolOpt('sio_unmap_volume_before_deletion',
                 default=False,
                 help='Unmap volume before deletion.'),
-    cfg.StrOpt('sio_protection_domain_id',
-               help='Protection Domain ID.'),
-    cfg.StrOpt('sio_protection_domain_name',
-               help='Protection Domain name.'),
     cfg.StrOpt('sio_storage_pools',
                help='Storage Pools.'),
+    cfg.StrOpt('sio_protection_domain_id',
+               deprecated_for_removal=True,
+               deprecated_reason="Replaced by sio_storage_pools option",
+               deprecated_since="Pike",
+               help='DEPRECATED: Protection Domain ID.'),
+    cfg.StrOpt('sio_protection_domain_name',
+               deprecated_for_removal=True,
+               deprecated_reason="Replaced by sio_storage_pools option",
+               deprecated_since="Pike",
+               help='DEPRECATED: Protection Domain name.'),
     cfg.StrOpt('sio_storage_pool_name',
-               help='Storage Pool name.'),
+               deprecated_for_removal=True,
+               deprecated_reason="Replaced by sio_storage_pools option",
+               deprecated_since="Pike",
+               help='DEPRECATED: Storage Pool name.'),
     cfg.StrOpt('sio_storage_pool_id',
-               help='Storage Pool ID.'),
+               deprecated_for_removal=True,
+               deprecated_reason="Replaced by sio_storage_pools option",
+               deprecated_since="Pike",
+               help='DEPRECATED: Storage Pool ID.'),
+    cfg.StrOpt('sio_server_api_version',
+               help='ScaleIO API version.'),
     cfg.FloatOpt('sio_max_over_subscription_ratio',
                  # This option exists to provide a default value for the
                  # ScaleIO driver which is different than the global default.
@@ -80,7 +102,7 @@ scaleio_opts = [
                       'Maximum value allowed for ScaleIO is 10.0.')
 ]
 
-CONF.register_opts(scaleio_opts)
+CONF.register_opts(scaleio_opts, group=configuration.SHARED_CONF_GROUP)
 
 STORAGE_POOL_NAME = 'sio:sp_name'
 STORAGE_POOL_ID = 'sio:sp_id'
@@ -96,7 +118,6 @@ QOS_IOPS_PER_GB = 'maxIOPSperGB'
 QOS_BANDWIDTH_PER_GB = 'maxBWSperGB'
 
 BLOCK_SIZE = 8
-OK_STATUS_CODE = 200
 VOLUME_NOT_FOUND_ERROR = 79
 # This code belongs to older versions of ScaleIO
 OLD_VOLUME_NOT_FOUND_ERROR = 78
@@ -111,7 +132,10 @@ SIO_MAX_OVERSUBSCRIPTION_RATIO = 10.0
 class ScaleIODriver(driver.VolumeDriver):
     """Dell EMC ScaleIO Driver."""
 
-    VERSION = "2.0"
+    VERSION = "2.0.2"
+    # Major changes
+    # 2.0.1: Added support for SIO 1.3x in addition to 2.0.x
+    # 2.0.2: Added consistency group support to generic volume groups
 
     # ThirdPartySystems wiki
     CI_WIKI_NAME = "EMC_ScaleIO_CI"
@@ -129,118 +153,108 @@ class ScaleIODriver(driver.VolumeDriver):
         self.server_username = self.configuration.san_login
         self.server_password = self.configuration.san_password
         self.server_token = None
+        self.server_api_version = self.configuration.sio_server_api_version
+        # list of statistics/properties to query from SIO
+        self.statisticProperties = None
         self.verify_server_certificate = (
             self.configuration.sio_verify_server_certificate)
         self.server_certificate_path = None
         if self.verify_server_certificate:
             self.server_certificate_path = (
                 self.configuration.sio_server_certificate_path)
-        LOG.info(_LI(
-                 "REST server IP: %(ip)s, port: %(port)s, username: %("
-                 "user)s. "
-                 "Verify server's certificate: %(verify_cert)s."),
+        LOG.info("REST server IP: %(ip)s, port: %(port)s, username: %("
+                 "user)s. Verify server's certificate: %(verify_cert)s.",
                  {'ip': self.server_ip,
                   'port': self.server_port,
                   'user': self.server_username,
                   'verify_cert': self.verify_server_certificate})
 
+        # starting in Pike, prefer the sio_storage_pools option
         self.storage_pools = None
         if self.configuration.sio_storage_pools:
             self.storage_pools = [
                 e.strip() for e in
                 self.configuration.sio_storage_pools.split(',')]
+        LOG.info("Storage pools names: %(pools)s.",
+                 {'pools': self.storage_pools})
 
-        self.storage_pool_name = self.configuration.sio_storage_pool_name
-        self.storage_pool_id = self.configuration.sio_storage_pool_id
-        if self.storage_pool_name is None and self.storage_pool_id is None:
-            LOG.warning(_LW("No storage pool name or id was found."))
-        else:
-            LOG.info(_LI(
-                     "Storage pools names: %(pools)s, "
-                     "storage pool name: %(pool)s, pool id: %(pool_id)s."),
-                     {'pools': self.storage_pools,
-                      'pool': self.storage_pool_name,
-                      'pool_id': self.storage_pool_id})
+        LOG.info("Storage pool name: %(pool)s, pool id: %(pool_id)s.",
+                 {'pool': self.configuration.sio_storage_pool_name,
+                  'pool_id': self.configuration.sio_storage_pool_id})
 
-        self.protection_domain_name = (
-            self.configuration.sio_protection_domain_name)
-        LOG.info(_LI(
-                 "Protection domain name: %(domain_name)s."),
-                 {'domain_name': self.protection_domain_name})
-        self.protection_domain_id = self.configuration.sio_protection_domain_id
-        LOG.info(_LI(
-                 "Protection domain id: %(domain_id)s."),
-                 {'domain_id': self.protection_domain_id})
+        LOG.info("Protection domain name: %(domain)s, "
+                 "domain id: %(domain_id)s.",
+                 {'domain': self.configuration.sio_protection_domain_name,
+                  'domain_id': self.configuration.sio_protection_domain_id})
 
         self.provisioning_type = (
             'thin' if self.configuration.san_thin_provision else 'thick')
-        LOG.info(_LI(
-                 "Default provisioning type: %(provisioning_type)s."),
+        LOG.info("Default provisioning type: %(provisioning_type)s.",
                  {'provisioning_type': self.provisioning_type})
         self.configuration.max_over_subscription_ratio = (
             self.configuration.sio_max_over_subscription_ratio)
         self.connector = connector.InitiatorConnector.factory(
             connector.SCALEIO, utils.get_root_helper(),
-            device_scan_attempts=
             self.configuration.num_volume_device_scan_tries
         )
 
-        self.connection_properties = {}
-        self.connection_properties['scaleIO_volname'] = None
-        self.connection_properties['hostIP'] = None
-        self.connection_properties['serverIP'] = self.server_ip
-        self.connection_properties['serverPort'] = self.server_port
-        self.connection_properties['serverUsername'] = self.server_username
-        self.connection_properties['serverPassword'] = self.server_password
-        self.connection_properties['serverToken'] = self.server_token
-        self.connection_properties['iopsLimit'] = None
-        self.connection_properties['bandwidthLimit'] = None
+        self.connection_properties = {
+            'scaleIO_volname': None,
+            'hostIP': None,
+            'serverIP': self.server_ip,
+            'serverPort': self.server_port,
+            'serverUsername': self.server_username,
+            'serverPassword': self.server_password,
+            'serverToken': self.server_token,
+            'iopsLimit': None,
+            'bandwidthLimit': None,
+        }
+
+        # simple cache for domain and sp ids
+        self.cache_pd = {}
+        self.cache_sp = {}
 
     def check_for_setup_error(self):
-        if (not self.protection_domain_name and
-                not self.protection_domain_id):
-            LOG.warning(_LW("No protection domain name or id "
-                            "was specified in configuration."))
-
-        if self.protection_domain_name and self.protection_domain_id:
+        # make sure both domain name and id are not specified
+        if (self.configuration.sio_protection_domain_name
+                and self.configuration.sio_protection_domain_id):
             msg = _("Cannot specify both protection domain name "
                     "and protection domain id.")
             raise exception.InvalidInput(reason=msg)
 
-        if not self.server_ip:
-            msg = _("REST server IP must by specified.")
-            raise exception.InvalidInput(reason=msg)
-
-        if not self.server_username:
-            msg = _("REST server username must by specified.")
-            raise exception.InvalidInput(reason=msg)
-
-        if not self.server_password:
-            msg = _("REST server password must by specified.")
-            raise exception.InvalidInput(reason=msg)
-
-        if not self.verify_server_certificate:
-            LOG.warning(_LW("Verify certificate is not set, using default of "
-                            "False."))
-
-        if self.verify_server_certificate and not self.server_certificate_path:
-            msg = _("Path to REST server's certificate must be specified.")
-            raise exception.InvalidInput(reason=msg)
-
-        if self.storage_pool_name and self.storage_pool_id:
+        # make sure both storage pool and id are not specified
+        if (self.configuration.sio_storage_pool_name
+                and self.configuration.sio_storage_pool_id):
             msg = _("Cannot specify both storage pool name and storage "
                     "pool id.")
             raise exception.InvalidInput(reason=msg)
 
-        if not self.storage_pool_name and not self.storage_pool_id:
-            msg = _("Must specify storage pool name or id.")
+        # make sure the REST gateway is specified
+        if not self.server_ip:
+            msg = _("REST server IP must be specified.")
             raise exception.InvalidInput(reason=msg)
 
-        if not self.storage_pools:
-            msg = (_("Must specify storage pools. Option: "
-                     "sio_storage_pools."))
+        # make sure we got a username
+        if not self.server_username:
+            msg = _("REST server username must be specified.")
             raise exception.InvalidInput(reason=msg)
 
+        # make sure we got a password
+        if not self.server_password:
+            msg = _("REST server password must be specified.")
+            raise exception.InvalidInput(reason=msg)
+
+        # validate certificate settings
+        if self.verify_server_certificate and not self.server_certificate_path:
+            msg = _("Path to REST server's certificate must be specified.")
+            raise exception.InvalidInput(reason=msg)
+
+        # log warning if not using certificates
+        if not self.verify_server_certificate:
+            LOG.warning("Verify certificate is not set, using default of "
+                        "False.")
+
+        # validate oversubscription ration
         if (self.configuration.max_over_subscription_ratio is not None and
             (self.configuration.max_over_subscription_ratio -
              SIO_MAX_OVERSUBSCRIPTION_RATIO > 1)):
@@ -250,33 +264,128 @@ class ScaleIODriver(driver.VolumeDriver):
                     'ratio': self.configuration.max_over_subscription_ratio})
             raise exception.InvalidInput(reason=msg)
 
+        # validate that version of ScaleIO is supported
+        server_api_version = self._get_server_api_version(fromcache=False)
+        if not self._version_greater_than_or_equal(
+                server_api_version, "2.0.0"):
+            # we are running against a pre-2.0.0 ScaleIO instance
+            msg = (_("Using ScaleIO versions less than v2.0.0 has been "
+                     "deprecated and will be removed in a future version"))
+            versionutils.report_deprecated_feature(LOG, msg)
+
+        # we have enough information now to validate pools
+        self.storage_pools = self._build_storage_pool_list()
+        if not self.storage_pools:
+            msg = (_("Must specify storage pools. Option: "
+                     "sio_storage_pools."))
+            raise exception.InvalidInput(reason=msg)
+
+    def _build_storage_pool_list(self):
+        """Build storage pool list
+
+        This method determines the list of storage pools that
+        are requested, by concatenating a few config settings
+        """
+        # start with the list of pools supplied in the configuration
+        pools = self.storage_pools
+        # append the domain:pool specified individually
+        if (self.configuration.sio_storage_pool_name is not None and
+                self.configuration.sio_protection_domain_name is not None):
+            extra_pool = "{}:{}".format(
+                self.configuration.sio_protection_domain_name,
+                self.configuration.sio_storage_pool_name)
+            LOG.info("Ensuring %s is in the list of configured pools.",
+                     extra_pool)
+            if pools is None:
+                pools = []
+            if extra_pool not in pools:
+                pools.append(extra_pool)
+        # if specified, account for the storage_pool_id
+        if self.configuration.sio_storage_pool_id is not None:
+            # the user specified a storage pool id
+            # get the domain and pool names from SIO
+            extra_pool = self._get_storage_pool_name(
+                self.configuration.sio_storage_pool_id)
+            LOG.info("Ensuring %s is in the list of configured pools.",
+                     extra_pool)
+            if pools is None:
+                pools = []
+            if extra_pool not in pools:
+                pools.append(extra_pool)
+
+        return pools
+
+    def _get_queryable_statistics(self, sio_type, sio_id):
+        if self.statisticProperties is None:
+            self.statisticProperties = [
+                "capacityAvailableForVolumeAllocationInKb",
+                "capacityLimitInKb", "spareCapacityInKb",
+                "thickCapacityInUseInKb"]
+            # version 2.0 of SIO introduced thin volumes
+            if self._version_greater_than_or_equal(
+                    self._get_server_api_version(),
+                    "2.0.0"):
+                # check to see if thinCapacityAllocatedInKb is valid
+                # needed due to non-backwards compatible API
+                req_vars = {'server_ip': self.server_ip,
+                            'server_port': self.server_port,
+                            'sio_type': sio_type}
+                request = ("https://%(server_ip)s:%(server_port)s"
+                           "/api/types/%(sio_type)s/instances/action/"
+                           "querySelectedStatistics") % req_vars
+                params = {'ids': [sio_id],
+                          'properties': ["thinCapacityAllocatedInKb"]}
+                r, response = self._execute_scaleio_post_request(params,
+                                                                 request)
+                if r.status_code == http_client.OK:
+                    # is it valid, use it
+                    self.statisticProperties.append(
+                        "thinCapacityAllocatedInKb")
+                else:
+                    # it is not valid, assume use of thinCapacityAllocatedInKm
+                    self.statisticProperties.append(
+                        "thinCapacityAllocatedInKm")
+
+        return self.statisticProperties
+
     def _find_storage_pool_id_from_storage_type(self, storage_type):
         # Default to what was configured in configuration file if not defined.
-        return storage_type.get(STORAGE_POOL_ID,
-                                self.storage_pool_id)
+        return storage_type.get(STORAGE_POOL_ID)
 
     def _find_storage_pool_name_from_storage_type(self, storage_type):
-        return storage_type.get(STORAGE_POOL_NAME,
-                                self.storage_pool_name)
+        pool_name = storage_type.get(STORAGE_POOL_NAME)
+        # using the extra spec of sio:sp_name is deprecated
+        if pool_name is not None:
+            LOG.warning("Using the volume type extra spec of "
+                        "sio:sp_name is deprecated and will be removed "
+                        "in a future version. The supported way to "
+                        "specify this is by specifying an extra spec "
+                        "of 'pool_name=protection_domain:storage_pool'")
+        return pool_name
 
     def _find_protection_domain_id_from_storage_type(self, storage_type):
         # Default to what was configured in configuration file if not defined.
-        return storage_type.get(PROTECTION_DOMAIN_ID,
-                                self.protection_domain_id)
+        return storage_type.get(PROTECTION_DOMAIN_ID)
 
     def _find_protection_domain_name_from_storage_type(self, storage_type):
-        # Default to what was configured in configuration file if not defined.
-        return storage_type.get(PROTECTION_DOMAIN_NAME,
-                                self.protection_domain_name)
+        domain_name = storage_type.get(PROTECTION_DOMAIN_NAME)
+        # using the extra spec of sio:pd_name is deprecated
+        if domain_name is not None:
+            LOG.warning("Using the volume type extra spec of "
+                        "sio:pd_name is deprecated and will be removed "
+                        "in a future version. The supported way to "
+                        "specify this is by specifying an extra spec "
+                        "of 'pool_name=protection_domain:storage_pool'")
+        return domain_name
 
     def _find_provisioning_type(self, storage_type):
         new_provisioning_type = storage_type.get(PROVISIONING_KEY)
         old_provisioning_type = storage_type.get(OLD_PROVISIONING_KEY)
         if new_provisioning_type is None and old_provisioning_type is not None:
-            LOG.info(_LI("Using sio:provisioning_type for defining "
-                         "thin or thick volume will be deprecated in the "
-                         "Ocata release of OpenStack. Please use "
-                         "provisioning:type configuration option."))
+            LOG.info("Using sio:provisioning_type for defining "
+                     "thin or thick volume will be deprecated in the "
+                     "Ocata release of OpenStack. Please use "
+                     "provisioning:type configuration option.")
             provisioning_type = old_provisioning_type
         else:
             provisioning_type = new_provisioning_type
@@ -290,21 +399,35 @@ class ScaleIODriver(driver.VolumeDriver):
         else:
             return self.provisioning_type
 
-    def _find_limit(self, storage_type, qos_key, extraspecs_key):
+    @staticmethod
+    def _find_limit(storage_type, qos_key, extraspecs_key):
         qos_limit = (storage_type.get(qos_key)
                      if qos_key is not None else None)
         extraspecs_limit = (storage_type.get(extraspecs_key)
                             if extraspecs_key is not None else None)
         if extraspecs_limit is not None:
             if qos_limit is not None:
-                LOG.warning(_LW("QoS specs are overriding extra_specs."))
+                LOG.warning("QoS specs are overriding extra_specs.")
             else:
-                LOG.info(_LI("Using extra_specs for defining QoS specs "
-                             "will be deprecated in the N release "
-                             "of OpenStack. Please use QoS specs."))
+                LOG.info("Using extra_specs for defining QoS specs "
+                         "will be deprecated in the N release "
+                         "of OpenStack. Please use QoS specs.")
         return qos_limit if qos_limit is not None else extraspecs_limit
 
-    def _id_to_base64(self, id):
+    @staticmethod
+    def _version_greater_than(ver1, ver2):
+        return version.LooseVersion(ver1) > version.LooseVersion(ver2)
+
+    @staticmethod
+    def _version_greater_than_or_equal(ver1, ver2):
+        return version.LooseVersion(ver1) >= version.LooseVersion(ver2)
+
+    @staticmethod
+    def _convert_kb_to_gib(size):
+        return int(math.ceil(float(size) / units.Mi))
+
+    @staticmethod
+    def _id_to_base64(id):
         # Base64 encode the id to get a volume name less than 32 characters due
         # to ScaleIO limitation.
         name = six.text_type(id).replace("-", "")
@@ -328,117 +451,73 @@ class ScaleIODriver(driver.VolumeDriver):
 
         volname = self._id_to_base64(volume.id)
 
+        # the cinder scheduler will send us the pd:sp for the volume
+        requested_pd = None
+        requested_sp = None
+        try:
+            pd_sp = volume_utils.extract_host(volume.host, 'pool')
+            if pd_sp is not None:
+                requested_pd = pd_sp.split(':')[0]
+                requested_sp = pd_sp.split(':')[1]
+        except (KeyError, ValueError):
+            # we seem to have not gotten it so we'll figure out defaults
+            requested_pd = None
+            requested_sp = None
+
         storage_type = self._get_volumetype_extraspecs(volume)
-        storage_pool_name = self._find_storage_pool_name_from_storage_type(
-            storage_type)
+        type_sp = self._find_storage_pool_name_from_storage_type(storage_type)
         storage_pool_id = self._find_storage_pool_id_from_storage_type(
             storage_type)
         protection_domain_id = (
             self._find_protection_domain_id_from_storage_type(storage_type))
-        protection_domain_name = (
+        type_pd = (
             self._find_protection_domain_name_from_storage_type(storage_type))
         provisioning_type = self._find_provisioning_type(storage_type)
 
-        LOG.info(_LI(
-                 "Volume type: %(volume_type)s, "
+        if type_sp is not None:
+            # prefer the storage pool in the volume type
+            # this was undocumented so will likely not happen
+            storage_pool_name = type_sp
+        else:
+            storage_pool_name = requested_sp
+        if type_pd is not None:
+            # prefer the protection domain in the volume type
+            # this was undocumented so will likely not happen
+            protection_domain_name = type_pd
+        else:
+            protection_domain_name = requested_pd
+
+        # check if the requested pd:sp match the ones that will
+        # be used. If not, spit out a deprecation notice
+        # should never happen
+        if (protection_domain_name != requested_pd
+                or storage_pool_name != requested_sp):
+            LOG.warning(
+                "Creating volume in different protection domain or "
+                "storage pool than scheduler requested. "
+                "Requested: %(req_pd)s:%(req_sp)s, "
+                "Actual %(act_pd)s:%(act_sp)s.",
+                {'req_pd': requested_pd,
+                 'req_sp': requested_sp,
+                 'act_pd': protection_domain_name,
+                 'act_sp': storage_pool_name})
+
+        LOG.info("Volume type: %(volume_type)s, "
                  "storage pool name: %(pool_name)s, "
                  "storage pool id: %(pool_id)s, protection domain id: "
-                 "%(domain_id)s, protection domain name: %(domain_name)s."),
+                 "%(domain_id)s, protection domain name: %(domain_name)s.",
                  {'volume_type': storage_type,
                   'pool_name': storage_pool_name,
                   'pool_id': storage_pool_id,
                   'domain_id': protection_domain_id,
                   'domain_name': protection_domain_name})
 
-        verify_cert = self._get_verify_cert()
+        domain_id = self._get_protection_domain_id(protection_domain_name)
+        LOG.info("Domain id is %s.", domain_id)
+        pool_id = self._get_storage_pool_id(protection_domain_name,
+                                            storage_pool_name)
+        LOG.info("Pool id is %s.", pool_id)
 
-        if storage_pool_name:
-            self.storage_pool_name = storage_pool_name
-            self.storage_pool_id = None
-        if storage_pool_id:
-            self.storage_pool_id = storage_pool_id
-            self.storage_pool_name = None
-        if protection_domain_name:
-            self.protection_domain_name = protection_domain_name
-            self.protection_domain_id = None
-        if protection_domain_id:
-            self.protection_domain_id = protection_domain_id
-            self.protection_domain_name = None
-
-        domain_id = self.protection_domain_id
-        if not domain_id:
-            if not self.protection_domain_name:
-                msg = _("Must specify protection domain name or"
-                        " protection domain id.")
-                raise exception.VolumeBackendAPIException(data=msg)
-
-            domain_name = self.protection_domain_name
-            encoded_domain_name = urllib.parse.quote(domain_name, '')
-            req_vars = {'server_ip': self.server_ip,
-                        'server_port': self.server_port,
-                        'encoded_domain_name': encoded_domain_name}
-            request = ("https://%(server_ip)s:%(server_port)s"
-                       "/api/types/Domain/instances/getByName::"
-                       "%(encoded_domain_name)s") % req_vars
-            LOG.info(_LI("ScaleIO get domain id by name request: %s."),
-                     request)
-            r = requests.get(
-                request,
-                auth=(
-                    self.server_username,
-                    self.server_token),
-                verify=verify_cert)
-            r = self._check_response(r, request)
-
-            domain_id = r.json()
-            if not domain_id:
-                msg = (_("Domain with name %s wasn't found.")
-                       % self.protection_domain_name)
-                LOG.error(msg)
-                raise exception.VolumeBackendAPIException(data=msg)
-            if r.status_code != OK_STATUS_CODE and "errorCode" in domain_id:
-                msg = (_("Error getting domain id from name %(name)s: %(id)s.")
-                       % {'name': self.protection_domain_name,
-                          'id': domain_id['message']})
-                LOG.error(msg)
-                raise exception.VolumeBackendAPIException(data=msg)
-
-        LOG.info(_LI("Domain id is %s."), domain_id)
-        pool_name = self.storage_pool_name
-        pool_id = self.storage_pool_id
-        if pool_name:
-            encoded_domain_name = urllib.parse.quote(pool_name, '')
-            req_vars = {'server_ip': self.server_ip,
-                        'server_port': self.server_port,
-                        'domain_id': domain_id,
-                        'encoded_domain_name': encoded_domain_name}
-            request = ("https://%(server_ip)s:%(server_port)s"
-                       "/api/types/Pool/instances/getByName::"
-                       "%(domain_id)s,%(encoded_domain_name)s") % req_vars
-            LOG.info(_LI("ScaleIO get pool id by name request: %s."), request)
-            r = requests.get(
-                request,
-                auth=(
-                    self.server_username,
-                    self.server_token),
-                verify=verify_cert)
-            pool_id = r.json()
-            if not pool_id:
-                msg = (_("Pool with name %(pool_name)s wasn't found in "
-                         "domain %(domain_id)s.")
-                       % {'pool_name': pool_name,
-                          'domain_id': domain_id})
-                LOG.error(msg)
-                raise exception.VolumeBackendAPIException(data=msg)
-            if r.status_code != OK_STATUS_CODE and "errorCode" in pool_id:
-                msg = (_("Error getting pool id from name %(pool_name)s: "
-                         "%(err_msg)s.")
-                       % {'pool_name': pool_name,
-                          'err_msg': pool_id['message']})
-                LOG.error(msg)
-                raise exception.VolumeBackendAPIException(data=msg)
-
-        LOG.info(_LI("Pool id is %s."), pool_id)
         if provisioning_type == 'thin':
             provisioning = "ThinProvisioned"
         # Default volume type is thick.
@@ -453,28 +532,19 @@ class ScaleIODriver(driver.VolumeDriver):
                   'volumeType': provisioning,
                   'storagePoolId': pool_id}
 
-        LOG.info(_LI("Params for add volume request: %s."), params)
-        r = requests.post(
-            "https://" +
-            self.server_ip +
-            ":" +
-            self.server_port +
-            "/api/types/Volume/instances",
-            data=json.dumps(params),
-            headers=self._get_headers(),
-            auth=(
-                self.server_username,
-                self.server_token),
-            verify=verify_cert)
-        response = r.json()
-        LOG.info(_LI("Add volume response: %s"), response)
+        LOG.info("Params for add volume request: %s.", params)
+        req_vars = {'server_ip': self.server_ip,
+                    'server_port': self.server_port}
+        request = ("https://%(server_ip)s:%(server_port)s"
+                   "/api/types/Volume/instances") % req_vars
+        r, response = self._execute_scaleio_post_request(params, request)
 
-        if r.status_code != OK_STATUS_CODE and "errorCode" in response:
+        if r.status_code != http_client.OK and "errorCode" in response:
             msg = (_("Error creating volume: %s.") % response['message'])
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
-        LOG.info(_LI("Created volume %(volname)s, volume id %(volid)s."),
+        LOG.info("Created volume %(volname)s, volume id %(volid)s.",
                  {'volname': volname, 'volid': volume.id})
 
         real_size = int(self._round_to_num_gran(volume.size))
@@ -499,7 +569,7 @@ class ScaleIODriver(driver.VolumeDriver):
         return self._snapshot_volume(volume_id, snapname)
 
     def _snapshot_volume(self, vol_id, snapname):
-        LOG.info(_LI("Snapshot volume %(vol)s into snapshot %(id)s.") %
+        LOG.info("Snapshot volume %(vol)s into snapshot %(id)s.",
                  {'vol': vol_id, 'id': snapname})
         params = {
             'snapshotDefs': [{"volumeId": vol_id, "snapshotName": snapname}]}
@@ -508,8 +578,7 @@ class ScaleIODriver(driver.VolumeDriver):
         request = ("https://%(server_ip)s:%(server_port)s"
                    "/api/instances/System/action/snapshotVolumes") % req_vars
         r, response = self._execute_scaleio_post_request(params, request)
-        LOG.info(_LI("Snapshot volume response: %s."), response)
-        if r.status_code != OK_STATUS_CODE and "errorCode" in response:
+        if r.status_code != http_client.OK and "errorCode" in response:
             msg = (_("Failed creating snapshot for volume %(volname)s: "
                      "%(response)s.") %
                    {'volname': vol_id,
@@ -529,14 +598,19 @@ class ScaleIODriver(driver.VolumeDriver):
                 self.server_token),
             verify=self._get_verify_cert())
         r = self._check_response(r, request, False, params)
-        response = r.json()
+        response = None
+        try:
+            response = r.json()
+        except ValueError:
+            response = None
         return r, response
 
     def _check_response(self, response, request, is_get_request=True,
                         params=None):
-        if response.status_code == 401 or response.status_code == 403:
-            LOG.info(_LI("Token is invalid, going to re-login and get "
-                         "a new one."))
+        if (response.status_code == http_client.UNAUTHORIZED or
+                response.status_code == http_client.FORBIDDEN):
+            LOG.info("Token is invalid, going to re-login and get "
+                     "a new one.")
             login_request = (
                 "https://" + self.server_ip +
                 ":" + self.server_port + "/api/login")
@@ -550,23 +624,59 @@ class ScaleIODriver(driver.VolumeDriver):
             token = r.json()
             self.server_token = token
             # Repeat request with valid token.
-            LOG.info(_LI(
-                     "Going to perform request again %s with valid token."),
+            LOG.info("Going to perform request again %s with valid token.",
                      request)
             if is_get_request:
-                res = requests.get(request,
-                                   auth=(self.server_username,
-                                         self.server_token),
-                                   verify=verify_cert)
+                response = requests.get(request,
+                                        auth=(self.server_username,
+                                              self.server_token),
+                                        verify=verify_cert)
             else:
-                res = requests.post(request,
-                                    data=json.dumps(params),
-                                    headers=self._get_headers(),
-                                    auth=(self.server_username,
-                                          self.server_token),
-                                    verify=verify_cert)
-            return res
+                response = requests.post(request,
+                                         data=json.dumps(params),
+                                         headers=self._get_headers(),
+                                         auth=(self.server_username,
+                                               self.server_token),
+                                         verify=verify_cert)
+
+        level = logging.DEBUG
+        # for anything other than an OK from the REST API, log an error
+        if response.status_code != http_client.OK:
+            level = logging.ERROR
+
+        LOG.log(level, "REST Request: %s with params %s",
+                request,
+                json.dumps(params))
+        LOG.log(level, "REST Response: %s with data %s",
+                response.status_code,
+                response.text)
+
         return response
+
+    def _get_server_api_version(self, fromcache=True):
+        if self.server_api_version is None or fromcache is False:
+            request = (
+                "https://" + self.server_ip +
+                ":" + self.server_port + "/api/version")
+            r, unused = self._execute_scaleio_get_request(request)
+
+            if r.status_code == http_client.OK:
+                self.server_api_version = r.text.replace('\"', '')
+                LOG.info("REST API Version: %(api_version)s",
+                         {'api_version': self.server_api_version})
+            else:
+                msg = (_("Error calling version api "
+                         "status code: %d") % r.status_code)
+                raise exception.VolumeBackendAPIException(data=msg)
+
+            # make sure the response was valid
+            pattern = re.compile(r"^\d+(\.\d+)*$")
+            if not pattern.match(self.server_api_version):
+                msg = (_("Error calling version api "
+                         "response: %s") % r.text)
+                raise exception.VolumeBackendAPIException(data=msg)
+
+        return self.server_api_version
 
     def create_volume_from_snapshot(self, volume, snapshot):
         """Creates a volume from a snapshot."""
@@ -577,15 +687,15 @@ class ScaleIODriver(driver.VolumeDriver):
         # exposed by the system
         volume_id = snapshot.provider_id
         snapname = self._id_to_base64(volume.id)
-        LOG.info(_LI(
-                 "ScaleIO create volume from snapshot: snapshot %(snapname)s "
-                 "to volume %(volname)s."),
+        LOG.info("ScaleIO create volume from snapshot: snapshot %(snapname)s "
+                 "to volume %(volname)s.",
                  {'volname': volume_id,
                   'snapname': snapname})
 
         return self._snapshot_volume(volume_id, snapname)
 
-    def _get_headers(self):
+    @staticmethod
+    def _get_headers():
         return {'content-type': 'application/json'}
 
     def _get_verify_cert(self):
@@ -605,8 +715,8 @@ class ScaleIODriver(driver.VolumeDriver):
 
     def _extend_volume(self, volume_id, old_size, new_size):
         vol_id = volume_id
-        LOG.info(_LI(
-            "ScaleIO extend volume: volume %(volname)s to size %(new_size)s."),
+        LOG.info(
+            "ScaleIO extend volume: volume %(volname)s to size %(new_size)s.",
             {'volname': vol_id,
              'new_size': new_size})
 
@@ -616,7 +726,7 @@ class ScaleIODriver(driver.VolumeDriver):
         request = ("https://%(server_ip)s:%(server_port)s"
                    "/api/instances/Volume::%(vol_id)s"
                    "/action/setVolumeSize") % req_vars
-        LOG.info(_LI("Change volume capacity request: %s."), request)
+        LOG.info("Change volume capacity request: %s.", request)
 
         # Round up the volume size so that it is a granularity of 8 GBs
         # because ScaleIO only supports volumes with a granularity of 8 GBs.
@@ -627,13 +737,13 @@ class ScaleIODriver(driver.VolumeDriver):
 
         round_volume_capacity = self.configuration.sio_round_volume_capacity
         if not round_volume_capacity and not new_size % 8 == 0:
-            LOG.warning(_LW("ScaleIO only supports volumes with a granularity "
-                            "of 8 GBs. The new volume size is: %d."),
+            LOG.warning("ScaleIO only supports volumes with a granularity "
+                        "of 8 GBs. The new volume size is: %d.",
                         volume_new_size)
 
         params = {'sizeInGB': six.text_type(volume_new_size)}
         r, response = self._execute_scaleio_post_request(params, request)
-        if r.status_code != OK_STATUS_CODE:
+        if r.status_code != http_client.OK:
             response = r.json()
             msg = (_("Error extending volume %(vol)s: %(err)s.")
                    % {'vol': vol_id,
@@ -641,21 +751,22 @@ class ScaleIODriver(driver.VolumeDriver):
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
-    def _round_to_num_gran(self, size, num=8):
+    @staticmethod
+    def _round_to_num_gran(size, num=8):
         if size % num == 0:
             return size
         return size + num - (size % num)
 
-    def _round_down_to_num_gran(self, size, num=8):
+    @staticmethod
+    def _round_down_to_num_gran(size, num=8):
         return size - (size % num)
 
     def create_cloned_volume(self, volume, src_vref):
         """Creates a cloned volume."""
         volume_id = src_vref['provider_id']
         snapname = self._id_to_base64(volume.id)
-        LOG.info(_LI(
-                 "ScaleIO create cloned volume: source volume %(src)s to "
-                 "target volume %(tgt)s."),
+        LOG.info("ScaleIO create cloned volume: source volume %(src)s to "
+                 "target volume %(tgt)s.",
                  {'src': volume_id,
                   'tgt': snapname})
 
@@ -671,8 +782,6 @@ class ScaleIODriver(driver.VolumeDriver):
         self._delete_volume(volume_id)
 
     def _delete_volume(self, vol_id):
-        verify_cert = self._get_verify_cert()
-
         req_vars = {'server_ip': self.server_ip,
                     'server_port': self.server_port,
                     'vol_id': six.text_type(vol_id)}
@@ -686,48 +795,26 @@ class ScaleIODriver(driver.VolumeDriver):
             request = ("https://%(server_ip)s:%(server_port)s"
                        "/api/instances/Volume::%(vol_id)s"
                        "/action/removeMappedSdc") % req_vars
-            LOG.info(_LI(
-                     "Trying to unmap volume from all sdcs"
-                     " before deletion: %s."),
+            LOG.info("Trying to unmap volume from all sdcs"
+                     " before deletion: %s.",
                      request)
-            r = requests.post(
-                request,
-                data=json.dumps(params),
-                headers=self._get_headers(),
-                auth=(
-                    self.server_username,
-                    self.server_token),
-                verify=verify_cert
-            )
-            r = self._check_response(r, request, False, params)
-            LOG.debug("Unmap volume response: %s.", r.text)
+            r, unused = self._execute_scaleio_post_request(params, request)
 
         params = {'removeMode': 'ONLY_ME'}
         request = ("https://%(server_ip)s:%(server_port)s"
                    "/api/instances/Volume::%(vol_id)s"
                    "/action/removeVolume") % req_vars
-        r = requests.post(
-            request,
-            data=json.dumps(params),
-            headers=self._get_headers(),
-            auth=(self.server_username,
-                  self.server_token),
-            verify=verify_cert
-        )
-        r = self._check_response(r, request, False, params)
+        r, response = self._execute_scaleio_post_request(params, request)
 
-        if r.status_code != OK_STATUS_CODE:
-            response = r.json()
+        if r.status_code != http_client.OK:
             error_code = response['errorCode']
             if error_code == VOLUME_NOT_FOUND_ERROR:
-                LOG.warning(_LW(
-                            "Ignoring error in delete volume %s:"
-                            " Volume not found."), vol_id)
+                LOG.warning("Ignoring error in delete volume %s:"
+                            " Volume not found.", vol_id)
             elif vol_id is None:
-                LOG.warning(_LW(
-                            "Volume does not have provider_id thus does not "
+                LOG.warning("Volume does not have provider_id thus does not "
                             "map to a ScaleIO volume. "
-                            "Allowing deletion to proceed."))
+                            "Allowing deletion to proceed.")
             else:
                 msg = (_("Error deleting volume %(vol)s: %(err)s.") %
                        {'vol': vol_id,
@@ -738,10 +825,10 @@ class ScaleIODriver(driver.VolumeDriver):
     def delete_snapshot(self, snapshot):
         """Deletes a ScaleIO snapshot."""
         snap_id = snapshot.provider_id
-        LOG.info(_LI("ScaleIO delete snapshot."))
+        LOG.info("ScaleIO delete snapshot.")
         return self._delete_volume(snap_id)
 
-    def initialize_connection(self, volume, connector):
+    def initialize_connection(self, volume, connector, **kwargs):
         """Initializes the connection and returns connection info.
 
         The scaleio driver returns a driver_volume_type of 'scaleio'.
@@ -757,13 +844,13 @@ class ScaleIODriver(driver.VolumeDriver):
         qos_specs = self._get_volumetype_qos(volume)
         storage_type = extra_specs.copy()
         storage_type.update(qos_specs)
-        LOG.info(_LI("Volume type is %s."), storage_type)
+        LOG.info("Volume type is %s.", storage_type)
         round_volume_size = self._round_to_num_gran(volume.size)
         iops_limit = self._get_iops_limit(round_volume_size, storage_type)
         bandwidth_limit = self._get_bandwidth_limit(round_volume_size,
                                                     storage_type)
-        LOG.info(_LI("iops limit is %s"), iops_limit)
-        LOG.info(_LI("bandwidth limit is %s"), bandwidth_limit)
+        LOG.info("iops limit is %s", iops_limit)
+        LOG.info("bandwidth limit is %s", bandwidth_limit)
         connection_properties['iopsLimit'] = iops_limit
         connection_properties['bandwidthLimit'] = bandwidth_limit
         return {'driver_volume_type': 'scaleio',
@@ -777,10 +864,10 @@ class ScaleIODriver(driver.VolumeDriver):
                 max_bandwidth = (self._round_to_num_gran(int(max_bandwidth),
                                                          units.Ki))
                 max_bandwidth = six.text_type(max_bandwidth)
-            LOG.info(_LI("max bandwidth is: %s"), max_bandwidth)
+            LOG.info("max bandwidth is: %s", max_bandwidth)
             bw_per_gb = self._find_limit(storage_type, QOS_BANDWIDTH_PER_GB,
                                          None)
-            LOG.info(_LI("bandwidth per gb is: %s"), bw_per_gb)
+            LOG.info("bandwidth per gb is: %s", bw_per_gb)
             if bw_per_gb is None:
                 return max_bandwidth
             # Since ScaleIO volumes size is in 8GB granularity
@@ -800,9 +887,9 @@ class ScaleIODriver(driver.VolumeDriver):
     def _get_iops_limit(self, size, storage_type):
         max_iops = self._find_limit(storage_type, QOS_IOPS_LIMIT_KEY,
                                     IOPS_LIMIT_KEY)
-        LOG.info(_LI("max iops is: %s"), max_iops)
+        LOG.info("max iops is: %s", max_iops)
         iops_per_gb = self._find_limit(storage_type, QOS_IOPS_PER_GB, None)
-        LOG.info(_LI("iops per gb is: %s"), iops_per_gb)
+        LOG.info("iops per gb is: %s", iops_per_gb)
         try:
             if iops_per_gb is None:
                 if max_iops is not None:
@@ -831,12 +918,10 @@ class ScaleIODriver(driver.VolumeDriver):
         stats['storage_protocol'] = 'scaleio'
         stats['reserved_percentage'] = 0
         stats['QoS_support'] = True
-        stats['consistencygroup_support'] = True
+        stats['consistent_group_snapshot_enabled'] = True
         stats['thick_provisioning_support'] = True
         stats['thin_provisioning_support'] = True
         pools = []
-
-        verify_cert = self._get_verify_cert()
 
         free_capacity = 0
         total_capacity = 0
@@ -846,97 +931,21 @@ class ScaleIODriver(driver.VolumeDriver):
             splitted_name = sp_name.split(':')
             domain_name = splitted_name[0]
             pool_name = splitted_name[1]
-            LOG.debug("domain name is %(domain)s, pool name is %(pool)s.",
-                      {'domain': domain_name,
-                       'pool': pool_name})
-            # Get domain id from name.
-            encoded_domain_name = urllib.parse.quote(domain_name, '')
-            req_vars = {'server_ip': self.server_ip,
-                        'server_port': self.server_port,
-                        'encoded_domain_name': encoded_domain_name}
-            request = ("https://%(server_ip)s:%(server_port)s"
-                       "/api/types/Domain/instances/getByName::"
-                       "%(encoded_domain_name)s") % req_vars
-            LOG.info(_LI("ScaleIO get domain id by name request: %s."),
-                     request)
-            LOG.info(_LI("username: %(username)s, verify_cert: %(verify)s."),
-                     {'username': self.server_username,
-                      'verify': verify_cert})
-            r = requests.get(
-                request,
-                auth=(
-                    self.server_username,
-                    self.server_token),
-                verify=verify_cert)
-            r = self._check_response(r, request)
-            LOG.info(_LI("Get domain by name response: %s"), r.text)
-            domain_id = r.json()
-            if not domain_id:
-                msg = (_("Domain with name %s wasn't found.")
-                       % self.protection_domain_name)
-                LOG.error(msg)
-                raise exception.VolumeBackendAPIException(data=msg)
-            if r.status_code != OK_STATUS_CODE and "errorCode" in domain_id:
-                msg = (_("Error getting domain id from name %(name)s: "
-                         "%(err)s.")
-                       % {'name': self.protection_domain_name,
-                          'err': domain_id['message']})
-                LOG.error(msg)
-                raise exception.VolumeBackendAPIException(data=msg)
-            LOG.info(_LI("Domain id is %s."), domain_id)
-
             # Get pool id from name.
-            encoded_pool_name = urllib.parse.quote(pool_name, '')
-            req_vars = {'server_ip': self.server_ip,
-                        'server_port': self.server_port,
-                        'domain_id': domain_id,
-                        'encoded_pool_name': encoded_pool_name}
-            request = ("https://%(server_ip)s:%(server_port)s"
-                       "/api/types/Pool/instances/getByName::"
-                       "%(domain_id)s,%(encoded_pool_name)s") % req_vars
-            LOG.info(_LI("ScaleIO get pool id by name request: %s."), request)
-            r = requests.get(
-                request,
-                auth=(
-                    self.server_username,
-                    self.server_token),
-                verify=verify_cert)
-            pool_id = r.json()
-            if not pool_id:
-                msg = (_("Pool with name %(pool)s wasn't found in domain "
-                         "%(domain)s.")
-                       % {'pool': pool_name,
-                          'domain': domain_id})
-                LOG.error(msg)
-                raise exception.VolumeBackendAPIException(data=msg)
-            if r.status_code != OK_STATUS_CODE and "errorCode" in pool_id:
-                msg = (_("Error getting pool id from name %(pool)s: "
-                         "%(err)s.")
-                       % {'pool': pool_name,
-                          'err': pool_id['message']})
-                LOG.error(msg)
-                raise exception.VolumeBackendAPIException(data=msg)
-            LOG.info(_LI("Pool id is %s."), pool_id)
+            pool_id = self._get_storage_pool_id(domain_name, pool_name)
+            LOG.info("Pool id is %s.", pool_id)
+
             req_vars = {'server_ip': self.server_ip,
                         'server_port': self.server_port}
             request = ("https://%(server_ip)s:%(server_port)s"
                        "/api/types/StoragePool/instances/action/"
                        "querySelectedStatistics") % req_vars
-            # The 'Km' in thinCapacityAllocatedInKm is a bug in REST API
-            params = {'ids': [pool_id], 'properties': [
-                "capacityAvailableForVolumeAllocationInKb",
-                "capacityLimitInKb", "spareCapacityInKb",
-                "thickCapacityInUseInKb", "thinCapacityAllocatedInKm"]}
-            r = requests.post(
-                request,
-                data=json.dumps(params),
-                headers=self._get_headers(),
-                auth=(
-                    self.server_username,
-                    self.server_token),
-                verify=verify_cert)
-            response = r.json()
-            LOG.info(_LI("Query capacity stats response: %s."), response)
+
+            props = self._get_queryable_statistics("StoragePool", pool_id)
+            params = {'ids': [pool_id], 'properties': props}
+
+            r, response = self._execute_scaleio_post_request(params, request)
+            LOG.info("Query capacity stats response: %s.", response)
             for res in response.values():
                 # Divide by two because ScaleIO creates a copy for each volume
                 total_capacity_kb = (
@@ -947,15 +956,27 @@ class ScaleIODriver(driver.VolumeDriver):
                 # to 8 GB granularity in backend
                 free_capacity_gb = (
                     res['capacityAvailableForVolumeAllocationInKb'] / units.Mi)
+                thin_capacity_allocated = 0
+                # some versions of the API had a typo in the response
+                try:
+                    thin_capacity_allocated = res['thinCapacityAllocatedInKm']
+                except (TypeError, KeyError):
+                    pass
+                # some versions of the API respond without a typo
+                try:
+                    thin_capacity_allocated = res['thinCapacityAllocatedInKb']
+                except (TypeError, KeyError):
+                    pass
+
                 # Divide by two because ScaleIO creates a copy for each volume
                 provisioned_capacity = (
                     ((res['thickCapacityInUseInKb'] +
-                     res['thinCapacityAllocatedInKm']) / 2) / units.Mi)
-                LOG.info(_LI(
-                         "free capacity of pool %(pool)s is: %(free)s, "
+                      thin_capacity_allocated) / 2) / units.Mi)
+
+                LOG.info("Free capacity of pool %(pool)s is: %(free)s, "
                          "total capacity: %(total)s, "
-                         "provisioned capacity: %(prov)s"),
-                         {'pool': pool_name,
+                         "provisioned capacity: %(prov)s",
+                         {'pool': sp_name,
                           'free': free_capacity_gb,
                           'total': total_capacity_gb,
                           'prov': provisioned_capacity})
@@ -963,7 +984,7 @@ class ScaleIODriver(driver.VolumeDriver):
                     'total_capacity_gb': total_capacity_gb,
                     'free_capacity_gb': free_capacity_gb,
                     'QoS_support': True,
-                    'consistencygroup_support': True,
+                    'consistent_group_snapshot_enabled': True,
                     'reserved_percentage': 0,
                     'thin_provisioning_support': True,
                     'thick_provisioning_support': True,
@@ -978,15 +999,13 @@ class ScaleIODriver(driver.VolumeDriver):
 
         stats['total_capacity_gb'] = total_capacity
         stats['free_capacity_gb'] = free_capacity
-        LOG.info(_LI(
-                 "Free capacity for backend is: %(free)s, total capacity: "
-                 "%(total)s."),
-                 {'free': free_capacity,
+        LOG.info("Free capacity for backend '%(backend)s': %(free)s, "
+                 "total capacity: %(total)s.",
+                 {'backend': stats["volume_backend_name"],
+                  'free': free_capacity,
                   'total': total_capacity})
 
         stats['pools'] = pools
-
-        LOG.info(_LI("Backend name is %s."), stats["volume_backend_name"])
 
         self._stats = stats
 
@@ -1000,7 +1019,8 @@ class ScaleIODriver(driver.VolumeDriver):
 
         return self._stats
 
-    def _get_volumetype_extraspecs(self, volume):
+    @staticmethod
+    def _get_volumetype_extraspecs(volume):
         specs = {}
         ctxt = context.get_admin_context()
         type_id = volume['volume_type_id']
@@ -1040,7 +1060,7 @@ class ScaleIODriver(driver.VolumeDriver):
 
     def _sio_detach_volume(self, volume):
         """Call the connector.disconnect() """
-        LOG.info(_LI("Calling os-brick to detach ScaleIO volume."))
+        LOG.info("Calling os-brick to detach ScaleIO volume.")
         connection_properties = dict(self.connection_properties)
         connection_properties['scaleIO_volname'] = self._id_to_base64(
             volume.id)
@@ -1049,9 +1069,8 @@ class ScaleIODriver(driver.VolumeDriver):
 
     def copy_image_to_volume(self, context, volume, image_service, image_id):
         """Fetch the image from image_service and write it to the volume."""
-        LOG.info(_LI(
-                 "ScaleIO copy_image_to_volume volume: %(vol)s image service: "
-                 "%(service)s image id: %(id)s."),
+        LOG.info("ScaleIO copy_image_to_volume volume: %(vol)s image service: "
+                 "%(service)s image id: %(id)s.",
                  {'vol': volume,
                   'service': six.text_type(image_service),
                   'id': six.text_type(image_id)})
@@ -1069,9 +1088,8 @@ class ScaleIODriver(driver.VolumeDriver):
 
     def copy_volume_to_image(self, context, volume, image_service, image_meta):
         """Copy the volume to the specified image."""
-        LOG.info(_LI(
-                 "ScaleIO copy_volume_to_image volume: %(vol)s image service: "
-                 "%(service)s image meta: %(meta)s."),
+        LOG.info("ScaleIO copy_volume_to_image volume: %(vol)s image service: "
+                 "%(service)s image meta: %(meta)s.",
                  {'vol': volume,
                   'service': six.text_type(image_service),
                   'meta': six.text_type(image_meta)})
@@ -1103,8 +1121,8 @@ class ScaleIODriver(driver.VolumeDriver):
             current_name = new_volume['id']
             new_name = volume['id']
             vol_id = new_volume['provider_id']
-            LOG.info(_LI("Renaming %(id)s from %(current_name)s to "
-                         "%(new_name)s."),
+            LOG.info("Renaming %(id)s from %(current_name)s to "
+                     "%(new_name)s.",
                      {'id': vol_id, 'current_name': current_name,
                       'new_name': new_name})
 
@@ -1128,27 +1146,18 @@ class ScaleIODriver(driver.VolumeDriver):
         request = ("https://%(server_ip)s:%(server_port)s"
                    "/api/instances/Volume::%(id)s/action/setVolumeName" %
                    req_vars)
-        LOG.info(_LI("ScaleIO rename volume request: %s."), request)
+        LOG.info("ScaleIO rename volume request: %s.", request)
 
         params = {'newName': new_name}
-        r = requests.post(
-            request,
-            data=json.dumps(params),
-            headers=self._get_headers(),
-            auth=(self.server_username,
-                  self.server_token),
-            verify=self._get_verify_cert()
-        )
-        r = self._check_response(r, request, False, params)
+        r, response = self._execute_scaleio_post_request(params, request)
 
-        if r.status_code != OK_STATUS_CODE:
-            response = r.json()
+        if r.status_code != http_client.OK:
             error_code = response['errorCode']
             if ((error_code == VOLUME_NOT_FOUND_ERROR or
                  error_code == OLD_VOLUME_NOT_FOUND_ERROR or
                  error_code == ILLEGAL_SYNTAX)):
-                LOG.info(_LI("Ignoring renaming action because the volume "
-                             "%(vol)s is not a ScaleIO volume."),
+                LOG.info("Ignoring renaming action because the volume "
+                         "%(vol)s is not a ScaleIO volume.",
                          {'vol': vol_id})
             else:
                 msg = (_("Error renaming volume %(vol)s: %(err)s.") %
@@ -1156,17 +1165,237 @@ class ScaleIODriver(driver.VolumeDriver):
                 LOG.error(msg)
                 raise exception.VolumeBackendAPIException(data=msg)
         else:
-            LOG.info(_LI("ScaleIO volume %(vol)s was renamed to "
-                         "%(new_name)s."),
+            LOG.info("ScaleIO volume %(vol)s was renamed to "
+                     "%(new_name)s.",
                      {'vol': vol_id, 'new_name': new_name})
 
     def _query_scaleio_volume(self, volume, existing_ref):
         request = self._create_scaleio_get_volume_request(volume, existing_ref)
         r, response = self._execute_scaleio_get_request(request)
-        LOG.info(_LI("Get Volume response: %(res)s"),
-                 {'res': response})
         self._manage_existing_check_legal_response(r, existing_ref)
         return response
+
+    def _get_protection_domain_id(self, domain_name):
+        """"Get the id of the protection domain"""
+
+        if not domain_name:
+            msg = (_("Error getting domain id from None name."))
+            LOG.error(msg)
+            raise exception.VolumeBackendAPIException(data=msg)
+
+        # do we already have the id?
+        if domain_name in self.cache_pd:
+            return self.cache_pd[domain_name]
+
+        encoded_domain_name = urllib.parse.quote(domain_name, '')
+        req_vars = {'server_ip': self.server_ip,
+                    'server_port': self.server_port,
+                    'encoded_domain_name': encoded_domain_name}
+        request = ("https://%(server_ip)s:%(server_port)s"
+                   "/api/types/Domain/instances/getByName::"
+                   "%(encoded_domain_name)s") % req_vars
+
+        r, domain_id = self._execute_scaleio_get_request(request)
+
+        if not domain_id:
+            msg = (_("Domain with name %s wasn't found.")
+                   % domain_name)
+            LOG.error(msg)
+            raise exception.VolumeBackendAPIException(data=msg)
+        if r.status_code != http_client.OK and "errorCode" in domain_id:
+            msg = (_("Error getting domain id from name %(name)s: %(id)s.")
+                   % {'name': domain_name,
+                      'id': domain_id['message']})
+            LOG.error(msg)
+            raise exception.VolumeBackendAPIException(data=msg)
+
+        # add it to our cache
+        self.cache_pd[domain_name] = domain_id
+        return domain_id
+
+    def _get_storage_pool_name(self, pool_id):
+        """Get the protection domain:storage pool name
+
+        From a storage pool id, get the domain name and
+        storage pool names
+        """
+        req_vars = {'server_ip': self.server_ip,
+                    'server_port': self.server_port,
+                    'pool_id': pool_id}
+        request = ("https://%(server_ip)s:%(server_port)s"
+                   "/api/instances/StoragePool::%(pool_id)s") % req_vars
+        r, response = self._execute_scaleio_get_request(request)
+
+        if r.status_code != http_client.OK:
+            msg = (_("Error getting pool name from id %(pool_id)s: "
+                     "%(err_msg)s.")
+                   % {'pool_id': pool_id})
+            LOG.error(msg)
+            raise exception.VolumeBackendAPIException(data=msg)
+
+        pool_name = response['name']
+        domain_id = response['protectionDomainId']
+        domain_name = self._get_protection_domain_name(domain_id)
+
+        pool_name = "{}:{}".format(domain_name, pool_name)
+
+        return pool_name
+
+    def _get_protection_domain_name(self, domain_id):
+        """Get the protection domain name
+
+        From a protection domain id, get the domain name
+        """
+        req_vars = {'server_ip': self.server_ip,
+                    'server_port': self.server_port,
+                    'domain_id': domain_id}
+        request = ("https://%(server_ip)s:%(server_port)s"
+                   "/api/instances/ProtectionDomain::%(domain_id)s") % req_vars
+        r, response = self._execute_scaleio_get_request(request)
+
+        if r.status_code != http_client.OK:
+            msg = (_("Error getting domain name from id %(domain_id)s: "
+                     "%(err_msg)s.")
+                   % {'domain_id': domain_id,
+                      'err_msg': response})
+            LOG.error(msg)
+            raise exception.VolumeBackendAPIException(data=msg)
+
+        domain_name = response['name']
+
+        return domain_name
+
+    def _get_storage_pool_id(self, domain_name, pool_name):
+        """Get the id of the configured storage pool"""
+        if not domain_name or not pool_name:
+            msg = (_("Unable to query the storage pool id for "
+                     "Pool %(pool_name)s and Domain %(domain_name)s.")
+                   % {'pool_name': pool_name,
+                      'domain_name': domain_name})
+            LOG.error(msg)
+            raise exception.VolumeBackendAPIException(data=msg)
+
+        fullname = "{}:{}".format(domain_name, pool_name)
+        if fullname in self.cache_sp:
+
+            return self.cache_sp[fullname]
+
+        domain_id = self._get_protection_domain_id(domain_name)
+        encoded_pool_name = urllib.parse.quote(pool_name, '')
+        req_vars = {'server_ip': self.server_ip,
+                    'server_port': self.server_port,
+                    'domain_id': domain_id,
+                    'encoded_pool_name': encoded_pool_name}
+        request = ("https://%(server_ip)s:%(server_port)s"
+                   "/api/types/Pool/instances/getByName::"
+                   "%(domain_id)s,%(encoded_pool_name)s") % req_vars
+        LOG.debug("ScaleIO get pool id by name request: %s.", request)
+        r, pool_id = self._execute_scaleio_get_request(request)
+
+        if not pool_id:
+            msg = (_("Pool with name %(pool_name)s wasn't found in "
+                     "domain %(domain_id)s.")
+                   % {'pool_name': pool_name,
+                      'domain_id': domain_id})
+            LOG.error(msg)
+            raise exception.VolumeBackendAPIException(data=msg)
+        if r.status_code != http_client.OK and "errorCode" in pool_id:
+            msg = (_("Error getting pool id from name %(pool_name)s: "
+                     "%(err_msg)s.")
+                   % {'pool_name': pool_name,
+                      'err_msg': pool_id['message']})
+            LOG.error(msg)
+            raise exception.VolumeBackendAPIException(data=msg)
+
+        LOG.info("Pool id is %s.", pool_id)
+
+        # add it to ou cache
+        self.cache_sp[fullname] = pool_id
+        return pool_id
+
+    def _get_all_scaleio_volumes(self):
+        """Gets list of all SIO volumes in PD and SP"""
+
+        all_volumes = []
+        # check for every storage pool configured
+        for sp_name in self.storage_pools:
+            splitted_name = sp_name.split(':')
+            domain_name = splitted_name[0]
+            pool_name = splitted_name[1]
+
+            sp_id = self._get_storage_pool_id(domain_name, pool_name)
+
+            req_vars = {'server_ip': self.server_ip,
+                        'server_port': self.server_port,
+                        'storage_pool_id': sp_id}
+            request = ("https://%(server_ip)s:%(server_port)s"
+                       "/api/instances/StoragePool::%(storage_pool_id)s"
+                       "/relationships/Volume") % req_vars
+            r, volumes = self._execute_scaleio_get_request(request)
+
+            if r.status_code != http_client.OK:
+                msg = (_("Error calling api "
+                         "status code: %d") % r.status_code)
+                raise exception.VolumeBackendAPIException(data=msg)
+
+            all_volumes.extend(volumes)
+
+        return all_volumes
+
+    def get_manageable_volumes(self, cinder_volumes, marker, limit, offset,
+                               sort_keys, sort_dirs):
+        """List volumes on the backend available for management by Cinder.
+
+        Rule out volumes that are mapped to an SDC or
+        are already in the list of cinder_volumes.
+        Return references of the volume ids for any others.
+        """
+
+        all_sio_volumes = self._get_all_scaleio_volumes()
+
+        # Put together a map of existing cinder volumes on the array
+        # so we can lookup cinder id's to SIO id
+        existing_vols = {}
+        for cinder_vol in cinder_volumes:
+            provider_id = cinder_vol['provider_id']
+            existing_vols[provider_id] = cinder_vol.name_id
+
+        manageable_volumes = []
+        for sio_vol in all_sio_volumes:
+            cinder_id = existing_vols.get(sio_vol['id'])
+            is_safe = True
+            reason = None
+
+            if sio_vol['mappedSdcInfo']:
+                is_safe = False
+                numHosts = len(sio_vol['mappedSdcInfo'])
+                reason = _('Volume mapped to %d host(s).') % numHosts
+
+            if cinder_id:
+                is_safe = False
+                reason = _("Volume already managed.")
+
+            if sio_vol['volumeType'] != 'Snapshot':
+                manageable_volumes.append({
+                    'reference': {'source-id': sio_vol['id']},
+                    'size': self._convert_kb_to_gib(sio_vol['sizeInKb']),
+                    'safe_to_manage': is_safe,
+                    'reason_not_safe': reason,
+                    'cinder_id': cinder_id,
+                    'extra_info': {'volumeType': sio_vol['volumeType'],
+                                   'name': sio_vol['name']}})
+
+        return volume_utils.paginate_entries_list(
+            manageable_volumes, marker, limit, offset, sort_keys, sort_dirs)
+
+    def _is_managed(self, volume_id):
+        lst = objects.VolumeList.get_all_by_host(context.get_admin_context(),
+                                                 self.host)
+        for vol in lst:
+            if vol.provider_id == volume_id:
+                return True
+
+        return False
 
     def manage_existing(self, volume, existing_ref):
         """Manage an existing ScaleIO volume.
@@ -1183,6 +1412,7 @@ class ScaleIODriver(driver.VolumeDriver):
     def manage_existing_snapshot(self, snapshot, existing_ref):
         """Manage an existing ScaleIO snapshot.
 
+        :param snapshot: the snapshot to manage
         :param existing_ref: dictionary of the form:
             {'source-id': <id of ScaleIO snapshot>}
         """
@@ -1251,13 +1481,22 @@ class ScaleIODriver(driver.VolumeDriver):
                     'id': vol_id}
         request = ("https://%(server_ip)s:%(server_port)s"
                    "/api/instances/Volume::%(id)s" % req_vars)
-        LOG.info(_LI("ScaleIO get volume by id request: %s."), request)
+        LOG.info("ScaleIO get volume by id request: %s.", request)
         return request
 
     def _manage_existing_check_legal_response(self, response, existing_ref):
-        if response.status_code != OK_STATUS_CODE:
+        if response.status_code != http_client.OK:
             reason = (_("Error managing volume: %s.") % response.json()[
                 'message'])
+            raise exception.ManageExistingInvalidReference(
+                existing_ref=existing_ref,
+                reason=reason
+            )
+
+        # check if it is already managed
+        if self._is_managed(response.json()['id']):
+            reason = _("manage_existing cannot manage a volume "
+                       "that is already being managed.")
             raise exception.ManageExistingInvalidReference(
                 existing_ref=existing_ref,
                 reason=reason
@@ -1272,24 +1511,44 @@ class ScaleIODriver(driver.VolumeDriver):
                 reason=reason
             )
 
-    def create_consistencygroup(self, context, group):
-        """Creates a consistency group.
+    def create_group(self, context, group):
+        """Creates a group.
+
+        :param context: the context of the caller.
+        :param group: the group object.
+        :returns: model_update
 
         ScaleIO won't create CG until cg-snapshot creation,
         db will maintain the volumes and CG relationship.
         """
-        LOG.info(_LI("Creating Consistency Group"))
-        model_update = {'status': 'available'}
+
+        # let generic volume group support handle non-cgsnapshots
+        if not volume_utils.is_group_a_cg_snapshot_type(group):
+            raise NotImplementedError()
+
+        LOG.info("Creating Group")
+        model_update = {'status': fields.GroupStatus.AVAILABLE}
         return model_update
 
-    def delete_consistencygroup(self, context, group, volumes):
-        """Deletes a consistency group.
+    def delete_group(self, context, group, volumes):
+        """Deletes a group.
+
+        :param context: the context of the caller.
+        :param group: the group object.
+        :param volumes: a list of volume objects in the group.
+        :returns: model_update, volumes_model_update
 
         ScaleIO will delete the volumes of the CG.
         """
-        LOG.info(_LI("Deleting Consistency Group"))
-        model_update = {'status': 'deleted'}
-        error_statuses = ['error', 'error_deleting']
+
+        # let generic volume group support handle non-cgsnapshots
+        if not volume_utils.is_group_a_cg_snapshot_type(group):
+            raise NotImplementedError()
+
+        LOG.info("Deleting Group")
+        model_update = {'status': fields.GroupStatus.DELETED}
+        error_statuses = [fields.GroupStatus.ERROR,
+                          fields.GroupStatus.ERROR_DELETING]
         volumes_model_update = []
         for volume in volumes:
             try:
@@ -1303,20 +1562,30 @@ class ScaleIODriver(driver.VolumeDriver):
                 volumes_model_update.append(update_item)
                 if model_update['status'] not in error_statuses:
                     model_update['status'] = 'error_deleting'
-                LOG.error(_LE("Failed to delete the volume %(vol)s of CG. "
-                              "Exception: %(exception)s."),
+                LOG.error("Failed to delete the volume %(vol)s of group. "
+                          "Exception: %(exception)s.",
                           {'vol': volume['name'], 'exception': err})
         return model_update, volumes_model_update
 
-    def create_cgsnapshot(self, context, cgsnapshot, snapshots):
-        """Creates a cgsnapshot."""
+    def create_group_snapshot(self, context, group_snapshot, snapshots):
+        """Creates a group snapshot.
+
+        :param context: the context of the caller.
+        :param group_snapshot: the GroupSnapshot object to be created.
+        :param snapshots: a list of Snapshot objects in the group_snapshot.
+        :returns: model_update, snapshots_model_update
+        """
+
+        # let generic volume group support handle non-cgsnapshots
+        if not volume_utils.is_group_a_cg_snapshot_type(group_snapshot):
+            raise NotImplementedError()
+
         get_scaleio_snapshot_params = lambda snapshot: {
             'volumeId': snapshot.volume['provider_id'],
             'snapshotName': self._id_to_base64(snapshot['id'])}
-        snapshotDefs = list(map(get_scaleio_snapshot_params, snapshots))
-        r, response = self._snapshot_volume_group(snapshotDefs)
-        LOG.info(_LI("Snapshot volume response: %s."), response)
-        if r.status_code != OK_STATUS_CODE and "errorCode" in response:
+        snapshot_defs = list(map(get_scaleio_snapshot_params, snapshots))
+        r, response = self._snapshot_volume_group(snapshot_defs)
+        if r.status_code != http_client.OK and "errorCode" in response:
             msg = (_("Failed creating snapshot for group: "
                      "%(response)s.") %
                    {'response': response['message']})
@@ -1325,53 +1594,83 @@ class ScaleIODriver(driver.VolumeDriver):
         snapshot_model_update = []
         for snapshot, scaleio_id in zip(snapshots, response['volumeIdList']):
             update_item = {'id': snapshot['id'],
-                           'status': 'available',
+                           'status': fields.SnapshotStatus.AVAILABLE,
                            'provider_id': scaleio_id}
             snapshot_model_update.append(update_item)
-        model_update = {'status': 'available'}
+        model_update = {'status': fields.GroupStatus.AVAILABLE}
         return model_update, snapshot_model_update
 
-    def delete_cgsnapshot(self, context, cgsnapshot, snapshots):
-        """Deletes a cgsnapshot."""
-        error_statuses = ['error', 'error_deleting']
-        model_update = {'status': cgsnapshot['status']}
+    def delete_group_snapshot(self, context, group_snapshot, snapshots):
+        """Deletes a snapshot.
+
+        :param context: the context of the caller.
+        :param group_snapshot: the GroupSnapshot object to be deleted.
+        :param snapshots: a list of snapshot objects in the group_snapshot.
+        :returns: model_update, snapshots_model_update
+        """
+
+        # let generic volume group support handle non-cgsnapshots
+        if not volume_utils.is_group_a_cg_snapshot_type(group_snapshot):
+            raise NotImplementedError()
+
+        error_statuses = [fields.SnapshotStatus.ERROR,
+                          fields.SnapshotStatus.ERROR_DELETING]
+        model_update = {'status': group_snapshot['status']}
         snapshot_model_update = []
         for snapshot in snapshots:
             try:
                 self._delete_volume(snapshot.provider_id)
                 update_item = {'id': snapshot['id'],
-                               'status': 'deleted'}
+                               'status': fields.SnapshotStatus.DELETED}
                 snapshot_model_update.append(update_item)
             except exception.VolumeBackendAPIException as err:
                 update_item = {'id': snapshot['id'],
-                               'status': 'error_deleting'}
+                               'status': fields.SnapshotStatus.ERROR_DELETING}
                 snapshot_model_update.append(update_item)
                 if model_update['status'] not in error_statuses:
-                    model_update['status'] = 'error_deleting'
-                LOG.error(_LE("Failed to delete the snapshot %(snap)s "
-                              "of cgsnapshot: %(cgsnapshot_id)s. "
-                              "Exception: %(exception)s."),
+                    model_update['status'] = (
+                        fields.SnapshotStatus.ERROR_DELETING)
+                LOG.error("Failed to delete the snapshot %(snap)s "
+                          "of snapshot: %(snapshot_id)s. "
+                          "Exception: %(exception)s.",
                           {'snap': snapshot['name'],
                            'exception': err,
-                           'cgsnapshot_id': cgsnapshot.id})
-        model_update['status'] = 'deleted'
+                           'snapshot_id': group_snapshot.id})
+        model_update['status'] = fields.GroupSnapshotStatus.DELETED
         return model_update, snapshot_model_update
 
-    def create_consistencygroup_from_src(self, context, group, volumes,
-                                         cgsnapshot=None, snapshots=None,
-                                         source_cg=None, source_vols=None):
-        """Creates a consistency group from a source."""
+    def create_group_from_src(self, context, group, volumes,
+                              group_snapshot=None, snapshots=None,
+                              source_group=None, source_vols=None):
+        """Creates a group from source.
+
+        :param context: the context of the caller.
+        :param group: the Group object to be created.
+        :param volumes: a list of Volume objects in the group.
+        :param group_snapshot: the GroupSnapshot object as source.
+        :param snapshots: a list of snapshot objects in group_snapshot.
+        :param source_group: the Group object as source.
+        :param source_vols: a list of volume objects in the source_group.
+        :returns: model_update, volumes_model_update
+        """
+
+        # let generic volume group support handle non-cgsnapshots
+        if not volume_utils.is_group_a_cg_snapshot_type(group):
+            raise NotImplementedError()
+
         get_scaleio_snapshot_params = lambda src_volume, trg_volume: {
             'volumeId': src_volume['provider_id'],
             'snapshotName': self._id_to_base64(trg_volume['id'])}
-        if cgsnapshot and snapshots:
-            snapshotDefs = map(get_scaleio_snapshot_params, snapshots, volumes)
+        if group_snapshot and snapshots:
+            snapshot_defs = map(get_scaleio_snapshot_params,
+                                snapshots,
+                                volumes)
         else:
-            snapshotDefs = map(get_scaleio_snapshot_params, source_vols,
-                               volumes)
-        r, response = self._snapshot_volume_group(list(snapshotDefs))
-        LOG.info(_LI("Snapshot volume response: %s."), response)
-        if r.status_code != OK_STATUS_CODE and "errorCode" in response:
+            snapshot_defs = map(get_scaleio_snapshot_params,
+                                source_vols,
+                                volumes)
+        r, response = self._snapshot_volume_group(list(snapshot_defs))
+        if r.status_code != http_client.OK and "errorCode" in response:
             msg = (_("Failed creating snapshot for group: "
                      "%(response)s.") %
                    {'response': response['message']})
@@ -1383,21 +1682,33 @@ class ScaleIODriver(driver.VolumeDriver):
                            'status': 'available',
                            'provider_id': scaleio_id}
             volumes_model_update.append(update_item)
-        model_update = {'status': 'available'}
+        model_update = {'status': fields.GroupStatus.AVAILABLE}
         return model_update, volumes_model_update
 
-    def update_consistencygroup(self, context, group,
-                                add_volumes=None, remove_volumes=None):
-        """Update a consistency group.
+    def update_group(self, context, group,
+                     add_volumes=None, remove_volumes=None):
+        """Update a  group.
+
+        :param context: the context of the caller.
+        :param group: the group object.
+        :param add_volumes: a list of volume objects to be added.
+        :param remove_volumes: a list of volume objects to be removed.
+        :returns: model_update, add_volumes_update, remove_volumes_update
 
         ScaleIO does not handle volume grouping.
         Cinder maintains volumes and CG relationship.
         """
-        return None, None, None
 
-    def _snapshot_volume_group(self, snapshotDefs):
-        LOG.info(_LI("ScaleIO snapshot group of volumes"))
-        params = {'snapshotDefs': snapshotDefs}
+        if volume_utils.is_group_a_cg_snapshot_type(group):
+            return None, None, None
+
+        # we'll rely on the generic group implementation if it is not a
+        # consistency group request.
+        raise NotImplementedError()
+
+    def _snapshot_volume_group(self, snapshot_defs):
+        LOG.info("ScaleIO snapshot group of volumes")
+        params = {'snapshotDefs': snapshot_defs}
         req_vars = {'server_ip': self.server_ip,
                     'server_port': self.server_port}
         request = ("https://%(server_ip)s:%(server_port)s"

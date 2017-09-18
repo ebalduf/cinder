@@ -33,17 +33,12 @@ function configure_tempest_backends {
     be1=$1
     be2=$2
     echo "Configuring tempest conf in ${TEMPEST_CONFIG}"
-    # TODO(erlon): Call iniset using sudo
-    #sudo -HE -u ${TEMPEST_USER} iniset $TEMPEST_CONFIG 'volume' \
-    #'backend_names' ${be1},${be2}
-    iniset $TEMPEST_CONFIG 'volume' 'backend_names' ${be1},${be2}
+    iniset -sudo $TEMPEST_CONFIG 'volume' 'backend_names' ${be1},${be2}
 
 }
 
 BACKENDS='lvm ceph nfs'
-# NOTE(erlon): Skipping test_volume_migrate_attached while bug #1644214 is not
-# fixed.
-RGEX="(.*test_volume_retype_with_migration.*)"
+RGEX="(.*test_volume_retype_with_migration.*|.*test_volume_migrate_attached.*)"
 final_result=0
 final_message='Migrations tests finished SUCCESSFULLY!'
 declare -A TEST_RESULTS

@@ -12,7 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""Generate list of cinder drivers"""
+"""Generate list of Cinder drivers"""
 
 import argparse
 import os
@@ -113,13 +113,14 @@ def collect_driver_info(driver):
             'version': driver.version,
             'fqn': driver.class_fqn,
             'description': driver.desc,
-            'ci_wiki_name': driver.ci_wiki_name}
+            'ci_wiki_name': driver.ci_wiki_name,
+            'supported': driver.supported}
 
     return info
 
 
 def output_dict():
-    """Output the results as a json dict."""
+    """Output the results as a JSON dict."""
 
     driver_list = []
     drivers = util.get_volume_drivers()

@@ -18,11 +18,13 @@
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
+import six
+import webob
 
 from cinder import context
 from cinder import db
 from cinder import exception
-from cinder.i18n import _, _LE
+from cinder.i18n import _
 
 CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
@@ -47,7 +49,7 @@ def create(context,
                                              description=description),
                                         projects=projects)
     except db_exc.DBError:
-        LOG.exception(_LE('DB error:'))
+        LOG.exception('DB error:')
         raise exception.GroupTypeCreateFailed(name=name,
                                               group_specs=group_specs)
     return type_ref
@@ -60,15 +62,12 @@ def update(context, id, name, description, is_public=None):
         raise exception.InvalidGroupType(reason=msg)
     elevated = context if context.is_admin else context.elevated()
     try:
-        type_updated = db.group_type_update(elevated,
-                                            id,
-                                            dict(name=name,
-                                                 description=description,
-                                                 is_public=is_public))
+        db.group_type_update(elevated, id,
+                             dict(name=name, description=description,
+                                  is_public=is_public))
     except db_exc.DBError:
-        LOG.exception(_LE('DB error:'))
+        LOG.exception('DB error:')
         raise exception.GroupTypeUpdateFailed(id=id)
-    return type_updated
 
 
 def destroy(context, id):
@@ -78,7 +77,11 @@ def destroy(context, id):
         raise exception.InvalidGroupType(reason=msg)
     else:
         elevated = context if context.is_admin else context.elevated()
-        db.group_type_destroy(elevated, id)
+        try:
+            db.group_type_destroy(elevated, id)
+        except exception.GroupTypeInUse as e:
+            msg = _('Target group type is still in use. %s') % six.text_type(e)
+            raise webob.exc.HTTPBadRequest(explanation=msg)
 
 
 def get_all_group_types(context, inactive=0, filters=None, marker=None,
@@ -130,8 +133,8 @@ def get_default_group_type():
         except exception.GroupTypeNotFoundByName:
             # Couldn't find group type with the name in default_group_type
             # flag, record this issue and move on
-            LOG.exception(_LE('Default group type is not found. '
-                          'Please check default_group_type config.'))
+            LOG.exception('Default group type is not found. '
+                          'Please check default_group_type config.')
 
     return grp_type
 
@@ -151,8 +154,8 @@ def get_default_cgsnapshot_type():
     except exception.GroupTypeNotFoundByName:
         # Couldn't find DEFAULT_CGSNAPSHOT_TYPE group type.
         # Record this issue and move on.
-        LOG.exception(_LE('Default cgsnapshot type %s is not found.')
-                      % DEFAULT_CGSNAPSHOT_TYPE)
+        LOG.exception('Default cgsnapshot type %s is not found.',
+                      DEFAULT_CGSNAPSHOT_TYPE)
 
     return grp_type
 

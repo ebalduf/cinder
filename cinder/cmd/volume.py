@@ -46,7 +46,7 @@ i18n.enable_lazy()
 # Need to register global_opts
 from cinder.common import config  # noqa
 from cinder.db import api as session
-from cinder.i18n import _, _LE
+from cinder.i18n import _
 from cinder import service
 from cinder import utils
 from cinder import version
@@ -54,9 +54,7 @@ from cinder import version
 
 CONF = cfg.CONF
 
-deprecated_host_opt = cfg.DeprecatedOpt('host')
-host_opt = cfg.StrOpt('backend_host', help='Backend override of host value.',
-                      deprecated_opts=[deprecated_host_opt])
+host_opt = cfg.StrOpt('backend_host', help='Backend override of host value.')
 CONF.register_cli_opt(host_opt)
 
 # TODO(geguileo): Once we complete the work on A-A update the option's help.
@@ -109,9 +107,9 @@ def main():
                 launcher.launch_service(server)
                 service_started = True
     else:
-        LOG.error(_LE('Configuration for cinder-volume does not specify '
-                      '"enabled_backends". Using DEFAULT section to configure '
-                      'drivers is not supported since Ocata.'))
+        LOG.error('Configuration for cinder-volume does not specify '
+                  '"enabled_backends". Using DEFAULT section to configure '
+                  'drivers is not supported since Ocata.')
 
     if not service_started:
         msg = _('No volume service(s) started successfully, terminating.')

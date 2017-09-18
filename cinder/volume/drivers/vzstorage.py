@@ -27,13 +27,12 @@ from oslo_utils import imageutils
 from oslo_utils import units
 
 from cinder import exception
-from cinder.i18n import _, _LI, _LW
+from cinder.i18n import _
 from cinder.image import image_utils
 from cinder import interface
 from cinder import utils
+from cinder.volume import configuration
 from cinder.volume.drivers import remotefs as remotefs_drv
-
-VERSION = '1.0'
 
 LOG = logging.getLogger(__name__)
 
@@ -66,7 +65,7 @@ vzstorage_opts = [
 ]
 
 CONF = cfg.CONF
-CONF.register_opts(vzstorage_opts)
+CONF.register_opts(vzstorage_opts, group=configuration.SHARED_CONF_GROUP)
 
 PLOOP_BASE_DELTA_NAME = 'root.hds'
 DISK_FORMAT_RAW = 'raw'
@@ -103,7 +102,7 @@ class PloopDevice(object):
 
     This class is for mounting ploop devices using with statement:
     with PloopDevice('/vzt/private/my-ct/harddisk.hdd') as dev_path:
-        # do something
+    # do something
 
     :param path: A path to ploop harddisk dir
     :param snapshot_id: Snapshot id to mount
@@ -130,7 +129,7 @@ class PloopDevice(object):
 
         out, err = self.execute(*cmd, run_as_root=True)
 
-        m = re.search('dev=(\S+)', out)
+        m = re.search(r'dev=(\S+)', out)
         if not m:
             raise Exception('Invalid output from ploop mount: %s' % out)
 
@@ -153,34 +152,49 @@ class VZStorageDriver(remotefs_drv.RemoteFSSnapDriver):
 
     Version history:
         1.0     - Initial driver.
+        1.1     - Supports vz:volume_format in vendor properties.
     """
-    driver_volume_type = 'vzstorage'
-    driver_prefix = 'vzstorage'
-    volume_backend_name = 'Virtuozzo_Storage'
-    VERSION = VERSION
-    # ThirdPartySystems wiki page
+    VERSION = '1.1'
     CI_WIKI_NAME = "Virtuozzo_Storage_CI"
 
     SHARE_FORMAT_REGEX = r'(?:(\S+):\/)?([a-zA-Z0-9_-]+)(?::(\S+))?'
 
     def __init__(self, execute=putils.execute, *args, **kwargs):
+        self.driver_volume_type = 'vzstorage'
+        self.driver_prefix = 'vzstorage'
+        self.volume_backend_name = 'Virtuozzo_Storage'
         self._remotefsclient = None
         super(VZStorageDriver, self).__init__(*args, **kwargs)
         self.configuration.append_config_values(vzstorage_opts)
         self._execute_as_root = False
         root_helper = utils.get_root_helper()
         # base bound to instance is used in RemoteFsConnector.
-        self.base = getattr(self.configuration,
-                            'vzstorage_mount_point_base',
-                            CONF.vzstorage_mount_point_base)
-        opts = getattr(self.configuration,
-                       'vzstorage_mount_options',
-                       CONF.vzstorage_mount_options)
+        self.base = self.configuration.vzstorage_mount_point_base
+        opts = self.configuration.vzstorage_mount_options
 
-        self._remotefsclient = remotefs.RemoteFsClient(
+        self._remotefsclient = remotefs.VZStorageRemoteFSClient(
             'vzstorage', root_helper, execute=execute,
             vzstorage_mount_point_base=self.base,
             vzstorage_mount_options=opts)
+
+    def _update_volume_stats(self):
+        super(VZStorageDriver, self)._update_volume_stats()
+        self._stats['vendor_name'] = 'Virtuozzo'
+
+    def _init_vendor_properties(self):
+        namespace = 'vz'
+        properties = {}
+
+        self._set_property(
+            properties,
+            "%s:volume_format" % namespace,
+            "Volume format",
+            _("Specifies volume format."),
+            "string",
+            enum=["qcow2", "ploop", "raw"],
+            default=self.configuration.vzstorage_default_volume_format)
+
+        return properties, namespace
 
     def _qemu_img_info(self, path, volume_name):
         qemu_img_cache = path + ".qemu_img_info"
@@ -286,33 +300,39 @@ class VZStorageDriver(remotefs_drv.RemoteFSSnapDriver):
             raise exception.VzStorageException(msg)
         cluster_name = m.group(2)
 
-        # set up logging to non-default path, so that it will
-        # be possible to mount the same cluster to another mount
-        # point by hand with default options.
-        mnt_flags = ['-l', '/var/log/pstorage/%s-cinder.log.gz' % cluster_name]
-        if self.shares.get(share) is not None:
-            extra_flags = json.loads(self.shares[share])
-            mnt_flags.extend(extra_flags)
+        if share in self.shares:
+            mnt_flags = json.loads(self.shares[share])
+        else:
+            mnt_flags = []
+
+        if '-l' not in mnt_flags:
+            # If logging path is not specified in shares config
+            # set up logging to non-default path, so that it will
+            # be possible to mount the same cluster to another mount
+            # point by hand with default options.
+            mnt_flags.extend([
+                '-l', '/var/log/vstorage/%s/cinder.log.gz' % cluster_name])
+
         self._remotefsclient.mount(share, mnt_flags)
 
-    def _find_share(self, volume_size_in_gib):
+    def _find_share(self, volume):
         """Choose VzStorage share among available ones for given volume size.
 
         For instances with more than one share that meets the criteria, the
         first suitable share will be selected.
 
-        :param volume_size_in_gib: int size in GB
+        :param volume: the volume to be created.
         """
 
         if not self._mounted_shares:
             raise exception.VzStorageNoSharesMounted()
 
         for share in self._mounted_shares:
-            if self._is_share_eligible(share, volume_size_in_gib):
+            if self._is_share_eligible(share, volume.size):
                 break
         else:
             raise exception.VzStorageNoSuitableShareFound(
-                volume_size=volume_size_in_gib)
+                volume_size=volume.size)
 
         LOG.debug('Selected %s as target VzStorage share.', share)
 
@@ -338,15 +358,23 @@ class VZStorageDriver(remotefs_drv.RemoteFSSnapDriver):
         return True
 
     def choose_volume_format(self, volume):
-        vol_type = volume.volume_type
-        if vol_type:
-            extra_specs = vol_type.extra_specs or {}
-        else:
-            extra_specs = {}
+        volume_format = None
+        volume_type = volume.volume_type
 
-        extra_specs.update(volume.metadata or {})
+        # Retrieve volume format from volume metadata
+        if 'volume_format' in volume.metadata:
+            volume_format = volume.metadata['volume_format']
 
-        return (extra_specs.get('volume_format') or
+        # If volume format wasn't found in metadata, use
+        # volume type extra specs
+        if not volume_format and volume_type:
+            extra_specs = volume_type.extra_specs or {}
+            if 'vz:volume_format' in extra_specs:
+                volume_format = extra_specs['vz:volume_format']
+
+        # If volume format is still undefined, return default
+        # volume format from backend configuration
+        return (volume_format or
                 self.configuration.vzstorage_default_volume_format)
 
     def get_volume_format(self, volume):
@@ -403,7 +431,7 @@ class VZStorageDriver(remotefs_drv.RemoteFSSnapDriver):
 
     @remotefs_drv.locked_volume_id_operation
     def extend_volume(self, volume, size_gb):
-        LOG.info(_LI('Extending volume %s.'), volume.id)
+        LOG.info('Extending volume %s.', volume.id)
         volume_format = self.get_volume_format(volume)
         self._extend_volume(volume, size_gb, volume_format)
 
@@ -411,13 +439,13 @@ class VZStorageDriver(remotefs_drv.RemoteFSSnapDriver):
         volume_path = self.local_path(volume)
 
         self._check_extend_volume_support(volume, size_gb)
-        LOG.info(_LI('Resizing file to %sG...'), size_gb)
+        LOG.info('Resizing file to %sG...', size_gb)
 
         self._do_extend_volume(volume_path, size_gb, volume_format)
 
     def _do_extend_volume(self, volume_path, size_gb, volume_format):
         if volume_format == DISK_FORMAT_PLOOP:
-            self._execute('ploop', 'grow', '-s',
+            self._execute('ploop', 'resize', '-s',
                           '%dG' % size_gb,
                           os.path.join(volume_path, 'DiskDescriptor.xml'),
                           run_as_root=True)
@@ -540,8 +568,8 @@ class VZStorageDriver(remotefs_drv.RemoteFSSnapDriver):
             self._delete(mounted_path)
             self._delete(mounted_path + ".qemu_img_info")
         else:
-            LOG.info(_LI("Skipping deletion of volume %s "
-                         "as it does not exist."), mounted_path)
+            LOG.info("Skipping deletion of volume %s "
+                     "as it does not exist.", mounted_path)
 
         info_path = self._local_path_volume_info(volume)
         self._delete(info_path)
@@ -602,7 +630,7 @@ class VZStorageDriver(remotefs_drv.RemoteFSSnapDriver):
         info_path = self._local_path_volume_info(snapshot.volume)
         snap_info = self._read_info_file(info_path, empty_if_missing=True)
         if snapshot.id not in snap_info:
-            LOG.warning(_LW("Snapshot %s doesn't exist in snap_info"),
+            LOG.warning("Snapshot %s doesn't exist in snap_info",
                         snapshot.id)
             return
 
@@ -679,7 +707,7 @@ class VZStorageDriver(remotefs_drv.RemoteFSSnapDriver):
                                                                image_meta)
 
     def _create_cloned_volume(self, volume, src_vref):
-        LOG.info(_LI('Cloning volume %(src)s to volume %(dst)s'),
+        LOG.info('Cloning volume %(src)s to volume %(dst)s',
                  {'src': src_vref.id,
                   'dst': volume.id})
 
@@ -700,7 +728,7 @@ class VZStorageDriver(remotefs_drv.RemoteFSSnapDriver):
                                  volume_size=src_vref.size,
                                  name='clone-snap-%s' % src_vref.id,
                                  volume_id=src_vref.id,
-                                 volume=volume)
+                                 volume=src_vref)
 
         self._create_snapshot_ploop(temp_snapshot)
         try:
@@ -722,7 +750,7 @@ class VZStorageDriver(remotefs_drv.RemoteFSSnapDriver):
         """Creates a clone of the specified volume."""
         volume_format = self.get_volume_format(src_vref)
         if volume_format == DISK_FORMAT_PLOOP:
-            self._create_cloned_volume(volume, src_vref)
+            return self._create_cloned_volume(volume, src_vref)
         else:
-            super(VZStorageDriver, self)._create_cloned_volume(volume,
-                                                               src_vref)
+            return super(VZStorageDriver, self)._create_cloned_volume(volume,
+                                                                      src_vref)

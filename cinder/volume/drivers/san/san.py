@@ -28,9 +28,10 @@ from oslo_log import log as logging
 from oslo_utils import excutils
 
 from cinder import exception
-from cinder.i18n import _, _LE
+from cinder.i18n import _
 from cinder import ssh_utils
 from cinder import utils
+from cinder.volume import configuration
 from cinder.volume import driver
 
 LOG = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ san_opts = [
 ]
 
 CONF = cfg.CONF
-CONF.register_opts(san_opts)
+CONF.register_opts(san_opts, group=configuration.SHARED_CONF_GROUP)
 
 
 class SanDriver(driver.BaseVD):
@@ -147,7 +148,7 @@ class SanDriver(driver.BaseVD):
 
         except Exception:
             with excutils.save_and_reraise_exception():
-                LOG.error(_LE("Error running SSH command: %s"), command)
+                LOG.error("Error running SSH command: %s", command)
 
     def ensure_export(self, context, volume):
         """Synchronously recreates an export for a logical volume."""

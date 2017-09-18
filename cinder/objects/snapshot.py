@@ -36,7 +36,9 @@ class Snapshot(cleanable.CinderCleanableObject, base.CinderObject,
     # Version 1.1: Changed 'status' field to use SnapshotStatusField
     # Version 1.2: This object is now cleanable (adds rows to workers table)
     # Version 1.3: SnapshotStatusField now includes "unmanaging"
-    VERSION = '1.3'
+    # Version 1.4: SnapshotStatusField now includes "backing-up"
+    # Version 1.5: SnapshotStatusField now includes "restoring"
+    VERSION = '1.5'
 
     # NOTE(thangp): OPTIONAL_FIELDS are fields that would be lazy-loaded. They
     # are typically the relationship in the sqlalchemy object.
@@ -118,9 +120,19 @@ class Snapshot(cleanable.CinderCleanableObject, base.CinderObject,
         super(Snapshot, self).obj_make_compatible(primitive, target_version)
         target_version = versionutils.convert_version_to_tuple(target_version)
 
-        if target_version < (1, 3):
-            if primitive.get('status') == c_fields.SnapshotStatus.UNMANAGING:
-                primitive['status'] = c_fields.SnapshotStatus.DELETING
+        backport_statuses = (((1, 3),
+                              (c_fields.SnapshotStatus.UNMANAGING,
+                               c_fields.SnapshotStatus.DELETING)),
+                             ((1, 4),
+                             (c_fields.SnapshotStatus.BACKING_UP,
+                              c_fields.SnapshotStatus.AVAILABLE)),
+                             ((1, 5),
+                              (c_fields.SnapshotStatus.RESTORING,
+                               c_fields.SnapshotStatus.AVAILABLE)))
+        for version, status in backport_statuses:
+            if target_version < version:
+                if primitive.get('status') == status[0]:
+                    primitive['status'] = status[1]
 
     @classmethod
     def _from_db_object(cls, context, snapshot, db_snapshot,

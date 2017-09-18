@@ -12,11 +12,13 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+import ddt
 import mock
 import six
 
 from cinder import exception
 from cinder import objects
+from cinder.objects import base as ovo_base
 from cinder.objects import fields
 from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import fake_volume
@@ -35,6 +37,7 @@ fake_group = {
 }
 
 
+@ddt.ddt
 class TestGroup(test_objects.BaseObjectsTestCase):
 
     @mock.patch('cinder.db.sqlalchemy.api.group_get',
@@ -160,7 +163,48 @@ class TestGroup(test_objects.BaseObjectsTestCase):
         self.assertEqual(len(db_volumes), len(group.volumes))
         self._compare(self, db_volumes[0], group.volumes[0])
 
+    @ddt.data('1.10', '1.11')
+    def test_obj_make_compatible(self, version):
+        extra_data = {'group_snapshot_id': fake.GROUP_SNAPSHOT_ID,
+                      'source_group_id': fake.GROUP_ID,
+                      'group_snapshots': objects.GroupSnapshotList()}
+        group = objects.Group(self.context, name='name', **extra_data)
 
+        serializer = ovo_base.CinderObjectSerializer(version)
+        primitive = serializer.serialize_entity(self.context, group)
+
+        converted_group = objects.Group.obj_from_primitive(primitive)
+        is_set = version == '1.11'
+        for key in extra_data:
+            self.assertEqual(is_set, converted_group.obj_attr_is_set(key))
+        self.assertEqual('name', converted_group.name)
+
+    @mock.patch('cinder.volume.group_types.get_group_type_specs')
+    def test_is_replicated_true(self, mock_get_specs):
+        mock_get_specs.return_value = '<is> True'
+        group = objects.Group(self.context, group_type_id=fake.GROUP_TYPE_ID)
+        # NOTE(xyang): Changed the following from self.assertTrue(
+        # group.is_replicated) to self.assertEqual(True, group.is_replicated)
+        # to address a review comment. This way this test will still pass
+        # even if is_replicated is a method and not a property.
+        self.assertTrue(True, group.is_replicated)
+
+    @ddt.data('<is> False', None, 'notASpecValueWeCareAbout')
+    def test_is_replicated_false(self, spec_value):
+        with mock.patch('cinder.volume.group_types'
+                        '.get_group_type_specs') as mock_get_specs:
+            mock_get_specs.return_value = spec_value
+            group = objects.Group(self.context,
+                                  group_type_id=fake.GROUP_TYPE_ID)
+            # NOTE(xyang): Changed the following from self.assertFalse(
+            # group.is_replicated) to self.assertEqual(False,
+            # group.is_replicated) to address a review comment. This way this
+            # test will still pass even if is_replicated is a method and not
+            # a property.
+            self.assertEqual(False, group.is_replicated)
+
+
+@ddt.ddt
 class TestGroupList(test_objects.BaseObjectsTestCase):
     @mock.patch('cinder.db.group_get_all',
                 return_value=[fake_group])
@@ -205,3 +249,47 @@ class TestGroupList(test_objects.BaseObjectsTestCase):
             limit=1, offset=None, sort_keys='id', sort_dirs='asc')
         TestGroup._compare(self, fake_group,
                            groups[0])
+
+    @ddt.data({'cluster_name': 'fake_cluster'}, {'host': 'fake_host'})
+    @mock.patch('cinder.volume.group_types.get_group_type_specs')
+    @mock.patch('cinder.db.group_get_all')
+    def test_get_all_replicated(self, filters, mock_get_groups,
+                                mock_get_specs):
+        mock_get_specs.return_value = '<is> True'
+        fake_group2 = fake_group.copy()
+        fake_group2['id'] = fake.GROUP2_ID
+        fake_group2['cluster_name'] = 'fake_cluster'
+        if filters.get('cluster_name'):
+            mock_get_groups.return_value = [fake_group2]
+        else:
+            mock_get_groups.return_value = [fake_group]
+        res = objects.GroupList.get_all_replicated(self.context,
+                                                   filters=filters)
+        self.assertEqual(1, len(res))
+        if filters.get('cluster_name'):
+            self.assertEqual(fake.GROUP2_ID, res[0].id)
+            self.assertEqual('fake_cluster', res[0].cluster_name)
+        else:
+            self.assertEqual(fake.GROUP_ID, res[0].id)
+            self.assertIsNone(res[0].cluster_name)
+
+    @mock.patch('cinder.db.group_include_in_cluster')
+    def test_include_in_cluster(self, include_mock):
+        filters = {'host': mock.sentinel.host,
+                   'cluster_name': mock.sentinel.cluster_name}
+        cluster = 'new_cluster'
+        objects.GroupList.include_in_cluster(self.context, cluster, **filters)
+        include_mock.assert_called_once_with(self.context, cluster, True,
+                                             **filters)
+
+    @mock.patch('cinder.db.group_include_in_cluster')
+    def test_include_in_cluster_specify_partial(self, include_mock):
+        filters = {'host': mock.sentinel.host,
+                   'cluster_name': mock.sentinel.cluster_name}
+        cluster = 'new_cluster'
+        objects.GroupList.include_in_cluster(self.context, cluster,
+                                             mock.sentinel.partial_rename,
+                                             **filters)
+        include_mock.assert_called_once_with(self.context, cluster,
+                                             mock.sentinel.partial_rename,
+                                             **filters)

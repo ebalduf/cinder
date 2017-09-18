@@ -15,7 +15,9 @@
 
 import uuid
 
+import ddt
 import mock
+from oslo_utils import strutils
 from oslo_utils import timeutils
 import six
 import webob
@@ -32,6 +34,7 @@ from cinder.tests.unit import fake_constants as fake
 from cinder.volume import group_types
 
 GROUP_TYPE_MICRO_VERSION = '3.11'
+IN_USE_GROUP_TYPE = fake.GROUP_TYPE3_ID
 
 
 def stub_group_type(id):
@@ -86,6 +89,12 @@ def return_group_types_get_default_not_found():
     return {}
 
 
+def return_group_types_with_groups_destroy(context, id):
+    if id == IN_USE_GROUP_TYPE:
+        raise exception.GroupTypeInUse(group_type_id=id)
+
+
+@ddt.ddt
 class GroupTypesApiTest(test.TestCase):
 
     def _create_group_type(self, group_type_name, group_specs=None,
@@ -111,6 +120,56 @@ class GroupTypesApiTest(test.TestCase):
                                                 {'key3': 'value3'}, False,
                                                 [fake.PROJECT_ID])
         self.type_id0 = group_types.get_default_cgsnapshot_type()['id']
+
+    @ddt.data('0', 'f', 'false', 'off', 'n', 'no', '1', 't', 'true', 'on',
+              'y', 'yes')
+    @mock.patch.object(group_types, "get_group_type_by_name")
+    @mock.patch.object(group_types, "create")
+    @mock.patch("cinder.api.openstack.wsgi.Request.cache_resource")
+    @mock.patch("cinder.api.views.types.ViewBuilder.show")
+    def test_create_group_type_with_valid_is_public_in_string(
+            self, is_public, mock_show, mock_cache_resource,
+            mock_create, mock_get):
+        boolean_is_public = strutils.bool_from_string(is_public)
+        req = fakes.HTTPRequest.blank('/v3/%s/types' % fake.PROJECT_ID,
+                                      version=GROUP_TYPE_MICRO_VERSION)
+        req.environ['cinder.context'] = self.ctxt
+
+        body = {"group_type": {"is_public": is_public, "name": "group_type1",
+                               "description": None}}
+        self.controller.create(req, body)
+        mock_create.assert_called_once_with(
+            self.ctxt, 'group_type1', {},
+            boolean_is_public, description=None)
+
+    @ddt.data(fake.GROUP_TYPE_ID, IN_USE_GROUP_TYPE)
+    def test_group_type_destroy(self, grp_type_id):
+        grp_type = {'id': grp_type_id, 'name': 'grp' + grp_type_id}
+        self.mock_object(group_types, 'get_group_type',
+                         return_value=grp_type)
+        self.mock_object(group_types, 'destroy',
+                         return_group_types_with_groups_destroy)
+        mock_notify_info = self.mock_object(
+            v3_group_types.GroupTypesController,
+            '_notify_group_type_info')
+        mock_notify_error = self.mock_object(
+            v3_group_types.GroupTypesController,
+            '_notify_group_type_error')
+        req = fakes.HTTPRequest.blank('/v3/%s/group_types/%s' % (
+            fake.PROJECT_ID, grp_type_id),
+            version=GROUP_TYPE_MICRO_VERSION)
+        req.environ['cinder.context'] = self.ctxt
+        if grp_type_id == IN_USE_GROUP_TYPE:
+            self.assertRaises(webob.exc.HTTPBadRequest,
+                              self.controller.delete,
+                              req, grp_type_id)
+            mock_notify_error.assert_called_once_with(
+                self.ctxt, 'group_type.delete', mock.ANY,
+                group_type=grp_type)
+        else:
+            self.controller.delete(req, grp_type_id)
+            mock_notify_info.assert_called_once_with(
+                self.ctxt, 'group_type.delete', grp_type)
 
     def test_group_types_index(self):
         self.mock_object(group_types, 'get_all_group_types',
@@ -259,6 +318,27 @@ class GroupTypesApiTest(test.TestCase):
         self.assertEqual(expect_result[1], res['group_types'][1]['id'])
         self.assertEqual(expect_result[2], res['group_types'][2]['id'])
         self.assertEqual(expect_result[3], res['group_types'][3]['id'])
+
+    @ddt.data('0', 'f', 'false', 'off', 'n', 'no', '1', 't', 'true', 'on',
+              'y', 'yes')
+    @mock.patch.object(group_types, "get_group_type")
+    @mock.patch.object(group_types, "update")
+    @mock.patch("cinder.api.openstack.wsgi.Request.cache_resource")
+    @mock.patch("cinder.api.views.types.ViewBuilder.show")
+    def test_update_group_type_with_valid_is_public_in_string(
+            self, is_public, mock_show, mock_cache_resource,
+            mock_update, mock_get):
+        boolean_is_public = strutils.bool_from_string(is_public)
+        type_id = six.text_type(uuid.uuid4())
+        req = fakes.HTTPRequest.blank(
+            '/v3/%s/types/%s' % (fake.PROJECT_ID, type_id),
+            version=GROUP_TYPE_MICRO_VERSION)
+        req.environ['cinder.context'] = self.ctxt
+        body = {"group_type": {"is_public": is_public, "name": "group_type1"}}
+        self.controller.update(req, type_id, body)
+        mock_update.assert_called_once_with(
+            self.ctxt, type_id, 'group_type1', None,
+            is_public=boolean_is_public)
 
     def test_group_types_show(self):
         self.mock_object(group_types, 'get_group_type',

@@ -15,6 +15,7 @@ from oslo_config import cfg
 
 from cinder import context
 from cinder import db
+from cinder import exception
 from cinder import objects
 from cinder import test
 from cinder.tests.unit import fake_constants as fake
@@ -61,17 +62,23 @@ class AttachmentManagerTestCase(test.TestCase):
                                               mock_policy):
         """Test attachment_create with connector."""
         volume_params = {'status': 'available'}
+        connection_info = {'fake_key': 'fake_value',
+                           'fake_key2': ['fake_value1', 'fake_value2']}
+        mock_rpc_attachment_update.return_value = connection_info
 
         vref = tests_utils.create_volume(self.context, **volume_params)
         connector = {'fake': 'connector'}
-        self.volume_api.attachment_create(self.context,
-                                          vref,
-                                          fake.UUID2,
-                                          connector)
+        attachment = self.volume_api.attachment_create(self.context,
+                                                       vref,
+                                                       fake.UUID2,
+                                                       connector)
         mock_rpc_attachment_update.assert_called_once_with(self.context,
                                                            mock.ANY,
                                                            connector,
                                                            mock.ANY)
+        new_attachment = objects.VolumeAttachment.get_by_id(self.context,
+                                                            attachment.id)
+        self.assertEqual(connection_info, new_attachment.connection_info)
 
     @mock.patch('cinder.volume.api.check_policy')
     @mock.patch('cinder.volume.rpcapi.VolumeAPI.attachment_delete')
@@ -106,6 +113,9 @@ class AttachmentManagerTestCase(test.TestCase):
             mock_policy):
         """Test attachment_delete."""
         volume_params = {'status': 'available'}
+        connection_info = {'fake_key': 'fake_value',
+                           'fake_key2': ['fake_value1', 'fake_value2']}
+        mock_rpc_attachment_update.return_value = connection_info
 
         vref = tests_utils.create_volume(self.context, **volume_params)
         aref = self.volume_api.attachment_create(self.context,
@@ -120,6 +130,9 @@ class AttachmentManagerTestCase(test.TestCase):
         self.volume_api.attachment_update(self.context,
                                           aref,
                                           connector)
+        aref = objects.VolumeAttachment.get_by_id(self.context,
+                                                  aref.id)
+        self.assertEqual(connection_info, aref.connection_info)
         # We mock the actual call that updates the status
         # so force it here
         values = {'volume_id': vref.id,
@@ -137,3 +150,31 @@ class AttachmentManagerTestCase(test.TestCase):
         mock_rpc_attachment_delete.assert_called_once_with(self.context,
                                                            aref.id,
                                                            mock.ANY)
+
+    @mock.patch('cinder.volume.api.check_policy')
+    def test_additional_attachment_create_no_connector(self, mock_policy):
+        """Test attachment_create no connector."""
+        volume_params = {'status': 'available'}
+
+        vref = tests_utils.create_volume(self.context, **volume_params)
+        aref = self.volume_api.attachment_create(self.context,
+                                                 vref,
+                                                 fake.UUID2)
+        self.assertEqual(fake.UUID2, aref.instance_uuid)
+        self.assertIsNone(aref.attach_time)
+        self.assertEqual('reserved', aref.attach_status)
+        self.assertIsNone(aref.attach_mode)
+        self.assertEqual(vref.id, aref.volume_id)
+        self.assertEqual({}, aref.connection_info)
+
+        self.assertRaises(exception.InvalidVolume,
+                          self.volume_api.attachment_create,
+                          self.context,
+                          vref,
+                          fake.UUID1)
+        self.volume_api.attachment_create(self.context,
+                                          vref,
+                                          fake.UUID2)
+        vref = objects.Volume.get_by_id(self.context,
+                                        vref.id)
+        self.assertEqual(2, len(vref.volume_attachment))

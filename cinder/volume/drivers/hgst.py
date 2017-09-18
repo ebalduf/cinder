@@ -35,10 +35,9 @@ from oslo_utils import units
 
 from cinder import exception
 from cinder.i18n import _
-from cinder.i18n import _LE
-from cinder.i18n import _LW
 from cinder.image import image_utils
 from cinder import interface
+from cinder.volume import configuration
 from cinder.volume import driver
 from cinder.volume import utils as volutils
 
@@ -68,7 +67,7 @@ hgst_opts = [
 
 
 CONF = cfg.CONF
-CONF.register_opts(hgst_opts)
+CONF.register_opts(hgst_opts, group=configuration.SHARED_CONF_GROUP)
 
 
 @interface.volumedriver
@@ -112,8 +111,8 @@ class HGSTDriver(driver.VolumeDriver):
 
     def _log_cli_err(self, err):
         """Dumps the full command output to a logfile in error cases."""
-        LOG.error(_LE("CLI fail: '%(cmd)s' = %(code)s\nout: %(stdout)s\n"
-                      "err: %(stderr)s"),
+        LOG.error("CLI fail: '%(cmd)s' = %(code)s\nout: %(stdout)s\n"
+                  "err: %(stderr)s",
                   {'cmd': err.cmd, 'code': err.exit_code,
                    'stdout': err.stdout, 'stderr': err.stderr})
 
@@ -256,7 +255,7 @@ class HGSTDriver(driver.VolumeDriver):
                 self._execute(*params, run_as_root=True)
                 # Cancel succeeded, the command was aborted
                 # Send initial exception up the stack
-                LOG.error(_LE("VGC-CLUSTER command blocked and cancelled."))
+                LOG.error("VGC-CLUSTER command blocked and cancelled.")
                 # Can't throw it here, the except below would catch it!
                 throw_err = True
             except Exception:
@@ -347,7 +346,7 @@ class HGSTDriver(driver.VolumeDriver):
                 avail = avail - 1
         except processutils.ProcessExecutionError as err:
             # Could be cluster still starting up, return unknown for now
-            LOG.warning(_LW("Unable to poll cluster free space."))
+            LOG.warning("Unable to poll cluster free space.")
             self._log_cli_err(err)
             cap = 'unknown'
             avail = 'unknown'
@@ -413,12 +412,12 @@ class HGSTDriver(driver.VolumeDriver):
             try:
                 self._execute(*params, run_as_root=True)
             except processutils.ProcessExecutionError as err:
-                LOG.warning(_LW("Unable to delete space %(space)s"),
+                LOG.warning("Unable to delete space %(space)s",
                             {'space': volname})
                 self._log_cli_err(err)
         else:
             # This can be benign when we are deleting a snapshot
-            LOG.warning(_LW("Attempted to delete a space that's not there."))
+            LOG.warning("Attempted to delete a space that's not there.")
 
     def _check_host_storage(self, server):
         if ":" not in server:

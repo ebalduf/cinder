@@ -15,18 +15,36 @@
 
 """The volume types extra specs extension"""
 
+from oslo_config import cfg
+from oslo_log import log as logging
+from oslo_log import versionutils
 from six.moves import http_client
 import webob
 
 from cinder.api import common
 from cinder.api import extensions
 from cinder.api.openstack import wsgi
+from cinder import context as ctxt
 from cinder import db
 from cinder import exception
 from cinder.i18n import _
 from cinder import rpc
 from cinder import utils
 from cinder.volume import volume_types
+
+LOG = logging.getLogger(__name__)
+
+extraspec_opts = [
+    cfg.BoolOpt('allow_inuse_volume_type_modification',
+                default=False,
+                deprecated_for_removal=True,
+                help="DEPRECATED: Allow the ability to modify the "
+                     "extra-spec settings of an in-use volume-type."),
+
+]
+
+CONF = cfg.CONF
+CONF.register_opts(extraspec_opts)
 
 authorize = extensions.extension_authorizer('volume', 'types_extra_specs')
 
@@ -48,13 +66,31 @@ class VolumeTypeExtraSpecsController(wsgi.Controller):
     def index(self, req, type_id):
         """Returns the list of extra specs for a given volume type."""
         context = req.environ['cinder.context']
-        authorize(context)
+        authorize(context, action="index")
         self._check_type(context, type_id)
         return self._get_extra_specs(context, type_id)
 
+    def _allow_update(self, context, type_id):
+        if (not CONF.allow_inuse_volume_type_modification):
+            vols = db.volume_get_all(
+                ctxt.get_admin_context(),
+                limit=1,
+                filters={'volume_type_id': type_id})
+            if len(vols):
+                expl = _('Volume Type is currently in use.')
+                raise webob.exc.HTTPBadRequest(explanation=expl)
+        else:
+            msg = ("The option 'allow_inuse_volume_type_modification' "
+                   "is deprecated and will be removed in a future "
+                   "release.  The default behavior going forward will "
+                   "be to disallow modificaton of in-use types.")
+            versionutils.report_deprecated_feature(LOG, msg)
+        return
+
     def create(self, req, type_id, body=None):
         context = req.environ['cinder.context']
-        authorize(context)
+        authorize(context, action='create')
+        self._allow_update(context, type_id)
 
         self.assert_valid_body(body, 'extra_specs')
 
@@ -66,7 +102,11 @@ class VolumeTypeExtraSpecsController(wsgi.Controller):
         db.volume_type_extra_specs_update_or_create(context,
                                                     type_id,
                                                     specs)
-        notifier_info = dict(type_id=type_id, specs=specs)
+        # Get created_at and updated_at for notification
+        volume_type = volume_types.get_volume_type(context, type_id)
+        notifier_info = dict(type_id=type_id, specs=specs,
+                             created_at=volume_type['created_at'],
+                             updated_at=volume_type['updated_at'])
         notifier = rpc.get_notifier('volumeTypeExtraSpecs')
         notifier.info(context, 'volume_type_extra_specs.create',
                       notifier_info)
@@ -74,7 +114,9 @@ class VolumeTypeExtraSpecsController(wsgi.Controller):
 
     def update(self, req, type_id, id, body=None):
         context = req.environ['cinder.context']
-        authorize(context)
+        authorize(context, action='update')
+        self._allow_update(context, type_id)
+
         if not body:
             expl = _('Request body empty')
             raise webob.exc.HTTPBadRequest(explanation=expl)
@@ -91,7 +133,11 @@ class VolumeTypeExtraSpecsController(wsgi.Controller):
         db.volume_type_extra_specs_update_or_create(context,
                                                     type_id,
                                                     body)
-        notifier_info = dict(type_id=type_id, id=id)
+        # Get created_at and updated_at for notification
+        volume_type = volume_types.get_volume_type(context, type_id)
+        notifier_info = dict(type_id=type_id, id=id,
+                             created_at=volume_type['created_at'],
+                             updated_at=volume_type['updated_at'])
         notifier = rpc.get_notifier('volumeTypeExtraSpecs')
         notifier.info(context,
                       'volume_type_extra_specs.update',
@@ -101,7 +147,7 @@ class VolumeTypeExtraSpecsController(wsgi.Controller):
     def show(self, req, type_id, id):
         """Return a single extra spec item."""
         context = req.environ['cinder.context']
-        authorize(context)
+        authorize(context, action='show')
         self._check_type(context, type_id)
         specs = self._get_extra_specs(context, type_id)
         if id in specs['extra_specs']:
@@ -114,12 +160,18 @@ class VolumeTypeExtraSpecsController(wsgi.Controller):
         """Deletes an existing extra spec."""
         context = req.environ['cinder.context']
         self._check_type(context, type_id)
-        authorize(context)
+        authorize(context, action='delete')
+        self._allow_update(context, type_id)
 
         # Not found exception will be handled at the wsgi level
         db.volume_type_extra_specs_delete(context, type_id, id)
 
-        notifier_info = dict(type_id=type_id, id=id)
+        # Get created_at and updated_at for notification
+        volume_type = volume_types.get_volume_type(context, type_id)
+        notifier_info = dict(type_id=type_id, id=id,
+                             created_at=volume_type['created_at'],
+                             updated_at=volume_type['updated_at'],
+                             deleted_at=volume_type['deleted_at'])
         notifier = rpc.get_notifier('volumeTypeExtraSpecs')
         notifier.info(context,
                       'volume_type_extra_specs.delete',

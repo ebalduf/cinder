@@ -28,6 +28,7 @@ from cinder import context
 from cinder import db
 from cinder import exception
 from cinder import objects
+from cinder.objects import fields
 from cinder import quota
 from cinder.tests.unit.api import fakes
 from cinder.tests.unit import fake_constants as fake
@@ -53,10 +54,10 @@ def create_snapshot(volume_id, size=1, metadata=None, ctxt=None,
     metadata = metadata or {}
     snap = objects.Snapshot(ctxt or context.get_admin_context())
     snap.volume_size = size
-    snap.user_id = fake.USER_ID
-    snap.project_id = fake.PROJECT_ID
+    snap.user_id = kwargs.get('user_id', fake.USER_ID)
+    snap.project_id = kwargs.get('project_id', fake.PROJECT_ID)
     snap.volume_id = volume_id
-    snap.status = "creating"
+    snap.status = fields.SnapshotStatus.CREATING
     if metadata is not None:
         snap.metadata = metadata
     snap.update(kwargs)
@@ -538,13 +539,13 @@ class VolumeMigrationTestCase(base.BaseVolumeTestCase):
                                                status=initial_status,
                                                migration_status='migrating',
                                                previous_status=previous_status)
-        attachment_id = None
+        attachment = None
         if status == 'in-use':
             vol = tests_utils.attach_volume(self.context, old_volume.id,
                                             instance_uuid, attached_host,
                                             '/dev/vda')
             self.assertEqual('in-use', vol['status'])
-            attachment_id = vol['volume_attachment'][0]['id']
+            attachment = vol['volume_attachment'][0]
         target_status = 'target:%s' % old_volume.id
         new_host = CONF.host + 'new'
         new_volume = tests_utils.create_volume(self.context, size=0,
@@ -571,9 +572,17 @@ class VolumeMigrationTestCase(base.BaseVolumeTestCase):
             if status == 'in-use':
                 mock_detach_volume.assert_called_with(self.context,
                                                       old_volume.id,
-                                                      attachment_id)
+                                                      attachment['id'])
                 attachments = db.volume_attachment_get_all_by_instance_uuid(
                     self.context, instance_uuid)
+                mock_attach_volume.assert_called_once_with(
+                    self.context,
+                    old_volume,
+                    attachment['instance_uuid'],
+                    attachment['attached_host'],
+                    attachment['mountpoint'],
+                    'rw'
+                )
                 self.assertIsNotNone(attachments)
                 self.assertEqual(attached_host,
                                  attachments[0]['attached_host'])
@@ -710,7 +719,10 @@ class VolumeMigrationTestCase(base.BaseVolumeTestCase):
         volume.previous_status = 'available'
         volume.save()
         if snap:
-            create_snapshot(volume.id, size=volume.size)
+            create_snapshot(volume.id, size=volume.size,
+                            user_id=self.user_context.user_id,
+                            project_id=self.user_context.project_id,
+                            ctxt=self.user_context)
         if driver or diff_equal:
             host_obj = {'host': CONF.host, 'capabilities': {}}
         else:
@@ -746,9 +758,11 @@ class VolumeMigrationTestCase(base.BaseVolumeTestCase):
         with mock.patch.object(self.volume.driver, 'retype') as _retype,\
                 mock.patch.object(volume_types, 'volume_types_diff') as _diff,\
                 mock.patch.object(self.volume, 'migrate_volume') as _mig,\
-                mock.patch.object(db.sqlalchemy.api, 'volume_get') as mock_get:
-            mock_get.return_value = volume
+                mock.patch.object(db.sqlalchemy.api, 'volume_get') as _vget,\
+                mock.patch.object(context.RequestContext, 'elevated') as _ctx:
+            _vget.return_value = volume
             _retype.return_value = driver
+            _ctx.return_value = self.context
             returned_diff = {
                 'encryption': {},
                 'qos_specs': {},

@@ -52,9 +52,26 @@ class RemoteFsSnapDriverTestCase(test.TestCase):
                                     self._fake_snapshot.id)
         self._fake_snapshot.volume = self._fake_volume
 
+    @ddt.data({'current_state': 'in-use',
+               'acceptable_states': ['available', 'in-use']},
+              {'current_state': 'in-use',
+               'acceptable_states': ['available'],
+               'expected_exception': exception.InvalidVolume})
+    @ddt.unpack
+    def test_validate_state(self, current_state, acceptable_states,
+                            expected_exception=None):
+        if expected_exception:
+            self.assertRaises(expected_exception,
+                              self._driver._validate_state,
+                              current_state,
+                              acceptable_states)
+        else:
+            self._driver._validate_state(current_state, acceptable_states)
+
     def _test_delete_snapshot(self, volume_in_use=False,
                               stale_snapshot=False,
-                              is_active_image=True):
+                              is_active_image=True,
+                              is_tmp_snap=False):
         # If the snapshot is not the active image, it is guaranteed that
         # another snapshot exists having it as backing file.
 
@@ -78,6 +95,7 @@ class RemoteFsSnapDriverTestCase(test.TestCase):
         self._driver._local_volume_dir = mock.Mock(
             return_value=self._FAKE_MNT_POINT)
 
+        self._driver._validate_state = mock.Mock()
         self._driver._read_info_file = mock.Mock()
         self._driver._write_info_file = mock.Mock()
         self._driver._img_commit = mock.Mock()
@@ -91,12 +109,18 @@ class RemoteFsSnapDriverTestCase(test.TestCase):
             self._fake_snapshot.id: fake_snapshot_name
         }
 
+        exp_acceptable_states = ['available', 'in-use', 'backing-up',
+                                 'deleting', 'downloading']
+
         if volume_in_use:
             self._fake_snapshot.volume.status = 'in-use'
 
             self._driver._read_info_file.return_value = fake_info
 
             self._driver._delete_snapshot(self._fake_snapshot)
+            self._driver._validate_state.assert_called_once_with(
+                self._fake_snapshot.volume.status,
+                exp_acceptable_states)
             if stale_snapshot:
                 self._driver._delete_stale_snapshot.assert_called_once_with(
                     self._fake_snapshot)
@@ -228,7 +252,7 @@ class RemoteFsSnapDriverTestCase(test.TestCase):
                  mock.call(*command3, run_as_root=True)]
         self._driver._execute.assert_has_calls(calls)
 
-    def _test_create_snapshot(self, volume_in_use=False):
+    def _test_create_snapshot(self, volume_in_use=False, tmp_snap=False):
         fake_snapshot_info = {}
         fake_snapshot_file_name = os.path.basename(self._fake_snapshot_path)
 
@@ -243,11 +267,16 @@ class RemoteFsSnapDriverTestCase(test.TestCase):
             return_value=self._fake_volume.name)
         self._driver._get_new_snap_path = mock.Mock(
             return_value=self._fake_snapshot_path)
+        self._driver._validate_state = mock.Mock()
 
         expected_snapshot_info = {
             'active': fake_snapshot_file_name,
             self._fake_snapshot.id: fake_snapshot_file_name
         }
+        exp_acceptable_states = ['available', 'in-use', 'backing-up']
+        if tmp_snap:
+            exp_acceptable_states.append('downloading')
+            self._fake_snapshot.id = 'tmp-snap-%s' % self._fake_snapshot.id
 
         if volume_in_use:
             self._fake_snapshot.volume.status = 'in-use'
@@ -258,6 +287,9 @@ class RemoteFsSnapDriverTestCase(test.TestCase):
 
         self._driver._create_snapshot(self._fake_snapshot)
 
+        self._driver._validate_state.assert_called_once_with(
+            self._fake_snapshot.volume.status,
+            exp_acceptable_states)
         fake_method = getattr(self._driver, expected_method_called)
         fake_method.assert_called_with(
             self._fake_snapshot, self._fake_volume.name,
@@ -403,7 +435,7 @@ class RemoteFsSnapDriverTestCase(test.TestCase):
 
     @ddt.data([None, '/fake_basedir'],
               ['/fake_basedir/cb2016/fake_vol_name', '/fake_basedir'],
-              ['/fake_basedir/cb2016/fake_vol_name.vhd', '/fake_basedir'],
+              ['/fake_basedir/cb2016/fake_vol_name.VHD', '/fake_basedir'],
               ['/fake_basedir/cb2016/fake_vol_name.404f-404',
                '/fake_basedir'],
               ['/fake_basedir/cb2016/fake_vol_name.tmp-snap-404f-404',
@@ -428,52 +460,148 @@ class RemoteFsSnapDriverTestCase(test.TestCase):
                                  basedir=basedir,
                                  valid_backing_file=False)
 
-    def test_create_cloned_volume(self):
+    @mock.patch.object(remotefs.RemoteFSSnapDriver, '_local_volume_dir')
+    @mock.patch.object(remotefs.RemoteFSSnapDriver,
+                       'get_active_image_from_info')
+    def test_local_path_active_image(self, mock_get_active_img,
+                                     mock_local_vol_dir):
+        fake_vol_dir = 'fake_vol_dir'
+        fake_active_img = 'fake_active_img_fname'
+
+        mock_get_active_img.return_value = fake_active_img
+        mock_local_vol_dir.return_value = fake_vol_dir
+
+        active_img_path = self._driver._local_path_active_image(
+            mock.sentinel.volume)
+        exp_act_img_path = os.path.join(fake_vol_dir, fake_active_img)
+
+        self.assertEqual(exp_act_img_path, active_img_path)
+        mock_get_active_img.assert_called_once_with(mock.sentinel.volume)
+        mock_local_vol_dir.assert_called_once_with(mock.sentinel.volume)
+
+    @ddt.data({},
+              {'provider_location': None},
+              {'active_fpath': 'last_snap_img',
+               'expect_snaps': True})
+    @ddt.unpack
+    @mock.patch.object(remotefs.RemoteFSSnapDriver,
+                       '_local_path_active_image')
+    @mock.patch.object(remotefs.RemoteFSSnapDriver,
+                       'local_path')
+    def test_snapshots_exist(self, mock_local_path,
+                             mock_local_path_active_img,
+                             provider_location='fake_share',
+                             active_fpath='base_img_path',
+                             base_vol_path='base_img_path',
+                             expect_snaps=False):
+        self._fake_volume.provider_location = provider_location
+
+        mock_local_path.return_value = base_vol_path
+        mock_local_path_active_img.return_value = active_fpath
+
+        snaps_exist = self._driver._snapshots_exist(self._fake_volume)
+
+        self.assertEqual(expect_snaps, snaps_exist)
+
+        if provider_location:
+            mock_local_path.assert_called_once_with(self._fake_volume)
+            mock_local_path_active_img.assert_called_once_with(
+                self._fake_volume)
+        else:
+            self.assertFalse(mock_local_path.called)
+
+    @ddt.data({},
+              {'snapshots_exist': True},
+              {'force_temp_snap': True})
+    @ddt.unpack
+    @mock.patch.object(remotefs.RemoteFSSnapDriver, 'local_path')
+    @mock.patch.object(remotefs.RemoteFSSnapDriver, '_snapshots_exist')
+    @mock.patch.object(remotefs.RemoteFSSnapDriver, '_copy_volume_image')
+    @mock.patch.object(remotefs.RemoteFSSnapDriver, '_extend_volume')
+    @mock.patch.object(remotefs.RemoteFSSnapDriver, '_validate_state')
+    @mock.patch.object(remotefs.RemoteFSSnapDriver, '_create_snapshot')
+    @mock.patch.object(remotefs.RemoteFSSnapDriver, '_delete_snapshot')
+    @mock.patch.object(remotefs.RemoteFSSnapDriver,
+                       '_copy_volume_from_snapshot')
+    def test_create_cloned_volume(self, mock_copy_volume_from_snapshot,
+                                  mock_delete_snapshot,
+                                  mock_create_snapshot,
+                                  mock_validate_state,
+                                  mock_extend_volme,
+                                  mock_copy_volume_image,
+                                  mock_snapshots_exist,
+                                  mock_local_path,
+                                  snapshots_exist=False,
+                                  force_temp_snap=False):
         drv = self._driver
 
-        with mock.patch.object(drv, '_create_snapshot') as \
-                mock_create_snapshot,\
-                mock.patch.object(drv, '_delete_snapshot') as \
-                mock_delete_snapshot,\
-                mock.patch.object(drv, '_copy_volume_from_snapshot') as \
-                mock_copy_volume_from_snapshot:
+        volume = fake_volume.fake_volume_obj(self.context)
+        src_vref_id = '375e32b2-804a-49f2-b282-85d1d5a5b9e1'
+        src_vref = fake_volume.fake_volume_obj(
+            self.context,
+            id=src_vref_id,
+            name='volume-%s' % src_vref_id)
 
-            volume = fake_volume.fake_volume_obj(self.context)
-            src_vref_id = '375e32b2-804a-49f2-b282-85d1d5a5b9e1'
-            src_vref = fake_volume.fake_volume_obj(
-                self.context,
-                id=src_vref_id,
-                name='volume-%s' % src_vref_id)
+        mock_snapshots_exist.return_value = snapshots_exist
+        drv._always_use_temp_snap_when_cloning = force_temp_snap
 
-            vol_attrs = ['provider_location', 'size', 'id', 'name', 'status',
-                         'volume_type', 'metadata']
-            Volume = collections.namedtuple('Volume', vol_attrs)
+        vol_attrs = ['provider_location', 'size', 'id', 'name', 'status',
+                     'volume_type', 'metadata']
+        Volume = collections.namedtuple('Volume', vol_attrs)
 
-            snap_attrs = ['volume_name', 'volume_size', 'name',
-                          'volume_id', 'id', 'volume']
-            Snapshot = collections.namedtuple('Snapshot', snap_attrs)
+        snap_attrs = ['volume_name', 'volume_size', 'name',
+                      'volume_id', 'id', 'volume']
+        Snapshot = collections.namedtuple('Snapshot', snap_attrs)
 
-            volume_ref = Volume(id=volume.id,
-                                name=volume.name,
-                                status=volume.status,
-                                provider_location=volume.provider_location,
-                                size=volume.size,
-                                volume_type=volume.volume_type,
-                                metadata=volume.metadata)
+        volume_ref = Volume(id=volume.id,
+                            name=volume.name,
+                            status=volume.status,
+                            provider_location=volume.provider_location,
+                            size=volume.size,
+                            volume_type=volume.volume_type,
+                            metadata=volume.metadata)
 
-            snap_ref = Snapshot(volume_name=volume.name,
-                                name='clone-snap-%s' % src_vref.id,
-                                volume_size=src_vref.size,
-                                volume_id=src_vref.id,
-                                id='tmp-snap-%s' % src_vref.id,
-                                volume=src_vref)
+        snap_ref = Snapshot(volume_name=volume.name,
+                            name='clone-snap-%s' % src_vref.id,
+                            volume_size=src_vref.size,
+                            volume_id=src_vref.id,
+                            id='tmp-snap-%s' % src_vref.id,
+                            volume=src_vref)
 
-            drv.create_cloned_volume(volume, src_vref)
+        drv.create_cloned_volume(volume, src_vref)
 
+        exp_acceptable_states = ['available', 'backing-up', 'downloading']
+        mock_validate_state.assert_called_once_with(
+            src_vref.status,
+            exp_acceptable_states,
+            obj_description='source volume')
+
+        if snapshots_exist or force_temp_snap:
             mock_create_snapshot.assert_called_once_with(snap_ref)
             mock_copy_volume_from_snapshot.assert_called_once_with(
                 snap_ref, volume_ref, volume['size'])
             self.assertTrue(mock_delete_snapshot.called)
+        else:
+            self.assertFalse(mock_create_snapshot.called)
+
+            mock_snapshots_exist.assert_called_once_with(src_vref)
+
+            mock_copy_volume_image.assert_called_once_with(
+                mock_local_path.return_value,
+                mock_local_path.return_value)
+            mock_local_path.assert_has_calls(
+                [mock.call(src_vref), mock.call(volume_ref)])
+            mock_extend_volme.assert_called_once_with(volume_ref,
+                                                      volume.size)
+
+    @mock.patch('shutil.copyfile')
+    @mock.patch.object(remotefs.RemoteFSSnapDriver, '_set_rw_permissions')
+    def test_copy_volume_image(self, mock_set_perm, mock_copyfile):
+        self._driver._copy_volume_image(mock.sentinel.src, mock.sentinel.dest)
+
+        mock_copyfile.assert_called_once_with(mock.sentinel.src,
+                                              mock.sentinel.dest)
+        mock_set_perm.assert_called_once_with(mock.sentinel.dest)
 
     def test_create_regular_file(self):
         self._driver._create_regular_file('/path', 1)
@@ -481,3 +609,96 @@ class RemoteFsSnapDriverTestCase(test.TestCase):
                                                       'of=/path', 'bs=1M',
                                                       'count=1024',
                                                       run_as_root=True)
+
+
+class RemoteFSPoolMixinTestCase(test.TestCase):
+    def setUp(self):
+        super(RemoteFSPoolMixinTestCase, self).setUp()
+        # We'll instantiate this directly for now.
+        self._driver = remotefs.RemoteFSPoolMixin()
+
+        self.context = context.get_admin_context()
+
+    @mock.patch.object(remotefs.RemoteFSPoolMixin,
+                       '_get_pool_name_from_volume')
+    @mock.patch.object(remotefs.RemoteFSPoolMixin,
+                       '_get_share_from_pool_name')
+    def test_find_share(self, mock_get_share_from_pool,
+                        mock_get_pool_from_volume):
+        share = self._driver._find_share(mock.sentinel.volume)
+
+        self.assertEqual(mock_get_share_from_pool.return_value, share)
+        mock_get_pool_from_volume.assert_called_once_with(
+            mock.sentinel.volume)
+        mock_get_share_from_pool.assert_called_once_with(
+            mock_get_pool_from_volume.return_value)
+
+    def test_get_pool_name_from_volume(self):
+        fake_pool = 'fake_pool'
+        fake_host = 'fake_host@fake_backend#%s' % fake_pool
+        fake_vol = fake_volume.fake_volume_obj(
+            self.context, provider_location='fake_share',
+            host=fake_host)
+
+        pool_name = self._driver._get_pool_name_from_volume(fake_vol)
+        self.assertEqual(fake_pool, pool_name)
+
+    def test_update_volume_stats(self):
+        share_total_gb = 3
+        share_free_gb = 2
+        share_used_gb = 4  # provisioned space
+        expected_allocated_gb = share_total_gb - share_free_gb
+
+        self._driver._mounted_shares = [mock.sentinel.share]
+
+        self._driver.configuration = mock.Mock()
+        self._driver.configuration.safe_get.return_value = (
+            mock.sentinel.backend_name)
+        self._driver.vendor_name = mock.sentinel.vendor_name
+        self._driver.driver_volume_type = mock.sentinel.driver_volume_type
+        self._driver._thin_provisioning_support = (
+            mock.sentinel.thin_prov_support)
+
+        self._driver.get_version = mock.Mock(
+            return_value=mock.sentinel.driver_version)
+        self._driver._ensure_shares_mounted = mock.Mock()
+        self._driver._get_capacity_info = mock.Mock(
+            return_value=(share_total_gb << 30,
+                          share_free_gb << 30,
+                          share_used_gb << 30))
+        self._driver._get_pool_name_from_share = mock.Mock(
+            return_value=mock.sentinel.pool_name)
+
+        expected_pool = {
+            'pool_name': mock.sentinel.pool_name,
+            'total_capacity_gb': float(share_total_gb),
+            'free_capacity_gb': float(share_free_gb),
+            'provisioned_capacity_gb': float(share_used_gb),
+            'allocated_capacity_gb': float(expected_allocated_gb),
+            'reserved_percentage': (
+                self._driver.configuration.reserved_percentage),
+            'max_over_subscription_ratio': (
+                self._driver.configuration.max_over_subscription_ratio),
+            'thin_provisioning_support': (
+                mock.sentinel.thin_prov_support),
+            'QoS_support': False,
+        }
+
+        expected_stats = {
+            'volume_backend_name': mock.sentinel.backend_name,
+            'vendor_name': mock.sentinel.vendor_name,
+            'driver_version': mock.sentinel.driver_version,
+            'storage_protocol': mock.sentinel.driver_volume_type,
+            'total_capacity_gb': 0,
+            'free_capacity_gb': 0,
+            'pools': [expected_pool],
+        }
+
+        self._driver._update_volume_stats()
+
+        self.assertDictEqual(expected_stats, self._driver._stats)
+
+        self._driver._get_capacity_info.assert_called_once_with(
+            mock.sentinel.share)
+        self._driver.configuration.safe_get.assert_called_once_with(
+            'volume_backend_name')

@@ -15,6 +15,7 @@
 from oslo_serialization import jsonutils
 from oslo_utils import netutils
 import requests
+from six.moves import http_client
 from six.moves import urllib
 
 from cinder.i18n import _
@@ -113,7 +114,7 @@ class TestOpenStackClient(object):
 
         http_status = response.status_code
 
-        if http_status == 401:
+        if http_status == http_client.UNAUTHORIZED:
             raise OpenStackApiException401(response=response)
 
         self.auth_result = response.headers
@@ -160,7 +161,7 @@ class TestOpenStackClient(object):
             return ""
 
     def api_get(self, relative_uri, **kwargs):
-        kwargs.setdefault('check_response_status', [200])
+        kwargs.setdefault('check_response_status', [http_client.OK])
         response = self.api_request(relative_uri, **kwargs)
         return self._decode_json(response)
 
@@ -171,7 +172,8 @@ class TestOpenStackClient(object):
             headers['Content-Type'] = 'application/json'
             kwargs['body'] = jsonutils.dumps(body)
 
-        kwargs.setdefault('check_response_status', [200, 202])
+        kwargs.setdefault('check_response_status', [http_client.OK,
+                                                    http_client.ACCEPTED])
         response = self.api_request(relative_uri, **kwargs)
         return self._decode_json(response)
 
@@ -182,13 +184,17 @@ class TestOpenStackClient(object):
             headers['Content-Type'] = 'application/json'
             kwargs['body'] = jsonutils.dumps(body)
 
-        kwargs.setdefault('check_response_status', [200, 202, 204])
+        kwargs.setdefault('check_response_status', [http_client.OK,
+                                                    http_client.ACCEPTED,
+                                                    http_client.NO_CONTENT])
         response = self.api_request(relative_uri, **kwargs)
         return self._decode_json(response)
 
     def api_delete(self, relative_uri, **kwargs):
         kwargs['method'] = 'DELETE'
-        kwargs.setdefault('check_response_status', [200, 202, 204])
+        kwargs.setdefault('check_response_status', [http_client.OK,
+                                                    http_client.ACCEPTED,
+                                                    http_client.NO_CONTENT])
         return self.api_request(relative_uri, **kwargs)
 
     def get_volume(self, volume_id):
@@ -227,6 +233,19 @@ class TestOpenStackClient(object):
     def delete_type(self, type_id):
         return self.api_delete('/types/%s' % type_id)
 
+    def get_type(self, type_id):
+        return self.api_get('/types/%s' % type_id)['volume_type']
+
+    def create_volume_type_extra_specs(self, volume_type_id, extra_specs):
+        extra_specs = {"extra_specs": extra_specs}
+        url = "/types/%s/extra_specs" % volume_type_id
+        return self.api_post(url, extra_specs)['extra_specs']
+
+    def create_group_type_specs(self, grp_type_id, group_specs):
+        group_specs = {"group_specs": group_specs}
+        url = "/group_types/%s/group_specs" % grp_type_id
+        return self.api_post(url, group_specs)['group_specs']
+
     def create_group_type(self, type_name, grp_specs=None):
         grp_type = {"group_type": {"name": type_name}}
         if grp_specs:
@@ -236,6 +255,9 @@ class TestOpenStackClient(object):
 
     def delete_group_type(self, group_type_id):
         return self.api_delete('/group_types/%s' % group_type_id)
+
+    def get_group_type(self, grp_type_id):
+        return self.api_get('/group_types/%s' % grp_type_id)['group_type']
 
     def get_group(self, group_id):
         return self.api_get('/groups/%s' % group_id)['group']
@@ -277,3 +299,15 @@ class TestOpenStackClient(object):
     def reset_group_snapshot(self, group_snapshot_id, params):
         return self.api_post('/group_snapshots/%s/action' % group_snapshot_id,
                              params)
+
+    def enable_group_replication(self, group_id, params):
+        return self.api_post('/groups/%s/action' % group_id, params)
+
+    def disable_group_replication(self, group_id, params):
+        return self.api_post('/groups/%s/action' % group_id, params)
+
+    def failover_group_replication(self, group_id, params):
+        return self.api_post('/groups/%s/action' % group_id, params)
+
+    def list_group_replication_targets(self, group_id, params):
+        return self.api_post('/groups/%s/action' % group_id, params)

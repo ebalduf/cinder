@@ -17,11 +17,12 @@ import functools
 import gettext
 import inspect
 import platform
+import six
 
 from oslo_log import log as logging
 from oslo_utils import timeutils
 
-from cinder.i18n import _, _LE, _LI
+from cinder.i18n import _
 from cinder import version
 import cinder.volume.drivers.ibm.ibm_storage as storage
 from cinder.volume.drivers.ibm.ibm_storage import strings
@@ -192,7 +193,7 @@ class IBMStorageProxy(object):
 
         Handled by ISCSiDriver
         """
-        LOG.info(_LI("The copy_volume_to_image feature is not implemented."))
+        LOG.info("The copy_volume_to_image feature is not implemented.")
         raise NotImplementedError()
 
     @_trace_time
@@ -262,11 +263,7 @@ class IBMStorageProxy(object):
             return "Status: '%s', Code: %s" % (
                 exception.status, exception.code)
 
-        try:
-            msg = exception.message
-        except AttributeError:
-            msg = exception
-        return msg
+        return six.text_type(exception)
 
     def _get_driver_super(self):
         """Gets the IBM Storage Drivers super class
@@ -363,18 +360,10 @@ class IBMStorageProxy(object):
         if not self.targets:
             return None
         try:
-            target = self.targets.iterkeys().next()
+            target = self.targets.keys().next()
             return target
         except Exception:
             return None
-
-    def _get_targets(self):
-        return self.targets
-
-    def _is_replication_supported(self):
-        if self.targets:
-            return True
-        return False
 
     @_trace_time
     def _read_replication_devices(self):
@@ -396,14 +385,14 @@ class IBMStorageProxy(object):
             LOG.debug('Replication device found: %(dev)s', {'dev': dev})
             backend_id = dev.get('backend_id', None)
             if backend_id is None:
-                LOG.error(_LE("Replication is missing backend_id: %(dev)s"),
+                LOG.error("Replication is missing backend_id: %(dev)s",
                           {'dev': dev})
             elif self.targets.get(backend_id, None):
-                LOG.error(_LE("Multiple entries for replication %(dev)s"),
+                LOG.error("Multiple entries for replication %(dev)s",
                           {'dev': dev})
             else:
                 self.targets[backend_id] = {}
                 device = self.targets[backend_id]
-                for k, v in dev.iteritems():
+                for k, v in dev.items():
                     if k != 'backend_id':
                         device[k] = v

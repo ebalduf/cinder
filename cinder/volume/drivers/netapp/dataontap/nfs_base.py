@@ -37,7 +37,7 @@ import six
 from six.moves import urllib
 
 from cinder import exception
-from cinder.i18n import _, _LE, _LI, _LW
+from cinder.i18n import _
 from cinder.image import image_utils
 from cinder import utils
 from cinder.volume import driver
@@ -157,8 +157,8 @@ class NetAppNfsDriver(driver.ManageableVD,
             model_update['provider_location'] = volume['provider_location']
             return model_update
         except Exception:
-            LOG.exception(_LE("Exception creating vol %(name)s on "
-                          "pool %(pool)s."),
+            LOG.exception("Exception creating vol %(name)s on "
+                          "pool %(pool)s.",
                           {'name': volume['name'],
                            'pool': volume['provider_location']})
             # We need to set this for the model update in order for the
@@ -204,8 +204,8 @@ class NetAppNfsDriver(driver.ManageableVD,
 
             return model_update
         except Exception:
-            LOG.exception(_LE("Exception creating volume %(name)s from source "
-                              "%(source)s on share %(share)s."),
+            LOG.exception("Exception creating volume %(name)s from source "
+                          "%(source)s on share %(share)s.",
                           {'name': destination_volume['id'],
                            'source': source['name'],
                            'share': destination_volume['provider_location']})
@@ -229,8 +229,8 @@ class NetAppNfsDriver(driver.ManageableVD,
                     self.extend_volume(destination_volume,
                                        destination_volume_size)
                 except Exception:
-                    LOG.error(_LE("Resizing %s failed. Cleaning "
-                                  "volume."), destination_volume['name'])
+                    LOG.error("Resizing %s failed. Cleaning "
+                              "volume.", destination_volume['name'])
                     self._cleanup_volume_on_failure(destination_volume)
                     raise exception.CinderException(
                         _("Resizing clone %s failed.")
@@ -336,8 +336,8 @@ class NetAppNfsDriver(driver.ManageableVD,
                 tries += 1
                 if tries >= self.configuration.num_shell_tries:
                     raise
-                LOG.exception(_LE("Recovering from a failed execute.  "
-                                  "Try number %s"), tries)
+                LOG.exception("Recovering from a failed execute. "
+                              "Try number %s", tries)
                 time.sleep(tries ** 2)
 
     def _get_volume_path(self, nfs_share, volume_name):
@@ -369,21 +369,21 @@ class NetAppNfsDriver(driver.ManageableVD,
         """Fetch the image from image_service and write it to the volume."""
         super(NetAppNfsDriver, self).copy_image_to_volume(
             context, volume, image_service, image_id)
-        LOG.info(_LI('Copied image to volume %s using regular download.'),
+        LOG.info('Copied image to volume %s using regular download.',
                  volume['id'])
         self._register_image_in_cache(volume, image_id)
 
     def _register_image_in_cache(self, volume, image_id):
         """Stores image in the cache."""
         file_name = 'img-cache-%s' % image_id
-        LOG.info(_LI("Registering image in cache %s"), file_name)
+        LOG.info("Registering image in cache %s", file_name)
         try:
             self._do_clone_rel_img_cache(
                 volume['name'], file_name,
                 volume['provider_location'], file_name)
         except Exception as e:
-            LOG.warning(_LW('Exception while registering image %(image_id)s'
-                            ' in cache. Exception: %(exc)s'),
+            LOG.warning('Exception while registering image %(image_id)s'
+                        ' in cache. Exception: %(exc)s',
                         {'image_id': image_id, 'exc': e})
 
     def _find_image_in_cache(self, image_id):
@@ -408,7 +408,7 @@ class NetAppNfsDriver(driver.ManageableVD,
             dir = self._get_mount_point_for_share(share)
             file_path = '%s/%s' % (dir, dst)
             if not os.path.exists(file_path):
-                LOG.info(_LI('Cloning from cache to destination %s'), dst)
+                LOG.info('Cloning from cache to destination %s', dst)
                 self._clone_backing_file_for_volume(src, dst, volume_id=None,
                                                     share=share)
                 src_path = '%s/%s' % (dir, src)
@@ -441,7 +441,7 @@ class NetAppNfsDriver(driver.ManageableVD,
                         self._get_capacity_info(share)
                     avl_percent = int((float(total_avl) / total_size) * 100)
                     if avl_percent <= thres_size_perc_start:
-                        LOG.info(_LI('Cleaning cache for share %s.'), share)
+                        LOG.info('Cleaning cache for share %s.', share)
                         eligible_files = self._find_old_cache_files(share)
                         threshold_size = int(
                             (thres_size_perc_stop * total_size) / 100)
@@ -453,8 +453,8 @@ class NetAppNfsDriver(driver.ManageableVD,
                     else:
                         continue
                 except Exception as e:
-                    LOG.warning(_LW('Exception during cache cleaning'
-                                    ' %(share)s. Message - %(ex)s'),
+                    LOG.warning('Exception during cache cleaning'
+                                ' %(share)s. Message - %(ex)s',
                                 {'share': share, 'ex': e})
                     continue
         finally:
@@ -511,7 +511,7 @@ class NetAppNfsDriver(driver.ManageableVD,
             self._execute(*cmd, run_as_root=self._execute_as_root)
             return True
         except Exception as ex:
-            LOG.warning(_LW('Exception during deleting %s'), ex)
+            LOG.warning('Exception during deleting %s', ex)
             return False
 
     def clone_image(self, context, volume,
@@ -544,8 +544,8 @@ class NetAppNfsDriver(driver.ManageableVD,
                 post_clone = self._post_clone_image(volume)
         except Exception as e:
             msg = e.msg if getattr(e, 'msg', None) else e
-            LOG.info(_LI('Image cloning unsuccessful for image'
-                         ' %(image_id)s. Message: %(msg)s'),
+            LOG.info('Image cloning unsuccessful for image'
+                     ' %(image_id)s. Message: %(msg)s',
                      {'image_id': image_id, 'msg': msg})
         finally:
             cloned = cloned and post_clone
@@ -556,27 +556,29 @@ class NetAppNfsDriver(driver.ManageableVD,
     def _clone_from_cache(self, volume, image_id, cache_result):
         """Clones a copy from image cache."""
         cloned = False
-        LOG.info(_LI('Cloning image %s from cache'), image_id)
+        LOG.info('Cloning image %s from cache', image_id)
+        path = volume.host.split('#')[1]
         for res in cache_result:
             # Repeat tries in other shares if failed in some
             (share, file_name) = res
-            LOG.debug('Cache share: %s', share)
-            if (share and
-                    self._is_share_clone_compatible(volume, share)):
-                try:
-                    self._do_clone_rel_img_cache(
-                        file_name, volume['name'], share, file_name)
-                    cloned = True
-                    volume['provider_location'] = share
-                    break
-                except Exception:
-                    LOG.warning(_LW('Unexpected exception during'
-                                    ' image cloning in share %s'), share)
+            if path == share:
+                LOG.debug('Cache share: %s', share)
+                if (share and
+                        self._is_share_clone_compatible(volume, share)):
+                    try:
+                        self._do_clone_rel_img_cache(
+                            file_name, volume['name'], share, file_name)
+                        cloned = True
+                        volume['provider_location'] = share
+                        break
+                    except Exception:
+                        LOG.warning('Unexpected exception during'
+                                    ' image cloning in share %s', share)
         return cloned
 
     def _direct_nfs_clone(self, volume, image_location, image_id):
         """Clone directly in nfs share."""
-        LOG.info(_LI('Checking image clone %s from glance share.'), image_id)
+        LOG.info('Checking image clone %s from glance share.', image_id)
         cloned = False
         image_locations = self._construct_image_nfs_url(image_location)
         run_as_root = self._execute_as_root
@@ -599,7 +601,7 @@ class NetAppNfsDriver(driver.ManageableVD,
                     break
                 else:
                     LOG.info(
-                        _LI('Image will locally be converted to raw %s'),
+                        'Image will locally be converted to raw %s',
                         image_id)
                     dst = '%s/%s' % (dir_path, volume['name'])
                     image_utils.convert_image(img_path, dst, 'raw',
@@ -619,7 +621,7 @@ class NetAppNfsDriver(driver.ManageableVD,
 
     def _post_clone_image(self, volume):
         """Do operations post image cloning."""
-        LOG.info(_LI('Performing post clone for %s'), volume['name'])
+        LOG.info('Performing post clone for %s', volume['name'])
         vol_path = self.local_path(volume)
         if self._discover_file_till_timeout(vol_path):
             self._set_rw_permissions(vol_path)
@@ -634,7 +636,7 @@ class NetAppNfsDriver(driver.ManageableVD,
         if self._is_file_size_equal(path, new_size):
             return
         else:
-            LOG.info(_LI('Resizing file to %sG'), new_size)
+            LOG.info('Resizing file to %sG', new_size)
             image_utils.resize_image(path, new_size,
                                      run_as_root=self._execute_as_root)
             if self._is_file_size_equal(path, new_size):
@@ -653,6 +655,15 @@ class NetAppNfsDriver(driver.ManageableVD,
         else:
             return False
 
+    @utils.trace_method
+    def _touch_path_to_refresh(self, path):
+        try:
+            # Touching parent directory forces NFS client to flush its cache.
+            self._execute('touch', path, run_as_root=self._execute_as_root)
+        except processutils.ProcessExecutionError:
+            LOG.exception("Failed to touch path %s.", path)
+
+    @utils.trace_method
     def _discover_file_till_timeout(self, path, timeout=75):
         """Checks if file size at path is equal to size."""
         # Sometimes nfs takes time to discover file
@@ -664,16 +675,20 @@ class NetAppNfsDriver(driver.ManageableVD,
         # retries to ensure that this cache has refreshed.
         retry_seconds = timeout
         sleep_interval = 2
+        base_path = os.path.dirname(path)
+        self._touch_path_to_refresh(base_path)
+
         while True:
             if os.path.exists(path):
                 return True
             else:
                 if retry_seconds <= 0:
-                    LOG.warning(_LW('Discover file retries exhausted.'))
+                    LOG.warning('Discover file retries exhausted.')
                     return False
                 else:
                     time.sleep(sleep_interval)
                     retry_seconds -= sleep_interval
+                    self._touch_path_to_refresh(base_path)
 
     def _is_cloneable_share(self, image_location):
         """Finds if the image at location is cloneable."""
@@ -691,8 +706,8 @@ class NetAppNfsDriver(driver.ManageableVD,
         conn, dr = None, None
         if image_location:
             nfs_loc_pattern = \
-                ('^nfs://(([\w\-\.]+:{1}[\d]+|[\w\-\.]+)(/[^\/].*)'
-                 '*(/[^\/\\\\]+)$)')
+                (r'^nfs://(([\w\-\.]+:{1}[\d]+|[\w\-\.]+)(/[^\/].*)'
+                 r'*(/[^\/\\\\]+)$)')
             matched = re.match(nfs_loc_pattern, image_location, flags=0)
             if not matched:
                 LOG.debug('Image location not in the'
@@ -727,8 +742,8 @@ class NetAppNfsDriver(driver.ManageableVD,
                               share_candidates)
                     return self._share_match_for_ip(ip, share_candidates)
         except Exception:
-            LOG.warning(_LW("Unexpected exception while "
-                            "short listing used share."))
+            LOG.warning("Unexpected exception while "
+                        "short listing used share.")
         return None
 
     def _construct_image_nfs_url(self, image_location):
@@ -770,7 +785,7 @@ class NetAppNfsDriver(driver.ManageableVD,
     def extend_volume(self, volume, new_size):
         """Extend an existing volume to the new size."""
 
-        LOG.info(_LI('Extending volume %s.'), volume['name'])
+        LOG.info('Extending volume %s.', volume['name'])
 
         try:
             path = self.local_path(volume)
@@ -829,7 +844,7 @@ class NetAppNfsDriver(driver.ManageableVD,
         @utils.synchronized(dest_path, external=True)
         def _move_file(src, dst):
             if os.path.exists(dst):
-                LOG.warning(_LW("Destination %s already exists."), dst)
+                LOG.warning("Destination %s already exists.", dst)
                 return False
             self._execute('mv', src, dst, run_as_root=self._execute_as_root)
             return True
@@ -837,7 +852,7 @@ class NetAppNfsDriver(driver.ManageableVD,
         try:
             return _move_file(source_path, dest_path)
         except Exception as e:
-            LOG.warning(_LW('Exception moving file %(src)s. Message - %(e)s'),
+            LOG.warning('Exception moving file %(src)s. Message - %(e)s',
                         {'src': source_path, 'e': e})
         return False
 
@@ -1055,157 +1070,5 @@ class NetAppNfsDriver(driver.ManageableVD,
         """
         vol_str = CONF.volume_name_template % volume['id']
         vol_path = os.path.join(volume['provider_location'], vol_str)
-        LOG.info(_LI("Cinder NFS volume with current path \"%(cr)s\" is "
-                     "no longer being managed."), {'cr': vol_path})
-
-    @utils.trace_method
-    def create_consistencygroup(self, context, group):
-        """Driver entry point for creating a consistency group.
-
-        ONTAP does not maintain an actual CG construct. As a result, no
-        communtication to the backend is necessary for consistency group
-        creation.
-
-        :return: Hard-coded model update for consistency group model.
-        """
-        model_update = {'status': 'available'}
-        return model_update
-
-    @utils.trace_method
-    def delete_consistencygroup(self, context, group, volumes):
-        """Driver entry point for deleting a consistency group.
-
-        :return: Updated consistency group model and list of volume models
-                 for the volumes that were deleted.
-        """
-        model_update = {'status': 'deleted'}
-        volumes_model_update = []
-        for volume in volumes:
-            try:
-                self._delete_file(volume['id'], volume['name'])
-                volumes_model_update.append(
-                    {'id': volume['id'], 'status': 'deleted'})
-            except Exception:
-                volumes_model_update.append(
-                    {'id': volume['id'], 'status': 'error_deleting'})
-                LOG.exception(_LE("Volume %(vol)s in the consistency group "
-                                  "could not be deleted."), {'vol': volume})
-        return model_update, volumes_model_update
-
-    @utils.trace_method
-    def update_consistencygroup(self, context, group, add_volumes=None,
-                                remove_volumes=None):
-        """Driver entry point for updating a consistency group.
-
-        Since no actual CG construct is ever created in ONTAP, it is not
-        necessary to update any metadata on the backend. Since this is a NO-OP,
-        there is guaranteed to be no change in any of the volumes' statuses.
-        """
-        return None, None, None
-
-    @utils.trace_method
-    def create_cgsnapshot(self, context, cgsnapshot, snapshots):
-        """Creates a Cinder cgsnapshot object.
-
-        The Cinder cgsnapshot object is created by making use of an ONTAP CG
-        snapshot in order to provide write-order consistency for a set of
-        backing flexvols. First, a list of the flexvols backing the given
-        Cinder volumes in the CG is determined. An ONTAP CG snapshot of the
-        flexvols creates a write-order consistent snapshot of each backing
-        flexvol. For each Cinder volume in the CG, it is then necessary to
-        clone its volume from the ONTAP CG snapshot. The naming convention
-        used to create the clones indicates the clone's role as a Cinder
-        snapshot and its inclusion in a Cinder CG snapshot. The ONTAP CG
-        snapshots, of each backing flexvol, are deleted after the cloning
-        operation is completed.
-
-        :return: An implicit update for the cgsnapshot and snapshot models that
-                 is then used by the manager to set the models to available.
-        """
-
-        hosts = [snapshot['volume']['host'] for snapshot in snapshots]
-        flexvols = self._get_flexvol_names_from_hosts(hosts)
-
-        # Create snapshot for backing flexvol
-        self.zapi_client.create_cg_snapshot(flexvols, cgsnapshot['id'])
-
-        # Start clone process for snapshot files
-        for snapshot in snapshots:
-            self._clone_backing_file_for_volume(
-                snapshot['volume']['name'], snapshot['name'],
-                snapshot['volume']['id'], source_snapshot=cgsnapshot['id'])
-
-        # Delete backing flexvol snapshots
-        for flexvol_name in flexvols:
-            try:
-                self.zapi_client.wait_for_busy_snapshot(
-                    flexvol_name, cgsnapshot['id'])
-                self.zapi_client.delete_snapshot(
-                    flexvol_name, cgsnapshot['id'])
-            except exception.SnapshotIsBusy:
-                self.zapi_client.mark_snapshot_for_deletion(
-                    flexvol_name, cgsnapshot['id'])
-
-        return None, None
-
-    @utils.trace_method
-    def delete_cgsnapshot(self, context, cgsnapshot, snapshots):
-        """Delete files backing each snapshot in the cgsnapshot."""
-        raise NotImplementedError()
-
-    @utils.trace_method
-    def create_consistencygroup_from_src(self, context, group, volumes,
-                                         cgsnapshot=None, snapshots=None,
-                                         source_cg=None, source_vols=None):
-        """Creates a CG from a either a cgsnapshot or group of cinder vols.
-
-        :return: An implicit update for the volumes model that is
-                 interpreted by the manager as a successful operation.
-        """
-        LOG.debug("VOLUMES %s ", [dict(vol) for vol in volumes])
-        model_update = None
-        volumes_model_update = []
-
-        if cgsnapshot:
-            vols = zip(volumes, snapshots)
-
-            for volume, snapshot in vols:
-                update = self.create_volume_from_snapshot(
-                    volume, snapshot)
-                update['id'] = volume['id']
-                volumes_model_update.append(update)
-
-        elif source_cg and source_vols:
-            hosts = [source_vol['host'] for source_vol in source_vols]
-            flexvols = self._get_flexvol_names_from_hosts(hosts)
-
-            # Create snapshot for backing flexvol
-            snapshot_name = 'snapshot-temp-' + source_cg['id']
-            self.zapi_client.create_cg_snapshot(flexvols, snapshot_name)
-
-            # Start clone process for new volumes
-            vols = zip(volumes, source_vols)
-            for volume, source_vol in vols:
-                self._clone_backing_file_for_volume(
-                    source_vol['name'], volume['name'],
-                    source_vol['id'], source_snapshot=snapshot_name)
-                volume_model_update = (
-                    self._get_volume_model_update(volume) or {})
-                volume_model_update.update({
-                    'id': volume['id'],
-                    'provider_location': source_vol['provider_location'],
-                })
-                volumes_model_update.append(volume_model_update)
-
-            # Delete backing flexvol snapshots
-            for flexvol_name in flexvols:
-                self.zapi_client.wait_for_busy_snapshot(
-                    flexvol_name, snapshot_name)
-                self.zapi_client.delete_snapshot(flexvol_name, snapshot_name)
-        else:
-            LOG.error(_LE("Unexpected set of parameters received when "
-                          "creating consistency group from source."))
-            model_update = {}
-            model_update['status'] = 'error'
-
-        return model_update, volumes_model_update
+        LOG.info('Cinder NFS volume with current path "%(cr)s" is '
+                 'no longer being managed.', {'cr': vol_path})

@@ -647,7 +647,6 @@ for i in range(8):
     snapshot['name'] = 'TEST_SNAPSHOT{0:d}'.format(i)
     snapshot['provider_location'] = None if i == 2 else '{0:d}'.format(
         i if i < 5 else i + 5)
-    snapshot['size'] = 256 if i == 1 else 128
     snapshot['status'] = 'creating' if i == 2 else 'available'
     snapshot['volume_id'] = '00000000-0000-0000-0000-{0:012d}'.format(
         i if i < 5 else 7)
@@ -1256,7 +1255,7 @@ class VSPHORCMISCSIDriverTest(test.TestCase):
         """Normal case: Refreshing data required."""
         stats = self.driver.get_volume_stats(True)
         self.assertEqual('Hitachi', stats['vendor_name'])
-        self.assertTrue(stats['multiattach'])
+        self.assertFalse(stats['multiattach'])
 
     @mock.patch.object(vsp_utils, 'execute', side_effect=_execute)
     def test_get_volume_stats_no_refresh(self, execute):
@@ -1831,20 +1830,6 @@ class VSPHORCMISCSIDriverTest(test.TestCase):
 
         mock_copy_image.assert_called_with(
             self.ctxt, TEST_VOLUME[0], image_service, image_id)
-
-    @mock.patch.object(vsp_utils, 'execute', side_effect=_execute)
-    def test_restore_backup(self, execute):
-        """Normal case: Restore a backup volume."""
-        backup = 'fake_backup'
-        backup_service = 'fake_backup_service'
-
-        with mock.patch.object(driver.VolumeDriver, 'restore_backup') \
-                as mock_restore_backup:
-            self.driver.restore_backup(
-                self.ctxt, backup, TEST_VOLUME[0], backup_service)
-
-        mock_restore_backup.assert_called_with(
-            self.ctxt, backup, TEST_VOLUME[0], backup_service)
 
     @mock.patch.object(utils, 'execute', side_effect=_cinder_execute)
     def test_update_migrated_volume_success(self, execute):

@@ -26,6 +26,7 @@ import six
 from cinder import coordination
 from cinder import exception
 from cinder import utils as cinder_utils
+from cinder.volume import configuration
 from cinder.volume.drivers.hitachi import vsp_utils as utils
 from cinder.volume import utils as volume_utils
 
@@ -111,7 +112,7 @@ _REQUIRED_COMMON_OPTS = [
 ]
 
 CONF = cfg.CONF
-CONF.register_opts(common_opts)
+CONF.register_opts(common_opts, group=configuration.SHARED_CONF_GROUP)
 
 LOG = logging.getLogger(__name__)
 MSG = utils.VSPMsg
@@ -519,7 +520,7 @@ class VSPCommon(object):
         data['free_capacity_gb'] = free_gb
         data['reserved_percentage'] = self.conf.safe_get('reserved_percentage')
         data['QoS_support'] = False
-        data['multiattach'] = True
+        data['multiattach'] = False
         LOG.debug("Updating volume status. (%s)", data)
         self._stats = data
 

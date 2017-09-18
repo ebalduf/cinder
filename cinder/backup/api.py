@@ -33,12 +33,13 @@ from cinder.common import constants
 from cinder import context
 from cinder.db import base
 from cinder import exception
-from cinder.i18n import _, _LI
+from cinder.i18n import _
 from cinder import objects
 from cinder.objects import fields
 import cinder.policy
 from cinder import quota
 from cinder import quota_utils
+from cinder import utils
 import cinder.volume
 from cinder.volume import utils as volume_utils
 
@@ -67,10 +68,10 @@ def check_policy(context, action):
 class API(base.Base):
     """API for interacting with the volume backup manager."""
 
-    def __init__(self, db_driver=None):
+    def __init__(self, db=None):
         self.backup_rpcapi = backup_rpcapi.BackupAPI()
         self.volume_api = cinder.volume.API()
-        super(API, self).__init__(db_driver)
+        super(API, self).__init__(db)
 
     def get(self, context, backup_id):
         check_policy(context, 'get')
@@ -88,9 +89,9 @@ class API(base.Base):
         :param context: running context
         :param backup: the dict of backup that is got from DB.
         :param force: indicate force delete or not
-        :raises: InvalidBackup
-        :raises: BackupDriverException
-        :raises: ServiceNotFound
+        :raises InvalidBackup:
+        :raises BackupDriverException:
+        :raises ServiceNotFound:
         """
         check_policy(context, 'delete')
         if not force and backup.status not in [fields.BackupStatus.AVAILABLE,
@@ -201,9 +202,10 @@ class API(base.Base):
 
     def create(self, context, name, description, volume_id,
                container, incremental=False, availability_zone=None,
-               force=False, snapshot_id=None):
+               force=False, snapshot_id=None, metadata=None):
         """Make the RPC call to create a volume backup."""
         check_policy(context, 'create')
+        utils.check_metadata_properties(metadata)
         volume = self.volume_api.get(context, volume_id)
         snapshot = None
         if snapshot_id:
@@ -215,20 +217,20 @@ class API(base.Base):
                        % {'vol1': volume_id,
                           'vol2': snapshot.volume_id})
                 raise exception.InvalidVolume(reason=msg)
-        if volume['status'] not in ["available", "in-use"]:
+            if snapshot['status'] not in ["available"]:
+                msg = (_('Snapshot to be backed up must be available, '
+                         'but the current status is "%s".')
+                       % snapshot['status'])
+                raise exception.InvalidSnapshot(reason=msg)
+        elif volume['status'] not in ["available", "in-use"]:
             msg = (_('Volume to be backed up must be available '
                      'or in-use, but the current status is "%s".')
                    % volume['status'])
             raise exception.InvalidVolume(reason=msg)
-        elif volume['status'] in ["in-use"] and not snapshot_id and not force:
+        elif volume['status'] in ["in-use"] and not force:
             msg = _('Backing up an in-use volume must use '
                     'the force flag.')
             raise exception.InvalidVolume(reason=msg)
-        elif snapshot_id and snapshot['status'] not in ["available"]:
-            msg = (_('Snapshot to be backed up must be available, '
-                     'but the current status is "%s".')
-                   % snapshot['status'])
-            raise exception.InvalidSnapshot(reason=msg)
 
         previous_status = volume['status']
         volume_host = volume_utils.extract_host(volume.host, 'host')
@@ -291,10 +293,13 @@ class API(base.Base):
         if snapshot_id:
             snapshot = objects.Snapshot.get_by_id(context, snapshot_id)
             data_timestamp = snapshot.created_at
-
-        self.db.volume_update(context, volume_id,
-                              {'status': 'backing-up',
-                               'previous_status': previous_status})
+            self.db.snapshot_update(
+                context, snapshot_id,
+                {'status': fields.SnapshotStatus.BACKING_UP})
+        else:
+            self.db.volume_update(context, volume_id,
+                                  {'status': 'backing-up',
+                                   'previous_status': previous_status})
 
         backup = None
         try:
@@ -311,6 +316,7 @@ class API(base.Base):
                 'host': host,
                 'snapshot_id': snapshot_id,
                 'data_timestamp': data_timestamp,
+                'metadata': metadata or {}
             }
             backup = objects.Backup(context=context, **kwargs)
             backup.create()
@@ -354,8 +360,8 @@ class API(base.Base):
 
             description = 'auto-created_from_restore_from_backup'
 
-            LOG.info(_LI("Creating volume of %(size)s GB for restore of "
-                         "backup %(backup_id)s."),
+            LOG.info("Creating volume of %(size)s GB for restore of "
+                     "backup %(backup_id)s.",
                      {'size': size, 'backup_id': backup_id})
             volume = self.volume_api.create(context, size, name, description)
             volume_id = volume['id']
@@ -365,6 +371,12 @@ class API(base.Base):
                 if volume['status'] != 'creating':
                     break
                 greenthread.sleep(1)
+
+            if volume['status'] == "error":
+                msg = (_('Error while creating volume %(volume_id)s '
+                         'for restoring backup %(backup_id)s.') %
+                       {'volume_id': volume_id, 'backup_id': backup_id})
+                raise exception.InvalidVolume(reason=msg)
         else:
             volume = self.volume_api.get(context, volume_id)
 
@@ -380,8 +392,8 @@ class API(base.Base):
                    {'volume_size': volume['size'], 'size': size})
             raise exception.InvalidVolume(reason=msg)
 
-        LOG.info(_LI("Overwriting volume %(volume_id)s with restore of "
-                     "backup %(backup_id)s"),
+        LOG.info("Overwriting volume %(volume_id)s with restore of "
+                 "backup %(backup_id)s",
                  {'volume_id': volume_id, 'backup_id': backup_id})
 
         # Setting the status here rather than setting at start and unrolling
@@ -409,8 +421,8 @@ class API(base.Base):
         Call backup manager to execute backup status reset operation.
         :param context: running context
         :param backup_id: which backup's status to be reset
-        :parma status: backup's status to be reset
-        :raises: InvalidBackup
+        :param status: backup's status to be reset
+        :raises InvalidBackup:
         """
         # get backup info
         backup = self.get(context, backup_id)
@@ -430,7 +442,7 @@ class API(base.Base):
         :param backup_id: backup id to export
         :returns: dictionary -- a description of how to import the backup
         :returns: contains 'backup_url' and 'backup_service'
-        :raises: InvalidBackup
+        :raises InvalidBackup:
         """
         check_policy(context, 'backup-export')
         backup = self.get(context, backup_id)
@@ -470,8 +482,8 @@ class API(base.Base):
         :param context: running context
         :param backup_url: backup description to be used by the backup driver
         :return: BackupImport object
-        :raises: InvalidBackup
-        :raises: InvalidInput
+        :raises InvalidBackup:
+        :raises InvalidInput:
         """
         # Deserialize string backup record into a dictionary
         backup_record = objects.Backup.decode_record(backup_url)
@@ -486,6 +498,7 @@ class API(base.Base):
             'project_id': context.project_id,
             'volume_id': IMPORT_VOLUME_ID,
             'status': fields.BackupStatus.CREATING,
+            'metadata': {}
         }
 
         try:
@@ -520,9 +533,9 @@ class API(base.Base):
         :param context: running context
         :param backup_service: backup service name
         :param backup_url: backup description to be used by the backup driver
-        :raises: InvalidBackup
-        :raises: ServiceNotFound
-        :raises: InvalidInput
+        :raises InvalidBackup:
+        :raises ServiceNotFound:
+        :raises InvalidInput:
         """
         check_policy(context, 'backup-import')
 

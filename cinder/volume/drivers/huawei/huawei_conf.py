@@ -73,7 +73,6 @@ class HuaweiConf(object):
                           self._lun_copy_wait_interval,
                           self._lun_timeout,
                           self._lun_write_type,
-                          self._lun_mirror_switch,
                           self._lun_prefetch,
                           self._lun_policy,
                           self._lun_read_cache_policy,
@@ -139,20 +138,33 @@ class HuaweiConf(object):
         setattr(self.conf, 'san_protocol', protocol)
 
     def _lun_type(self, xml_root):
-        lun_type = constants.THICK_LUNTYPE
+        lun_type = constants.PRODUCT_LUN_TYPE.get(self.conf.san_product,
+                                                  'Thick')
+
+        def _verify_conf_lun_type(lun_type):
+            if lun_type not in constants.LUN_TYPE_MAP:
+                msg = _("Invalid lun type %s is configured.") % lun_type
+                LOG.error(msg)
+                raise exception.InvalidInput(reason=msg)
+
+            if self.conf.san_product in constants.PRODUCT_LUN_TYPE:
+                product_lun_type = constants.PRODUCT_LUN_TYPE[
+                    self.conf.san_product]
+                if lun_type != product_lun_type:
+                    msg = _("%(array)s array requires %(valid)s lun type, "
+                            "but %(conf)s is specified.") % {
+                        'array': self.conf.san_product,
+                        'valid': product_lun_type,
+                        'conf': lun_type}
+                    LOG.error(msg)
+                    raise exception.InvalidInput(reason=msg)
 
         text = xml_root.findtext('LUN/LUNType')
         if text:
             lun_type = text.strip()
-            if lun_type == 'Thick':
-                lun_type = constants.THICK_LUNTYPE
-            elif lun_type == 'Thin':
-                lun_type = constants.THIN_LUNTYPE
-            else:
-                msg = (_("Invalid lun type %s is configured.") % lun_type)
-                LOG.exception(msg)
-                raise exception.InvalidInput(reason=msg)
+            _verify_conf_lun_type(lun_type)
 
+        lun_type = constants.LUN_TYPE_MAP[lun_type]
         setattr(self.conf, 'lun_type', lun_type)
 
     def _lun_ready_wait_interval(self, xml_root):
@@ -174,11 +186,6 @@ class HuaweiConf(object):
         text = xml_root.findtext('LUN/WriteType')
         write_type = text.strip() if text else '1'
         setattr(self.conf, 'lun_write_type', write_type)
-
-    def _lun_mirror_switch(self, xml_root):
-        text = xml_root.findtext('LUN/MirrorSwitch')
-        mirror_switch = text.strip() if text else '1'
-        setattr(self.conf, 'lun_mirror_switch', mirror_switch)
 
     def _lun_prefetch(self, xml_root):
         prefetch_type = '3'

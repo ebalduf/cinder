@@ -12,6 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_serialization import jsonutils
+from oslo_utils import versionutils
 from oslo_versionedobjects import fields
 
 from cinder import db
@@ -28,7 +30,8 @@ class VolumeAttachment(base.CinderPersistentObject, base.CinderObject,
                        base.CinderComparableObject):
     # Version 1.0: Initial version
     # Version 1.1: Added volume relationship
-    VERSION = '1.1'
+    # Version 1.2: Added connection_info attribute
+    VERSION = '1.2'
 
     OPTIONAL_FIELDS = ['volume']
     obj_extra_fields = ['project_id', 'volume_host']
@@ -47,6 +50,7 @@ class VolumeAttachment(base.CinderPersistentObject, base.CinderObject,
         'attach_mode': fields.StringField(nullable=True),
 
         'volume': fields.ObjectField('Volume', nullable=False),
+        'connection_info': c_fields.DictOfNullableField(nullable=True)
     }
 
     @property
@@ -61,6 +65,14 @@ class VolumeAttachment(base.CinderPersistentObject, base.CinderObject,
     def _get_expected_attrs(cls, context, *args, **kwargs):
         return ['volume']
 
+    def obj_make_compatible(self, primitive, target_version):
+        """Make an object representation compatible with target version."""
+        super(VolumeAttachment, self).obj_make_compatible(primitive,
+                                                          target_version)
+        target_version = versionutils.convert_version_to_tuple(target_version)
+        if target_version < (1, 2):
+            primitive.pop('connection_info', None)
+
     @classmethod
     def _from_db_object(cls, context, attachment, db_attachment,
                         expected_attrs=None):
@@ -73,8 +85,11 @@ class VolumeAttachment(base.CinderPersistentObject, base.CinderObject,
             value = db_attachment.get(name)
             if isinstance(field, fields.IntegerField):
                 value = value or 0
-            attachment[name] = value
-
+            if name == 'connection_info':
+                attachment.connection_info = jsonutils.loads(
+                    value) if value else None
+            else:
+                attachment[name] = value
         if 'volume' in expected_attrs:
             db_volume = db_attachment.get('volume')
             if db_volume:
@@ -100,9 +115,17 @@ class VolumeAttachment(base.CinderPersistentObject, base.CinderObject,
 
         self.obj_reset_changes(fields=[attrname])
 
+    @staticmethod
+    def _convert_connection_info_to_db_format(updates):
+        properties = updates.pop('connection_info', None)
+        if properties is not None:
+            updates['connection_info'] = jsonutils.dumps(properties)
+
     def save(self):
         updates = self.cinder_obj_get_changes()
         if updates:
+            if 'connection_info' in updates:
+                self._convert_connection_info_to_db_format(updates)
             if 'volume' in updates:
                 raise exception.ObjectActionError(action='save',
                                                   reason=_('volume changed'))
@@ -140,7 +163,7 @@ class VolumeAttachment(base.CinderPersistentObject, base.CinderObject,
 
 @base.CinderObjectRegistry.register
 class VolumeAttachmentList(base.ObjectListBase, base.CinderObject):
-    # Versoin 1.0: Iniitial version
+    # Version 1.0: Initial version
     # Version 1.1: Remove volume_id in get_by_host|instance
     VERSION = '1.1'
 

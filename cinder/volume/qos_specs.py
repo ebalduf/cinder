@@ -22,8 +22,9 @@ from oslo_log import log as logging
 from cinder import context
 from cinder import db
 from cinder import exception
+from cinder.i18n import _
 from cinder import objects
-from cinder.i18n import _, _LE, _LW
+from cinder import utils
 from cinder.volume import volume_types
 
 
@@ -35,11 +36,22 @@ CONTROL_LOCATION = ['front-end', 'back-end', 'both']
 def create(context, name, specs=None):
     """Creates qos_specs.
 
-    :param specs dictionary that contains specifications for QoS
-          e.g. {'consumer': 'front-end',
-                'total_iops_sec': 1000,
-                'total_bytes_sec': 1024000}
+    :param specs: Dictionary that contains specifications for QoS
+
+    Expected format of the input parameter:
+
+       .. code-block:: python
+
+          {
+             'consumer': 'front-end',
+             'total_iops_sec': 1000,
+             'total_bytes_sec': 1024000
+          }
+
     """
+    # Validate the key-value pairs in the qos spec.
+    utils.validate_dictionary_string_length(specs)
+
     consumer = specs.get('consumer')
     if consumer:
         # If we need to modify specs, copy so we don't cause unintended
@@ -64,9 +76,10 @@ def update(context, qos_specs_id, specs):
                 'total_iops_sec': 500,
                 'total_bytes_sec': 512000,}
     """
-    LOG.debug('qos_specs.update(): specs %s' % specs)
+    LOG.debug('qos_specs.update(): specs %s', specs)
 
     try:
+        utils.validate_dictionary_string_length(specs)
         qos_spec = objects.QualityOfServiceSpecs.get_by_id(context,
                                                            qos_specs_id)
 
@@ -81,8 +94,10 @@ def update(context, qos_specs_id, specs):
         qos_spec.specs.update(specs)
 
         qos_spec.save()
+    except exception.InvalidInput as e:
+        raise exception.InvalidQoSSpecs(reason=e)
     except db_exc.DBError:
-        LOG.exception(_LE('DB error:'))
+        LOG.exception('DB error:')
         raise exception.QoSSpecsUpdateFailed(specs_id=qos_specs_id,
                                              qos_specs=specs)
 
@@ -138,7 +153,7 @@ def get_associations(context, qos_specs_id):
         types = objects.VolumeTypeList.get_all_types_for_qos(context,
                                                              qos_specs_id)
     except db_exc.DBError:
-        LOG.exception(_LE('DB error:'))
+        LOG.exception('DB error:')
         msg = _('Failed to get all associations of '
                 'qos specs %s') % qos_specs_id
         LOG.warning(msg)
@@ -181,9 +196,9 @@ def associate_qos_with_type(context, specs_id, type_id):
         else:
             db.qos_specs_associate(context, specs_id, type_id)
     except db_exc.DBError:
-        LOG.exception(_LE('DB error:'))
-        LOG.warning(_LW('Failed to associate qos specs '
-                        '%(id)s with type: %(vol_type_id)s'),
+        LOG.exception('DB error:')
+        LOG.warning('Failed to associate qos specs '
+                    '%(id)s with type: %(vol_type_id)s',
                     dict(id=specs_id, vol_type_id=type_id))
         raise exception.QoSSpecsAssociateFailed(specs_id=specs_id,
                                                 type_id=type_id)
@@ -195,9 +210,9 @@ def disassociate_qos_specs(context, specs_id, type_id):
         get_qos_specs(context, specs_id)
         db.qos_specs_disassociate(context, specs_id, type_id)
     except db_exc.DBError:
-        LOG.exception(_LE('DB error:'))
-        LOG.warning(_LW('Failed to disassociate qos specs '
-                        '%(id)s with type: %(vol_type_id)s'),
+        LOG.exception('DB error:')
+        LOG.warning('Failed to disassociate qos specs '
+                    '%(id)s with type: %(vol_type_id)s',
                     dict(id=specs_id, vol_type_id=type_id))
         raise exception.QoSSpecsDisassociateFailed(specs_id=specs_id,
                                                    type_id=type_id)
@@ -209,8 +224,8 @@ def disassociate_all(context, specs_id):
         get_qos_specs(context, specs_id)
         db.qos_specs_disassociate_all(context, specs_id)
     except db_exc.DBError:
-        LOG.exception(_LE('DB error:'))
-        LOG.warning(_LW('Failed to disassociate qos specs %s.'), specs_id)
+        LOG.exception('DB error:')
+        LOG.warning('Failed to disassociate qos specs %s.', specs_id)
         raise exception.QoSSpecsDisassociateFailed(specs_id=specs_id,
                                                    type_id=None)
 

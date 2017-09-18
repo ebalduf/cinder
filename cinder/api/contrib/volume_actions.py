@@ -27,6 +27,7 @@ from cinder.api.openstack import wsgi
 from cinder import exception
 from cinder.i18n import _
 from cinder.image import image_utils
+from cinder import keymgr
 from cinder import utils
 from cinder import volume
 
@@ -42,7 +43,16 @@ def authorize(context, action_name):
 class VolumeActionsController(wsgi.Controller):
     def __init__(self, *args, **kwargs):
         super(VolumeActionsController, self).__init__(*args, **kwargs)
+        self._key_mgr = None
         self.volume_api = volume.API()
+
+    @property
+    def _key_manager(self):
+        # Allows for lazy initialization of the key manager
+        if self._key_mgr is None:
+            self._key_mgr = keymgr.API(CONF)
+
+        return self._key_mgr
 
     @wsgi.action('os-attach')
     def _attach(self, req, id, body):
@@ -51,7 +61,7 @@ class VolumeActionsController(wsgi.Controller):
         # Not found exception will be handled at the wsgi level
         volume = self.volume_api.get(context, id)
 
-        # instance uuid is an option now
+        # instance UUID is an option now
         instance_uuid = None
         if 'instance_uuid' in body['os-attach']:
             instance_uuid = body['os-attach']['instance_uuid']
@@ -59,6 +69,9 @@ class VolumeActionsController(wsgi.Controller):
         # Keep API backward compatibility
         if 'host_name' in body['os-attach']:
             host_name = body['os-attach']['host_name']
+        if 'mountpoint' not in body['os-attach']:
+            msg = _("Must specify 'mountpoint'")
+            raise webob.exc.HTTPBadRequest(explanation=msg)
         mountpoint = body['os-attach']['mountpoint']
         if 'mode' in body['os-attach']:
             mode = body['os-attach']['mode']
@@ -79,8 +92,9 @@ class VolumeActionsController(wsgi.Controller):
         except messaging.RemoteError as error:
             if error.exc_type in ['InvalidVolume', 'InvalidUUID',
                                   'InvalidVolumeAttachMode']:
-                msg = "Error attaching volume - %(err_type)s: %(err_msg)s" % {
-                      'err_type': error.exc_type, 'err_msg': error.value}
+                msg = _("Error attaching volume - %(err_type)s: "
+                        "%(err_msg)s") % {
+                    'err_type': error.exc_type, 'err_msg': error.value}
                 raise webob.exc.HTTPBadRequest(explanation=msg)
             else:
                 # There are also few cases where attach call could fail due to
@@ -105,8 +119,9 @@ class VolumeActionsController(wsgi.Controller):
             self.volume_api.detach(context, volume, attachment_id)
         except messaging.RemoteError as error:
             if error.exc_type in ['VolumeAttachmentNotFound', 'InvalidVolume']:
-                msg = "Error detaching volume - %(err_type)s: %(err_msg)s" % \
-                      {'err_type': error.exc_type, 'err_msg': error.value}
+                msg = _("Error detaching volume - %(err_type)s: "
+                        "%(err_msg)s") % {
+                    'err_type': error.exc_type, 'err_msg': error.value}
                 raise webob.exc.HTTPBadRequest(explanation=msg)
             else:
                 # There are also few cases where detach call could fail due to
@@ -173,10 +188,14 @@ class VolumeActionsController(wsgi.Controller):
                                                          connector)
         except exception.InvalidInput as err:
             raise webob.exc.HTTPBadRequest(
-                explanation=err)
+                explanation=err.msg)
         except exception.VolumeBackendAPIException:
             msg = _("Unable to fetch connection information from backend.")
             raise webob.exc.HTTPInternalServerError(explanation=msg)
+        except messaging.RemoteError as error:
+            if error.exc_type == 'InvalidInput':
+                raise exception.InvalidInput(reason=error.value)
+            raise
 
         return {'connection_info': info}
 
@@ -231,11 +250,26 @@ class VolumeActionsController(wsgi.Controller):
                     image_utils.VALID_DISK_FORMATS)
             }
             raise webob.exc.HTTPBadRequest(explanation=msg)
+        if disk_format == "parallels":
+            disk_format = "ploop"
 
         image_metadata = {"container_format": params.get(
             "container_format", "bare"),
             "disk_format": disk_format,
             "name": params["image_name"]}
+
+        if volume.encryption_key_id:
+            # Clone volume encryption key: the current key cannot
+            # be reused because it will be deleted when the volume is
+            # deleted.
+            # TODO(eharney): Currently, there is no mechanism to remove
+            # these keys, because Glance will not delete the key from
+            # Barbican when the image is deleted.
+            encryption_key_id = self._key_manager.store(
+                context,
+                self._key_manager.get(context, volume.encryption_key_id))
+
+            image_metadata['cinder_encryption_key_id'] = encryption_key_id
 
         if req_version >= api_version_request.APIVersionRequest('3.1'):
 
@@ -271,10 +305,12 @@ class VolumeActionsController(wsgi.Controller):
             raise webob.exc.HTTPBadRequest(explanation=six.text_type(error))
         return {'os-volume_upload_image': response}
 
+    @wsgi.response(http_client.ACCEPTED)
     @wsgi.action('os-extend')
     def _extend(self, req, id, body):
         """Extend size of volume."""
         context = req.environ['cinder.context']
+        req_version = req.api_version_request
         # Not found exception will be handled at the wsgi level
         volume = self.volume_api.get(context, id)
 
@@ -285,11 +321,12 @@ class VolumeActionsController(wsgi.Controller):
             raise webob.exc.HTTPBadRequest(explanation=msg)
 
         try:
-            self.volume_api.extend(context, volume, size)
+            if req_version.matches("3.42") and volume.status in ['in-use']:
+                self.volume_api.extend_attached_volume(context, volume, size)
+            else:
+                self.volume_api.extend(context, volume, size)
         except exception.InvalidVolume as error:
             raise webob.exc.HTTPBadRequest(explanation=error.msg)
-
-        return webob.Response(status_int=http_client.ACCEPTED)
 
     @wsgi.action('os-update_readonly_flag')
     def _volume_readonly_update(self, req, id, body):

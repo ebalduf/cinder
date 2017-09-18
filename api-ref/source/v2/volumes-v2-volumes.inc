@@ -25,9 +25,15 @@ status values are:
 +------------------+--------------------------------------------------------+
 | attaching        | The volume is attaching to an instance.                |
 +------------------+--------------------------------------------------------+
+| detaching        | The volume is detaching from an instance.              |
++------------------+--------------------------------------------------------+
 | in-use           | The volume is attached to an instance.                 |
 +------------------+--------------------------------------------------------+
+| maintenance      | The volume is locked and being migrated.               |
++------------------+--------------------------------------------------------+
 | deleting         | The volume is being deleted.                           |
++------------------+--------------------------------------------------------+
+| awaiting-transfer| The volume is awaiting for transfer.                   |
 +------------------+--------------------------------------------------------+
 | error            | A volume creation error occurred.                      |
 +------------------+--------------------------------------------------------+
@@ -37,9 +43,19 @@ status values are:
 +------------------+--------------------------------------------------------+
 | restoring-backup | A backup is being restored to the volume.              |
 +------------------+--------------------------------------------------------+
+| error_backing-up | A backup error occurred.                               |
++------------------+--------------------------------------------------------+
 | error_restoring  | A backup restoration error occurred.                   |
 +------------------+--------------------------------------------------------+
 | error_extending  | An error occurred while attempting to extend a volume. |
++------------------+--------------------------------------------------------+
+| downloading      | The volume is downloading an image.                    |
++------------------+--------------------------------------------------------+
+| uploading        | The volume is being uploaded to an image.              |
++------------------+--------------------------------------------------------+
+| retyping         | The volume is changing type to another volume type.    |
++------------------+--------------------------------------------------------+
+| extending        | The volume is being extended.                          |
 +------------------+--------------------------------------------------------+
 
 
@@ -63,6 +79,7 @@ Request
    - tenant_id: tenant_id
    - sort: sort
    - limit: limit
+   - offset: offset
    - marker: marker
 
 
@@ -207,9 +224,11 @@ Response Parameters
    - created_at: created_at
    - volume_type: volume_type
 
+Response Example
+----------------
 
-
-
+.. literalinclude:: ./samples/volume-create-response.json
+   :language: javascript
 
 List volumes
 ~~~~~~~~~~~~
@@ -231,6 +250,7 @@ Request
    - tenant_id: tenant_id
    - sort: sort
    - limit: limit
+   - offset: offset
    - marker: marker
 
 
@@ -277,7 +297,7 @@ Request
 .. rest_parameters:: parameters.yaml
 
    - tenant_id: tenant_id
-   - volume_id: volume_id
+   - volume_id: volume_id_path
 
 
 Response Parameters
@@ -345,9 +365,9 @@ Request
    - volume: volume
    - description: description
    - name: name
-   - metadata: metadata
+   - metadata: metadata_2
    - tenant_id: tenant_id
-   - volume_id: volume_id
+   - volume_id: volume_id_path
 
 Request Example
 ---------------
@@ -373,7 +393,7 @@ Response Parameters
    - id: id
    - size: size
    - user_id: user_id
-   - metadata: metadata
+   - metadata: metadata_3
    - status: status_3
    - description: description
    - multiattach: multiattach
@@ -437,7 +457,8 @@ Request
 .. rest_parameters:: parameters.yaml
 
    - tenant_id: tenant_id
-   - volume_id: volume_id
+   - volume_id: volume_id_path
+   - cascade: cascade
 
 
 
@@ -449,7 +470,8 @@ Create volume metadata
 
 .. rest_method::  POST /v2/{tenant_id}/volumes/{volume_id}/metadata
 
-Creates metadata for a volume.
+Creates or replaces metadata for a volume. Does not modify items that are not
+in the request.
 
 Normal response codes: 202,
 
@@ -461,7 +483,7 @@ Request
 
    - metadata: metadata_3
    - tenant_id: tenant_id
-   - volume_id: volume_id
+   - volume_id: volume_id_path
 
 Request Example
 ---------------
@@ -505,7 +527,7 @@ Request
 .. rest_parameters:: parameters.yaml
 
    - tenant_id: tenant_id
-   - volume_id: volume_id
+   - volume_id: volume_id_path
 
 
 Response Parameters
@@ -531,10 +553,7 @@ Update volume metadata
 
 .. rest_method::  PUT /v2/{tenant_id}/volumes/{volume_id}/metadata
 
-Updates metadata for a volume.
-
-Replaces metadata items that match keys. Does not modify items that
-are not in the request.
+Replaces all the volume's metadata with the key-value pairs in the request.
 
 
 Normal response codes: 200
@@ -548,7 +567,7 @@ Request
 
    - metadata: metadata_3
    - tenant_id: tenant_id
-   - volume_id: volume_id
+   - volume_id: volume_id_path
 
 Request Example
 ---------------
@@ -571,4 +590,105 @@ Response Example
 ----------------
 
 .. literalinclude:: ./samples/volume-metadata-update-response.json
+   :language: javascript
+
+
+
+Show volume metadata for a specific key
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. rest_method::  GET /v2/{tenant_id}/volumes/{volume_id}/metadata/{key}
+
+Shows metadata for a volume for a specific key.
+
+Normal response codes: 200
+
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+   - tenant_id: tenant_id
+   - volume_id: volume_id_path
+   - key: key_2
+
+
+Response Parameters
+-------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - metadata: metadata_3
+
+
+
+Response Example
+----------------
+
+.. literalinclude:: ./samples/volume-metadata-show-response.json
+   :language: javascript
+
+
+
+
+Delete volume metadata
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. rest_method::  DELETE /v2/{tenant_id}/volumes/{volume_id}/metadata/{key}
+
+Deletes metadata for a volume.
+
+Normal response codes: 200
+
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+   - tenant_id: tenant_id
+   - volume_id: volume_id_path
+   - key: key_1
+
+
+
+
+Update volume metadata for a specific key
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. rest_method::  PUT /v2/{project_id}/volumes/{volume_id}/metadata/{key}
+
+Update metadata for a volume for a specific key.
+
+Normal response codes: 200
+
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+   - project_id: project_id_path
+   - volume_id: volume_id_path
+   - key: key_3
+   - meta: meta
+
+Request Example
+---------------
+
+.. literalinclude:: ./samples/volume-metadata-update-key-request.json
+   :language: javascript
+
+Response Parameters
+-------------------
+
+.. rest_parameters:: parameters.yaml
+
+   - meta: meta
+
+Response Example
+----------------
+
+.. literalinclude:: ./samples/volume-metadata-update-key-response.json
    :language: javascript

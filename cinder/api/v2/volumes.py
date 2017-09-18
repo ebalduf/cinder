@@ -19,21 +19,21 @@
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import uuidutils
+from six.moves import http_client
 import webob
 from webob import exc
 
 from cinder.api import common
 from cinder.api.openstack import wsgi
 from cinder.api.v2.views import volumes as volume_views
-from cinder import consistencygroup as consistencygroupAPI
 from cinder import exception
 from cinder import group as group_api
-from cinder.i18n import _, _LI
+from cinder.i18n import _
 from cinder.image import glance
+from cinder import objects
 from cinder import utils
 from cinder import volume as cinder_volume
 from cinder.volume import utils as volume_utils
-from cinder.volume import volume_types
 
 CONF = cfg.CONF
 
@@ -47,7 +47,6 @@ class VolumeController(wsgi.Controller):
 
     def __init__(self, ext_mgr):
         self.volume_api = cinder_volume.API()
-        self.consistencygroup_api = consistencygroupAPI.API()
         self.group_api = group_api.API()
         self.ext_mgr = ext_mgr
         super(VolumeController, self).__init__()
@@ -70,12 +69,12 @@ class VolumeController(wsgi.Controller):
 
         cascade = utils.get_bool_param('cascade', req.params)
 
-        LOG.info(_LI("Delete volume with id: %s"), id)
+        LOG.info("Delete volume with id: %s", id)
 
         # Not found exception will be handled at the wsgi level
         volume = self.volume_api.get(context, id)
         self.volume_api.delete(context, volume, cascade=cascade)
-        return webob.Response(status_int=202)
+        return webob.Response(status_int=http_client.ACCEPTED)
 
     def index(self, req):
         """Returns a summary list of volumes."""
@@ -171,7 +170,7 @@ class VolumeController(wsgi.Controller):
                 "access requested image.")
         raise exc.HTTPBadRequest(explanation=msg)
 
-    @wsgi.response(202)
+    @wsgi.response(http_client.ACCEPTED)
     def create(self, req, body):
         """Creates a new volume."""
         self.assert_valid_body(body, 'volume')
@@ -179,6 +178,14 @@ class VolumeController(wsgi.Controller):
         LOG.debug('Create volume request body: %s', body)
         context = req.environ['cinder.context']
         volume = body['volume']
+
+        # Check up front for legacy replication parameters to quick fail
+        source_replica = volume.get('source_replica')
+        if source_replica:
+            msg = _("Creating a volume from a replica source was part of the "
+                    "replication v1 implementation which is no longer "
+                    "available.")
+            raise exception.InvalidInput(reason=msg)
 
         kwargs = {}
         self.validate_name_and_description(volume)
@@ -199,7 +206,7 @@ class VolumeController(wsgi.Controller):
         if req_volume_type:
             # Not found exception will be handled at the wsgi level
             kwargs['volume_type'] = (
-                volume_types.get_by_name_or_id(context, req_volume_type))
+                objects.VolumeType.get_by_name_or_id(context, req_volume_type))
 
         kwargs['metadata'] = volume.get('metadata', None)
 
@@ -216,6 +223,10 @@ class VolumeController(wsgi.Controller):
 
         source_volid = volume.get('source_volid')
         if source_volid is not None:
+            if not uuidutils.is_uuid_like(source_volid):
+                msg = _("Source volume ID '%s' must be a "
+                        "valid UUID.") % source_volid
+                raise exc.HTTPBadRequest(explanation=msg)
             # Not found exception will be handled at the wsgi level
             kwargs['source_volume'] = \
                 self.volume_api.get_volume(context,
@@ -223,41 +234,24 @@ class VolumeController(wsgi.Controller):
         else:
             kwargs['source_volume'] = None
 
-        source_replica = volume.get('source_replica')
-        if source_replica is not None:
-            # Not found exception will be handled at the wsgi level
-            src_vol = self.volume_api.get_volume(context,
-                                                 source_replica)
-            if src_vol['replication_status'] == 'disabled':
-                explanation = _('source volume id:%s is not'
-                                ' replicated') % source_replica
-                raise exc.HTTPBadRequest(explanation=explanation)
-            kwargs['source_replica'] = src_vol
-        else:
-            kwargs['source_replica'] = None
-
+        kwargs['group'] = None
+        kwargs['consistencygroup'] = None
         consistencygroup_id = volume.get('consistencygroup_id')
         if consistencygroup_id is not None:
-            try:
-                kwargs['consistencygroup'] = (
-                    self.consistencygroup_api.get(context,
-                                                  consistencygroup_id))
-            except exception.ConsistencyGroupNotFound:
-                # Not found exception will be handled at the wsgi level
-                kwargs['group'] = self.group_api.get(
-                    context, consistencygroup_id)
-        else:
-            kwargs['consistencygroup'] = None
+            if not uuidutils.is_uuid_like(consistencygroup_id):
+                msg = _("Consistency group ID '%s' must be a "
+                        "valid UUID.") % consistencygroup_id
+                raise exc.HTTPBadRequest(explanation=msg)
+            # Not found exception will be handled at the wsgi level
+            kwargs['group'] = self.group_api.get(context, consistencygroup_id)
 
         size = volume.get('size', None)
         if size is None and kwargs['snapshot'] is not None:
             size = kwargs['snapshot']['volume_size']
         elif size is None and kwargs['source_volume'] is not None:
             size = kwargs['source_volume']['size']
-        elif size is None and kwargs['source_replica'] is not None:
-            size = kwargs['source_replica']['size']
 
-        LOG.info(_LI("Create volume of %s GB"), size)
+        LOG.info("Create volume of %s GB", size)
 
         if self.ext_mgr.is_loaded('os-image-create'):
             image_ref = volume.get('imageRef')

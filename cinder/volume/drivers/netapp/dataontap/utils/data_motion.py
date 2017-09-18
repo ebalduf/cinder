@@ -24,9 +24,9 @@ from oslo_log import log
 from oslo_utils import excutils
 
 from cinder import exception
-from cinder import utils
-from cinder.i18n import _, _LE, _LI
+from cinder.i18n import _
 from cinder.objects import fields
+from cinder import utils
 from cinder.volume.drivers.netapp.dataontap.client import api as netapp_api
 from cinder.volume.drivers.netapp.dataontap.utils import utils as config_utils
 from cinder.volume import utils as volume_utils
@@ -199,7 +199,7 @@ class DataMotionMixin(object):
                                                   dest_vserver,
                                                   dest_flexvol_name)
                 except netapp_api.NaApiError:
-                    LOG.exception(_LE("Could not re-sync SnapMirror."))
+                    LOG.exception("Could not re-sync SnapMirror.")
 
     def delete_snapmirror(self, src_backend_name, dest_backend_name,
                           src_flexvol_name, dest_flexvol_name, release=True):
@@ -241,7 +241,7 @@ class DataMotionMixin(object):
                 if (e.code == netapp_api.EOBJECTNOTFOUND or
                         e.code == netapp_api.ESOURCE_IS_DIFFERENT or
                         ENTRY_DOES_NOT_EXIST in e.message):
-                    LOG.info(_LI('No SnapMirror relationship to delete.'))
+                    LOG.info('No SnapMirror relationship to delete.')
                     exc_context.reraise = False
 
         if release:
@@ -603,7 +603,7 @@ class DataMotionMixin(object):
 
         return active_backend_name, volume_updates
 
-    def _failover_host(self, volumes, secondary_id=None):
+    def _failover_host(self, volumes, secondary_id=None, groups=None):
 
         if secondary_id == self.backend_name:
             msg = _("Cannot failover to the same host as the primary.")
@@ -641,4 +641,4 @@ class DataMotionMixin(object):
         self.failed_over = True
         self.failed_over_backend_name = active_backend_name
 
-        return active_backend_name, volume_updates
+        return active_backend_name, volume_updates, []

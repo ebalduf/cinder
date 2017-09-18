@@ -65,6 +65,7 @@ class ExecuteTestCase(test.TestCase):
                                                 root_helper=mock_helper)
 
 
+@ddt.ddt
 class GenericUtilsTestCase(test.TestCase):
     def test_as_int(self):
         test_obj_int = '2'
@@ -281,6 +282,21 @@ class GenericUtilsTestCase(test.TestCase):
         mock_conf.rootwrap_config = '/path/to/conf'
         self.assertEqual('sudo cinder-rootwrap /path/to/conf',
                          utils.get_root_helper())
+
+    @ddt.data({'path_a': 'test', 'path_b': 'test', 'exp_eq': True})
+    @ddt.data({'path_a': 'test', 'path_b': 'other', 'exp_eq': False})
+    @ddt.unpack
+    @mock.patch('os.path.normcase')
+    def test_paths_normcase_equal(self, mock_normcase, path_a,
+                                  path_b, exp_eq):
+        # os.path.normcase will lower the path string on Windows
+        # while doing nothing on other platforms.
+        mock_normcase.side_effect = lambda x: x
+
+        result = utils.paths_normcase_equal(path_a, path_b)
+        self.assertEqual(exp_eq, result)
+
+        mock_normcase.assert_has_calls([mock.call(path_a), mock.call(path_b)])
 
 
 class TemporaryChownTestCase(test.TestCase):
@@ -1395,25 +1411,31 @@ class TestComparableMixin(test.TestCase):
                          self.one._compare(1, self.one._cmpkey))
 
 
+@ddt.ddt
 class TestValidateInteger(test.TestCase):
 
-    def test_validate_integer_greater_than_max_int_limit(self):
-        value = (2 ** 31) + 1
+    @ddt.data(
+        (2 ** 31) + 1,  # More than max value
+        -12,  # Less than min value
+        2.05,  # Float value
+        "12.05",  # Float value in string format
+        "should be int",  # String
+        u"test"  # String in unicode format
+    )
+    def test_validate_integer_raise_assert(self, value):
         self.assertRaises(webob.exc.HTTPBadRequest,
                           utils.validate_integer,
                           value, 'limit', min_value=-1, max_value=(2 ** 31))
 
-    def test_validate_integer_less_than_min_int_limit(self):
-        value = -12
-        self.assertRaises(webob.exc.HTTPBadRequest,
-                          utils.validate_integer,
-                          value, 'limit', min_value=-1, max_value=(2 ** 31))
-
-    def test_validate_integer_invalid_limit(self):
-        value = "should_be_int"
-        self.assertRaises(webob.exc.HTTPBadRequest,
-                          utils.validate_integer,
-                          value, 'limit', min_value=-1, max_value=(2 ** 31))
+    @ddt.data(
+        "123",  # integer in string format
+        123,  # integer
+        u"123"  # integer in unicode format
+    )
+    def test_validate_integer(self, value):
+        res = utils.validate_integer(value, 'limit', min_value=-1,
+                                     max_value=(2 ** 31))
+        self.assertEqual(123, res)
 
 
 @ddt.ddt
@@ -1449,3 +1471,65 @@ class TestNotificationShortCircuit(test.TestCase):
                              group='oslo_messaging_notifications')
         result = self._decorated_method()
         self.assertEqual(utils.DO_NOTHING, result)
+
+
+@ddt.ddt
+class TestLogLevels(test.TestCase):
+    @ddt.data(None, '', 'wronglevel')
+    def test_get_log_method_invalid(self, level):
+        self.assertRaises(exception.InvalidInput,
+                          utils.get_log_method, level)
+
+    @ddt.data(('info', utils.logging.INFO), ('warning', utils.logging.WARNING),
+              ('INFO', utils.logging.INFO), ('wArNiNg', utils.logging.WARNING),
+              ('error', utils.logging.ERROR), ('debug', utils.logging.DEBUG))
+    @ddt.unpack
+    def test_get_log_method(self, level, logger):
+        result = utils.get_log_method(level)
+        self.assertEqual(logger, result)
+
+    def test_get_log_levels(self):
+        levels = utils.get_log_levels('cinder.api')
+        self.assertTrue(len(levels) > 1)
+        self.assertSetEqual({'DEBUG'}, set(levels.values()))
+
+    @ddt.data(None, '', 'wronglevel')
+    def test_set_log_levels_invalid(self, level):
+        self.assertRaises(exception.InvalidInput,
+                          utils.set_log_levels, '', level)
+
+    def test_set_log_levels(self):
+        prefix = 'cinder.utils'
+        levels = utils.get_log_levels(prefix)
+        self.assertEqual('DEBUG', levels[prefix])
+
+        utils.set_log_levels(prefix, 'warning')
+        levels = utils.get_log_levels(prefix)
+        self.assertEqual('WARNING', levels[prefix])
+
+        utils.set_log_levels(prefix, 'debug')
+        levels = utils.get_log_levels(prefix)
+        self.assertEqual('DEBUG', levels[prefix])
+
+
+@ddt.ddt
+class TestCheckMetadataProperties(test.TestCase):
+    @ddt.data(
+        {'a': {'foo': 'bar'}},  # value is a nested dict
+        {'a': 123},  # value is an integer
+        {'a': 123.4},  # value is a float
+        {'a': True},  # value is a bool
+        {'a': ('foo', 'bar')},  # value is a tuple
+        {'a': []},  # value is a list
+        {'a': None}  # value is None
+    )
+    def test_metadata_value_not_string_raise(self, meta):
+        self.assertRaises(exception.InvalidVolumeMetadata,
+                          utils.check_metadata_properties,
+                          meta)
+
+    def test_metadata_value_not_dict_raise(self):
+        meta = 123
+        self.assertRaises(exception.InvalidInput,
+                          utils.check_metadata_properties,
+                          meta)

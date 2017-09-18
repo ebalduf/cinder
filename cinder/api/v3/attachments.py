@@ -10,7 +10,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""The volumes attachments api."""
+"""The volumes attachments API."""
 
 from oslo_log import log as logging
 import webob
@@ -27,6 +27,7 @@ from cinder.volume import api as volume_api
 
 LOG = logging.getLogger(__name__)
 API_VERSION = '3.27'
+ATTACHMENT_COMPLETION_VERSION = '3.44'
 
 
 class AttachmentsController(wsgi.Controller):
@@ -61,31 +62,37 @@ class AttachmentsController(wsgi.Controller):
         attachments = self._items(req)
         return attachment_views.ViewBuilder.list(attachments, detail=True)
 
+    @common.process_general_filtering('attachment')
+    def _process_attachment_filtering(self, context=None, filters=None,
+                                      req_version=None):
+        utils.remove_invalid_filter_options(context, filters,
+                                            self.allowed_filters)
+
     def _items(self, req):
         """Return a list of attachments, transformed through view builder."""
         context = req.environ['cinder.context']
+        req_version = req.api_version_request
 
         # Pop out non search_opts and create local variables
         search_opts = req.GET.copy()
         sort_keys, sort_dirs = common.get_sort_params(search_opts)
         marker, limit, offset = common.get_pagination_params(search_opts)
-        filters = search_opts
-        allowed = self.allowed_filters
-        if not allowed.issuperset(filters):
-            invalid_keys = set(filters).difference(allowed)
-            msg = _('Invalid filter keys: %s') % ', '.join(invalid_keys)
-            raise exception.InvalidInput(reason=msg)
 
-        # Filter out invalid options
-        allowed_search_options = ('status', 'volume_id',
-                                  'instance_id')
+        self._process_attachment_filtering(context=context,
+                                           filters=search_opts,
+                                           req_version=req_version)
         if search_opts.get('instance_id', None):
-            search_opts['instance_uuid'] = search_opts.get('instance_id')
-        utils.remove_invalid_filter_options(context, search_opts,
-                                            allowed_search_options)
-        return objects.VolumeAttachmentList.get_all(
-            context, search_opts=search_opts, marker=marker, limit=limit,
-            offset=offset, sort_keys=sort_keys, sort_direction=sort_dirs)
+            search_opts['instance_uuid'] = search_opts.pop('instance_id', None)
+        if context.is_admin and 'all_tenants' in search_opts:
+            del search_opts['all_tenants']
+            return objects.VolumeAttachmentList.get_all(
+                context, search_opts=search_opts, marker=marker, limit=limit,
+                offset=offset, sort_keys=sort_keys, sort_direction=sort_dirs)
+        else:
+            return objects.VolumeAttachmentList.get_all_by_project(
+                context, context.project_id, search_opts=search_opts,
+                marker=marker, limit=limit, offset=offset, sort_keys=sort_keys,
+                sort_direction=sort_dirs)
 
     @wsgi.Controller.api_version(API_VERSION)
     @wsgi.response(202)
@@ -108,8 +115,8 @@ class AttachmentsController(wsgi.Controller):
         information (connector data) at the time of the call.
 
         NOTE: In Nova terms server == instance, the server_id parameter
-        referenced below is the uuid of the Instance, for non-nova consumers
-        this can be a server uuid or some other arbitrary unique identifier.
+        referenced below is the UUID of the Instance, for non-nova consumers
+        this can be a server UUID or some other arbitrary unique identifier.
 
         Expected format of the input parameter 'body':
 
@@ -120,7 +127,7 @@ class AttachmentsController(wsgi.Controller):
                 {
                     "volume_uuid": "volume-uuid",
                     "instance_uuid": "nova-server-uuid",
-                    "connector": None|<connector-object>,
+                    "connector": "null|<connector-object>"
                 }
             }
 
@@ -136,14 +143,14 @@ class AttachmentsController(wsgi.Controller):
                     "platform": "x86_64",
                     "host": "tempest-1",
                     "os_type": "linux2",
-                    "multipath": False,
+                    "multipath": false,
                     "mountpoint": "/dev/vdb",
-                    "mode": None|"rw"|"ro",
+                    "mode": "null|rw|ro"
                 }
             }
 
         NOTE all that's required for a reserve is volume_uuid
-        and a instance_uuid.
+        and an instance_uuid.
 
         returns: A summary view of the attachment object
         """
@@ -171,6 +178,8 @@ class AttachmentsController(wsgi.Controller):
                                                   volume_ref,
                                                   instance_uuid,
                                                   connector=connector))
+        except exception.NotAuthorized:
+            raise
         except exception.CinderException as ex:
             err_msg = _(
                 "Unable to create attachment for volume (%s).") % ex.msg
@@ -192,20 +201,22 @@ class AttachmentsController(wsgi.Controller):
 
         Expected format of the input parameter 'body':
 
-        .. code-block:: json
-        {
-            "attachment":
+        .. code:: json
+
             {
-                "connector":
+                "attachment":
                 {
-                    "initiator": "iqn.1993-08.org.debian:01:cad181614cec",
-                    "ip":"192.168.1.20",
-                    "platform": "x86_64",
-                    "host": "tempest-1",
-                    "os_type": "linux2",
-                    "multipath": False,
-                    "mountpoint": "/dev/vdb",
-                    "mode": None|"rw"|"ro",
+                    "connector":
+                    {
+                        "initiator": "iqn.1993-08.org.debian:01:cad181614cec",
+                        "ip":"192.168.1.20",
+                        "platform": "x86_64",
+                        "host": "tempest-1",
+                        "os_type": "linux2",
+                        "multipath": False,
+                        "mountpoint": "/dev/vdb",
+                        "mode": None|"rw"|"ro",
+                    }
                 }
             }
 
@@ -224,13 +235,14 @@ class AttachmentsController(wsgi.Controller):
                 self.volume_api.attachment_update(context,
                                                   attachment_ref,
                                                   connector))
-
+        except exception.NotAuthorized:
+            raise
         except exception.CinderException as ex:
             err_msg = (
-                _("Unable to create attachment for volume (%s).") % ex.msg)
+                _("Unable to update attachment.(%s).") % ex.msg)
             LOG.exception(err_msg)
-        except Exception as ex:
-            err_msg = _("Unable to create attachment for volume.")
+        except Exception:
+            err_msg = _("Unable to update the attachment.")
             LOG.exception(err_msg)
         finally:
             if err_msg:
@@ -254,6 +266,22 @@ class AttachmentsController(wsgi.Controller):
         attachment = objects.VolumeAttachment.get_by_id(context, id)
         attachments = self.volume_api.attachment_delete(context, attachment)
         return attachment_views.ViewBuilder.list(attachments)
+
+    @wsgi.response(202)
+    @wsgi.Controller.api_version(ATTACHMENT_COMPLETION_VERSION)
+    @wsgi.action('os-complete')
+    def complete(self, req, id, body):
+        """Mark a volume attachment process as completed (in-use)."""
+        context = req.environ['cinder.context']
+        attachment_ref = (
+            objects.VolumeAttachment.get_by_id(context, id))
+        volume_ref = objects.Volume.get_by_id(
+            context,
+            attachment_ref.volume_id)
+        attachment_ref.update({'attach_status': 'attached'})
+        attachment_ref.save()
+        volume_ref.update({'status': 'in-use', 'attach_status': 'attached'})
+        volume_ref.save()
 
 
 def create_resource(ext_mgr):

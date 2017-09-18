@@ -15,9 +15,9 @@
 #    under the License.
 
 from tempest.api.volume import base as volume_base
-from tempest.common.utils import data_utils
 from tempest.common import waiters
 from tempest import config
+from tempest.lib.common.utils import data_utils
 
 CONF = config.CONF
 
@@ -36,18 +36,17 @@ class CinderUnicodeTest(volume_base.BaseVolumeTest):
 
     @classmethod
     def create_volume_with_args(cls, **kwargs):
-        name = kwargs['name'] or data_utils.rand_name('Volume')
+        if 'name' not in kwargs:
+            kwargs['name'] = data_utils.rand_name('Volume')
 
-        name_field = cls.special_fields['name_field']
-        kwargs[name_field] = name
         kwargs['size'] = CONF.volume.volume_size
 
         volume = cls.volumes_client.create_volume(**kwargs)['volume']
         cls.volumes.append(volume)
 
-        waiters.wait_for_volume_status(cls.volumes_client,
-                                       volume['id'],
-                                       'available')
+        waiters.wait_for_volume_resource_status(cls.volumes_client,
+                                                volume['id'],
+                                                'available')
 
         return volume
 
@@ -56,5 +55,5 @@ class CinderUnicodeTest(volume_base.BaseVolumeTest):
 
         result = self.volumes_client.show_volume(self.volumes[0]['id'])
         fetched_volume = result['volume']
-        self.assertEqual(fetched_volume[self.special_fields['name_field']],
+        self.assertEqual(fetched_volume['name'],
                          self.volume_name)

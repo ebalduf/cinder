@@ -19,7 +19,10 @@ SYNOPSIS
 DESCRIPTION
 ===========
 
-cinder-manage provides control of cinder database migration, and provides an interface to get information about the current state of cinder.  More information about OpenStack Cinder is available at http://cinder.openstack.org.
+:command:`cinder-manage` provides control of cinder database migration,
+and provides an interface to get information about the current state
+of cinder.
+More information about OpenStack Cinder is available at `OpenStack Cinder <https://docs.openstack.org/cinder/latest/>`_.
 
 OPTIONS
 =======
@@ -55,6 +58,16 @@ Cinder Db
 
     Purge database entries that are marked as deleted, that are older than the number of days specified.
 
+``cinder-manage db online_data_migrations``
+
+    Perform online data migrations for database upgrade between releases in batches.
+
+    This command interprets the following options when it is invoked:
+
+    --max_count     Maximum number of objects to consider.
+    --ignore_state  Force records to migrate even if another operation is
+                    performed on them. This may be dangerous, please refer to
+                    release notes for more information.
 
 Cinder Logs
 ~~~~~~~~~~~
@@ -154,7 +167,7 @@ The cinder-manage.log file logs output from cinder-manage.
 SEE ALSO
 ========
 
-* `OpenStack Cinder <http://cinder.openstack.org>`__
+* `OpenStack Cinder <https://docs.openstack.org/cinder/latest/>`__
 
 BUGS
 ====

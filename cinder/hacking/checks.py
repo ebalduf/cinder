@@ -35,8 +35,9 @@ Guidelines for writing new hacking checks
 UNDERSCORE_IMPORT_FILES = ['cinder/objects/__init__.py',
                            'cinder/objects/manageableresources.py']
 
+mutable_default_args = re.compile(r"^\s*def .+\((.+=\{\}|.+=\[\])")
 translated_log = re.compile(
-    r"(.)*LOG\.(audit|error|info|warn|warning|critical|exception)"
+    r"(.)*LOG\.(audit|debug|error|info|warn|warning|critical|exception)"
     "\(\s*_\(\s*('|\")")
 string_translation = re.compile(r"(.)*_\(\s*('|\")")
 vi_header_re = re.compile(r"^#\s+vim?:.+")
@@ -54,17 +55,9 @@ oslo_namespace_imports = re.compile(r"from[\s]*oslo[.](concurrency|db"
                                     "|config|utils|serialization|log)")
 no_contextlib_nested = re.compile(r"\s*with (contextlib\.)?nested\(")
 
-log_translation_LI = re.compile(
-    r"(.)*LOG\.(info)\(\s*(_\(|'|\")")
-log_translation_LE = re.compile(
-    r"(.)*LOG\.(exception|error)\(\s*(_\(|'|\")")
-log_translation_LW = re.compile(
-    r"(.)*LOG\.(warning|warn)\(\s*(_\(|'|\")")
 logging_instance = re.compile(
     r"(.)*LOG\.(warning|info|debug|error|exception)\(")
 
-assert_None = re.compile(
-    r".*assertEqual\(None, .*\)")
 assert_True = re.compile(
     r".*assertEqual\(True, .*\)")
 
@@ -129,26 +122,24 @@ def no_vi_headers(physical_line, line_number, lines):
             return 0, "N314: Don't put vi configuration in source files"
 
 
-def no_translate_debug_logs(logical_line, filename):
-    """Check for 'LOG.debug(_('
+def no_translate_logs(logical_line, filename):
+    """Check for 'LOG.*(_('
 
-    As per our translation policy,
-    https://wiki.openstack.org/wiki/LoggingStandards#Log_Translation
-    we shouldn't translate debug level logs.
+    Starting with the Pike series, OpenStack no longer supports log
+    translation. We shouldn't translate logs.
 
     - This check assumes that 'LOG' is a logger.
     - Use filename so we can start enforcing this in specific folders
       instead of needing to do so all at once.
 
-    N319
+    C312
     """
-    if logical_line.startswith("LOG.debug(_("):
-        yield(0, "N319 Don't translate debug level logs")
+    if translated_log.match(logical_line):
+        yield(0, "C312: Log messages should not be translated!")
 
 
 def no_mutable_default_args(logical_line):
     msg = "N322: Method's default argument shouldn't be mutable!"
-    mutable_default_args = re.compile(r"^\s*def .+\((.+=\{\}|.+=\[\])")
     if mutable_default_args.match(logical_line):
         yield (0, msg)
 
@@ -157,7 +148,7 @@ def check_explicit_underscore_import(logical_line, filename):
     """Check for explicit import of the _ function
 
     We need to ensure that any files that are using the _() function
-    to translate logs are explicitly importing the _ function.  We
+    to translate messages are explicitly importing the _ function.  We
     can't trust unit test to catch whether the import has been
     added so we need to check for it here.
     """
@@ -171,8 +162,7 @@ def check_explicit_underscore_import(logical_line, filename):
             underscore_import_check_multi.match(logical_line) or
             custom_underscore_check.match(logical_line)):
         UNDERSCORE_IMPORT_FILES.append(filename)
-    elif(translated_log.match(logical_line) or
-         string_translation.match(logical_line)):
+    elif string_translation.match(logical_line):
         yield(0, "N323: Found use of _() without explicit import of _ !")
 
 
@@ -366,24 +356,6 @@ class CheckOptRegistrationArgs(BaseASTChecker):
         return super(CheckOptRegistrationArgs, self).generic_visit(node)
 
 
-def validate_log_translations(logical_line, filename):
-    # Translations are not required in the test directory.
-    # This will not catch all instances of violations, just direct
-    # misuse of the form LOG.info('Message').
-    if "cinder/tests" in filename:
-        return
-    msg = "N328: LOG.info messages require translations `_LI()`!"
-    if log_translation_LI.match(logical_line):
-        yield (0, msg)
-    msg = ("N329: LOG.exception and LOG.error messages require "
-           "translations `_LE()`!")
-    if log_translation_LE.match(logical_line):
-        yield (0, msg)
-    msg = "N330: LOG.warning messages require translations `_LW()`!"
-    if log_translation_LW.match(logical_line):
-        yield (0, msg)
-
-
 def check_datetime_now(logical_line, noqa):
     if noqa:
         return
@@ -464,21 +436,19 @@ def check_timeutils_isotime(logical_line):
 
 
 def no_test_log(logical_line, filename, noqa):
-    if "cinder/tests" not in filename or noqa:
+    if ('cinder/tests/tempest' in filename or
+            'cinder/tests' not in filename or noqa):
         return
     msg = "C309: Unit tests should not perform logging."
     if logging_instance.match(logical_line):
         yield (0, msg)
 
 
-def validate_assertIsNone(logical_line):
-    if re.match(assert_None, logical_line):
-        msg = ("C312: Unit tests should use assertIsNone(value) instead"
-               " of using assertEqual(None, value).")
-        yield(0, msg)
-
-
 def validate_assertTrue(logical_line):
+    # Note: a comparable check cannot be implemented for
+    # assertFalse(), because assertFalse(None) passes.
+    # Therefore, assertEqual(False, value) is required to
+    # have the strongest test.
     if re.match(assert_True, logical_line):
         msg = ("C313: Unit tests should use assertTrue(value) instead"
                " of using assertEqual(True, value).")
@@ -487,7 +457,7 @@ def validate_assertTrue(logical_line):
 
 def factory(register):
     register(no_vi_headers)
-    register(no_translate_debug_logs)
+    register(no_translate_logs)
     register(no_mutable_default_args)
     register(check_explicit_underscore_import)
     register(CheckForStrUnicodeExc)
@@ -496,12 +466,10 @@ def factory(register):
     register(check_datetime_now)
     register(check_timeutils_strtime)
     register(check_timeutils_isotime)
-    register(validate_log_translations)
     register(check_unicode_usage)
     register(check_no_print_statements)
     register(check_no_log_audit)
     register(no_log_warn)
     register(dict_constructor_with_list_copy)
     register(no_test_log)
-    register(validate_assertIsNone)
     register(validate_assertTrue)

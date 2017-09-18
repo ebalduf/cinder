@@ -10,12 +10,16 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import ddt
+import mock
+from six.moves import http_client
+
 from cinder.api import extensions
 from cinder.api.v3 import messages
 from cinder import context
 from cinder import exception
 from cinder.message import api as message_api
-from cinder.message import defined_messages
+from cinder.message import message_field
 from cinder import test
 from cinder.tests.unit.api import fakes
 from cinder.tests.unit.api.v3 import fakes as v3_fakes
@@ -24,6 +28,7 @@ from cinder.tests.unit.api.v3 import fakes as v3_fakes
 NS = '{http://docs.openstack.org/api/openstack-block-storage/3.0/content}'
 
 
+@ddt.ddt
 class MessageApiTest(test.TestCase):
     def setUp(self):
         super(MessageApiTest, self).setUp()
@@ -45,8 +50,9 @@ class MessageApiTest(test.TestCase):
         return {
             'message': {
                 'id': message.get('id'),
-                'user_message': defined_messages.get_message_text(
-                    message.get('event_id')),
+                'user_message': "%s:%s" % (
+                    message_field.translate_action(message.get('action_id')),
+                    message_field.translate_detail(message.get('detail_id'))),
                 'request_id': message.get('request_id'),
                 'event_id': message.get('event_id'),
                 'created_at': message.get('created_at'),
@@ -103,7 +109,7 @@ class MessageApiTest(test.TestCase):
 
         resp = self.controller.delete(req, fakes.FAKE_UUID)
 
-        self.assertEqual(204, resp.status_int)
+        self.assertEqual(http_client.NO_CONTENT, resp.status_int)
         self.assertTrue(message_api.API.delete.called)
 
     def test_delete_not_found(self):
@@ -117,6 +123,21 @@ class MessageApiTest(test.TestCase):
 
         self.assertRaises(exception.MessageNotFound, self.controller.delete,
                           req, fakes.FAKE_UUID)
+
+    @ddt.data('3.30', '3.31', '3.34')
+    @mock.patch('cinder.api.common.reject_invalid_filters')
+    def test_message_list_with_general_filter(self, version, mock_update):
+        url = '/v3/%s/messages' % fakes.FAKE_UUID
+        req = fakes.HTTPRequest.blank(url,
+                                      version=version,
+                                      use_admin_context=False)
+        self.controller.index(req)
+
+        if version != '3.30':
+            support_like = True if version == '3.34' else False
+            mock_update.assert_called_once_with(req.environ['cinder.context'],
+                                                mock.ANY, 'message',
+                                                support_like)
 
     def test_index(self):
         self.mock_object(message_api.API, 'get_all',

@@ -13,7 +13,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_utils import uuidutils
+
+from cinder.objects import fields
 from cinder.tests.functional import functional_helpers
+from cinder.volume import configuration
 
 
 class GroupSnapshotsTest(functional_helpers._FunctionalTestBase):
@@ -30,9 +34,10 @@ class GroupSnapshotsTest(functional_helpers._FunctionalTestBase):
     def _get_flags(self):
         f = super(GroupSnapshotsTest, self)._get_flags()
         f['volume_driver'] = (
-            'cinder.tests.fake_driver.FakeLoggingVolumeDriver')
-        f['default_volume_type'] = self._vol_type_name
-        f['default_group_type'] = self._grp_type_name
+            {'v': 'cinder.tests.fake_driver.FakeLoggingVolumeDriver',
+             'g': configuration.SHARED_CONF_GROUP})
+        f['default_volume_type'] = {'v': self._vol_type_name}
+        f['default_group_type'] = {'v': self._grp_type_name}
         return f
 
     def test_get_group_snapshots_summary(self):
@@ -52,7 +57,7 @@ class GroupSnapshotsTest(functional_helpers._FunctionalTestBase):
         created_group = self.api.post_group(
             {'group': {'group_type': self.group_type['id'],
                        'volume_types': [self.volume_type['id']]}})
-        self.assertTrue(created_group['id'])
+        self.assertTrue(uuidutils.is_uuid_like(created_group['id']))
         created_group_id = created_group['id']
 
         # Check it's there
@@ -67,7 +72,7 @@ class GroupSnapshotsTest(functional_helpers._FunctionalTestBase):
             {'volume': {'size': 1,
                         'group_id': created_group_id,
                         'volume_type': self.volume_type['id']}})
-        self.assertTrue(created_volume['id'])
+        self.assertTrue(uuidutils.is_uuid_like(created_volume['id']))
         created_volume_id = created_volume['id']
 
         # Check it's there
@@ -85,23 +90,24 @@ class GroupSnapshotsTest(functional_helpers._FunctionalTestBase):
         # Create group snapshot
         created_group_snapshot = self.api.post_group_snapshot(
             {'group_snapshot': {'group_id': created_group_id}})
-        self.assertTrue(created_group_snapshot['id'])
+        self.assertTrue(uuidutils.is_uuid_like(created_group_snapshot['id']))
         created_group_snapshot_id = created_group_snapshot['id']
 
         # Check it's there
         found_group_snapshot = self._poll_group_snapshot_while(
-            created_group_snapshot_id, ['creating'])
+            created_group_snapshot_id, [fields.GroupSnapshotStatus.CREATING])
         self.assertEqual(created_group_snapshot_id, found_group_snapshot['id'])
         self.assertEqual(created_group_id,
                          found_group_snapshot['group_id'])
-        self.assertEqual('available', found_group_snapshot['status'])
+        self.assertEqual(fields.GroupSnapshotStatus.AVAILABLE,
+                         found_group_snapshot['status'])
 
         # Delete the group snapshot
         self.api.delete_group_snapshot(created_group_snapshot_id)
 
         # Wait (briefly) for deletion. Delay is due to the 'message queue'
         found_group_snapshot = self._poll_group_snapshot_while(
-            created_group_snapshot_id, ['deleting'])
+            created_group_snapshot_id, [fields.GroupSnapshotStatus.DELETING])
 
         # Delete the original group
         self.api.delete_group(created_group_id,
@@ -123,7 +129,7 @@ class GroupSnapshotsTest(functional_helpers._FunctionalTestBase):
         created_group = self.api.post_group(
             {'group': {'group_type': self.group_type['id'],
                        'volume_types': [self.volume_type['id']]}})
-        self.assertTrue(created_group['id'])
+        self.assertTrue(uuidutils.is_uuid_like(created_group['id']))
         created_group_id = created_group['id']
 
         # Check it's there
@@ -138,7 +144,7 @@ class GroupSnapshotsTest(functional_helpers._FunctionalTestBase):
             {'volume': {'size': 1,
                         'group_id': created_group_id,
                         'volume_type': self.volume_type['id']}})
-        self.assertTrue(created_volume['id'])
+        self.assertTrue(uuidutils.is_uuid_like(created_volume['id']))
         created_volume_id = created_volume['id']
 
         # Check it's there
@@ -156,7 +162,7 @@ class GroupSnapshotsTest(functional_helpers._FunctionalTestBase):
         # Create group snapshot
         created_group_snapshot = self.api.post_group_snapshot(
             {'group_snapshot': {'group_id': created_group_id}})
-        self.assertTrue(created_group_snapshot['id'])
+        self.assertTrue(uuidutils.is_uuid_like(created_group_snapshot['id']))
         created_group_snapshot_id = created_group_snapshot['id']
 
         # Check it's there
@@ -171,7 +177,7 @@ class GroupSnapshotsTest(functional_helpers._FunctionalTestBase):
         created_group_from_snap = self.api.post_group_from_src(
             {'create-from-src': {
                 'group_snapshot_id': created_group_snapshot_id}})
-        self.assertTrue(created_group_from_snap['id'])
+        self.assertTrue(uuidutils.is_uuid_like(created_group_from_snap['id']))
         created_group_from_snap_id = created_group_from_snap['id']
 
         # Check it's there
@@ -201,7 +207,7 @@ class GroupSnapshotsTest(functional_helpers._FunctionalTestBase):
 
         # Wait (briefly) for deletion. Delay is due to the 'message queue'
         found_group_snapshot = self._poll_group_snapshot_while(
-            created_group_snapshot_id, ['deleting'])
+            created_group_snapshot_id, [fields.GroupSnapshotStatus.DELETING])
 
         # Delete the original group
         self.api.delete_group(created_group_id,
@@ -224,7 +230,7 @@ class GroupSnapshotsTest(functional_helpers._FunctionalTestBase):
         created_group = self.api.post_group(
             {'group': {'group_type': self.group_type['id'],
                        'volume_types': [self.volume_type['id']]}})
-        self.assertTrue(created_group['id'])
+        self.assertTrue(uuidutils.is_uuid_like(created_group['id']))
         created_group_id = created_group['id']
 
         # Check it's there
@@ -239,7 +245,7 @@ class GroupSnapshotsTest(functional_helpers._FunctionalTestBase):
             {'volume': {'size': 1,
                         'group_id': created_group_id,
                         'volume_type': self.volume_type['id']}})
-        self.assertTrue(created_volume['id'])
+        self.assertTrue(uuidutils.is_uuid_like(created_volume['id']))
         created_volume_id = created_volume['id']
 
         # Check it's there
@@ -258,7 +264,7 @@ class GroupSnapshotsTest(functional_helpers._FunctionalTestBase):
         created_group_from_group = self.api.post_group_from_src(
             {'create-from-src': {
                 'source_group_id': created_group_id}})
-        self.assertTrue(created_group_from_group['id'])
+        self.assertTrue(uuidutils.is_uuid_like(created_group_from_group['id']))
         created_group_from_group_id = created_group_from_group['id']
 
         # Check it's there
@@ -301,7 +307,7 @@ class GroupSnapshotsTest(functional_helpers._FunctionalTestBase):
         group1 = self.api.post_group(
             {'group': {'group_type': self.group_type['id'],
                        'volume_types': [self.volume_type['id']]}})
-        self.assertTrue(group1['id'])
+        self.assertTrue(uuidutils.is_uuid_like(group1['id']))
         group_id = group1['id']
         self._poll_group_while(group_id, ['creating'])
 
@@ -310,39 +316,42 @@ class GroupSnapshotsTest(functional_helpers._FunctionalTestBase):
             {'volume': {'size': 1,
                         'group_id': group_id,
                         'volume_type': self.volume_type['id']}})
-        self.assertTrue(created_volume['id'])
+        self.assertTrue(uuidutils.is_uuid_like(created_volume['id']))
         created_volume_id = created_volume['id']
         self._poll_volume_while(created_volume_id, ['creating'])
 
         # Create group snapshot
         group_snapshot1 = self.api.post_group_snapshot(
             {'group_snapshot': {'group_id': group_id}})
-        self.assertTrue(group_snapshot1['id'])
+        self.assertTrue(uuidutils.is_uuid_like(group_snapshot1['id']))
         group_snapshot_id = group_snapshot1['id']
 
-        self._poll_group_snapshot_while(group_snapshot_id, 'creating')
+        self._poll_group_snapshot_while(group_snapshot_id,
+                                        fields.GroupSnapshotStatus.CREATING)
 
         group_snapshot1 = self.api.get_group_snapshot(group_snapshot_id)
-        self.assertEqual("available", group_snapshot1['status'])
+        self.assertEqual(fields.GroupSnapshotStatus.AVAILABLE,
+                         group_snapshot1['status'])
 
         # reset group snapshot status
-        self.api.reset_group_snapshot(group_snapshot_id,
-                                      {"reset_status": {"status": "error"}})
+        self.api.reset_group_snapshot(group_snapshot_id, {"reset_status": {
+            "status": fields.GroupSnapshotStatus.ERROR}})
 
         group_snapshot1 = self.api.get_group_snapshot(group_snapshot_id)
-        self.assertEqual("error", group_snapshot1['status'])
+        self.assertEqual(fields.GroupSnapshotStatus.ERROR,
+                         group_snapshot1['status'])
 
         # Delete group, volume and group snapshot
         self.api.delete_group_snapshot(group_snapshot_id)
         found_group_snapshot = self._poll_group_snapshot_while(
-            group_snapshot_id, ['deleting'])
+            group_snapshot_id, [fields.GroupSnapshotStatus.DELETING])
         self.api.delete_group(group_id,
                               {'delete': {'delete-volumes': True}})
 
         found_volume = self._poll_volume_while(created_volume_id, ['deleting'])
         found_group = self._poll_group_while(group_id, ['deleting'])
 
-        # Created resoueces should be gone
+        # Created resources should be gone
         self.assertFalse(found_group_snapshot)
         self.assertFalse(found_volume)
         self.assertFalse(found_group)

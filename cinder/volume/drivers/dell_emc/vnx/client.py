@@ -16,18 +16,17 @@ from oslo_log import log as logging
 from oslo_utils import excutils
 from oslo_utils import importutils
 
-storops = importutils.try_import('storops')
-if storops:
-    from storops import exception as storops_ex
-    from storops.lib import tasks as storops_tasks
-
 from cinder import exception
-from cinder.i18n import _, _LW, _LE, _LI
+from cinder.i18n import _
 from cinder import utils as cinder_utils
 from cinder.volume.drivers.dell_emc.vnx import common
 from cinder.volume.drivers.dell_emc.vnx import const
 from cinder.volume.drivers.dell_emc.vnx import utils
 
+storops = importutils.try_import('storops')
+if storops:
+    from storops import exception as storops_ex
+    from storops.lib import tasks as storops_tasks
 
 LOG = logging.getLogger(__name__)
 
@@ -50,9 +49,8 @@ class Condition(object):
             # Quick exit wait_until when the lun is other state to avoid
             # long-time timeout.
             msg = (_('Volume %(name)s was created in VNX, '
-                     'but in %(state)s state.')
-                   % {'name': lun.name,
-                      'state': lun_state})
+                   'but in %(state)s state.') % {
+                   'name': lun.name, 'state': lun_state})
             raise exception.VolumeBackendAPIException(data=msg)
 
     @staticmethod
@@ -95,10 +93,11 @@ class Client(object):
         if queue_path:
             self.queue = storops_tasks.PQueue(path=queue_path)
             self.queue.start()
-            LOG.info(_LI('PQueue[%s] starts now.'), queue_path)
+            LOG.info('PQueue[%s] starts now.', queue_path)
 
     def create_lun(self, pool, name, size, provision,
-                   tier, cg_id=None, ignore_thresholds=False):
+                   tier, cg_id=None, ignore_thresholds=False,
+                   qos_specs=None):
         pool = self.vnx.get_pool(name=pool)
         try:
             lun = pool.create_lun(lun_name=name,
@@ -113,6 +112,14 @@ class Client(object):
         if cg_id:
             cg = self.vnx.get_cg(name=cg_id)
             cg.add_member(lun)
+        ioclasses = self.get_ioclass(qos_specs)
+        if ioclasses:
+            policy, is_new = self.get_running_policy()
+            for one in ioclasses:
+                one.add_lun(lun)
+                policy.add_class(one)
+            if is_new:
+                policy.run_policy()
         return lun
 
     def get_lun(self, name=None, lun_id=None):
@@ -143,8 +150,8 @@ class Client(object):
             if smp_attached_snap:
                 smp_attached_snap.delete()
         except storops_ex.VNXLunNotFoundError as ex:
-            LOG.info(_LI("LUN %(name)s is already deleted. This message can "
-                         "be safely ignored. Message: %(msg)s"),
+            LOG.info("LUN %(name)s is already deleted. This message can "
+                     "be safely ignored. Message: %(msg)s",
                      {'name': name, 'msg': ex.message})
 
     def cleanup_async_lun(self, name, force=False):
@@ -160,8 +167,8 @@ class Client(object):
     def delay_delete_lun(self, name):
         """Delay the deletion by putting it in a storops queue."""
         self.queue.put(self.vnx.delete_lun, name=name)
-        LOG.info(_LI("VNX object has been added to queue for later"
-                     " deletion: %s"), name)
+        LOG.info("VNX object has been added to queue for later"
+                 " deletion: %s", name)
 
     @cinder_utils.retry(const.VNXLunPreparingError, retries=1,
                         backoff_rate=1)
@@ -173,8 +180,8 @@ class Client(object):
             lun.poll = poll
             lun.expand(new_size, ignore_thresholds=True)
         except storops_ex.VNXLunExpandSizeError as ex:
-            LOG.warning(_LW("LUN %(name)s is already expanded. "
-                            "Message: %(msg)s."),
+            LOG.warning("LUN %(name)s is already expanded. "
+                        "Message: %(msg)s.",
                         {'name': name, 'msg': ex.message})
 
         except storops_ex.VNXLunPreparingError as ex:
@@ -182,8 +189,7 @@ class Client(object):
             # is 'Preparing'. Wait for a while so that the LUN may get out of
             # the transitioning state.
             with excutils.save_and_reraise_exception():
-                LOG.warning(_LW("LUN %(name)s is not ready for extension: "
-                                "%(msg)s"),
+                LOG.warning("LUN %(name)s is not ready for extension: %(msg)s",
                             {'name': name, 'msg': ex.message})
 
                 utils.wait_until(Condition.is_lun_ops_ready, lun=lun)
@@ -206,7 +212,7 @@ class Client(object):
         if not session.existed:
             return True
         elif session.current_state in ('FAULTED', 'STOPPED'):
-            LOG.warning(_LW('Session is %s, need to handled then.'),
+            LOG.warning('Session is %s, need to handled then.',
                         session.current_state)
             return True
         else:
@@ -243,15 +249,15 @@ class Client(object):
         session = self.vnx.get_migration_session(src_id)
         src_lun = self.vnx.get_lun(lun_id=src_id)
         if session.existed:
-            LOG.warning(_LW('Cancelling migration session: '
-                            '%(src_id)s -> %(dst_id)s.'),
+            LOG.warning('Cancelling migration session: '
+                        '%(src_id)s -> %(dst_id)s.',
                         {'src_id': src_id,
                          'dst_id': dst_id})
             try:
                 src_lun.cancel_migrate()
             except storops_ex.VNXLunNotMigratingError:
-                LOG.info(_LI('The LUN is not migrating or completed, '
-                             'this message can be safely ignored'))
+                LOG.info('The LUN is not migrating or completed, '
+                         'this message can be safely ignored')
             except (storops_ex.VNXLunSyncCompletedError,
                     storops_ex.VNXMigrationError):
                 # Wait until session finishes
@@ -266,8 +272,8 @@ class Client(object):
                 snap_name, allow_rw=True, auto_delete=False,
                 keep_for=keep_for)
         except storops_ex.VNXSnapNameInUseError as ex:
-            LOG.warning(_LW('Snapshot %(name)s already exists. '
-                            'Message: %(msg)s'),
+            LOG.warning('Snapshot %(name)s already exists. '
+                        'Message: %(msg)s',
                         {'name': snap_name, 'msg': ex.message})
 
     def delete_snapshot(self, snapshot_name):
@@ -277,13 +283,13 @@ class Client(object):
         try:
             snap.delete()
         except storops_ex.VNXSnapNotExistsError as ex:
-            LOG.warning(_LW("Snapshot %(name)s may be deleted already. "
-                            "Message: %(msg)s"),
+            LOG.warning("Snapshot %(name)s may be deleted already. "
+                        "Message: %(msg)s",
                         {'name': snapshot_name, 'msg': ex.message})
         except storops_ex.VNXDeleteAttachedSnapError as ex:
             with excutils.save_and_reraise_exception():
-                LOG.warning(_LW("Failed to delete snapshot %(name)s "
-                                "which is in use. Message: %(msg)s"),
+                LOG.warning("Failed to delete snapshot %(name)s "
+                            "which is in use. Message: %(msg)s",
                             {'name': snapshot_name, 'msg': ex.message})
 
     def copy_snapshot(self, snap_name, new_snap_name):
@@ -295,8 +301,8 @@ class Client(object):
         try:
             return lun.create_mount_point(name=smp_name)
         except storops_ex.VNXLunNameInUseError as ex:
-            LOG.warning(_LW('Mount point %(name)s already exists. '
-                            'Message: %(msg)s'),
+            LOG.warning('Mount point %(name)s already exists. '
+                        'Message: %(msg)s',
                         {'name': smp_name, 'msg': ex.message})
             # Ignore the failure that due to retry.
             return self.vnx.get_lun(name=smp_name)
@@ -306,9 +312,9 @@ class Client(object):
         try:
             lun.attach_snap(snap=snap_name)
         except storops_ex.VNXSnapAlreadyMountedError as ex:
-            LOG.warning(_LW("Snapshot %(snap_name)s is attached to "
-                            "snapshot mount point %(smp_name)s already. "
-                            "Message: %(msg)s"),
+            LOG.warning("Snapshot %(snap_name)s is attached to "
+                        "snapshot mount point %(smp_name)s already. "
+                        "Message: %(msg)s",
                         {'snap_name': snap_name,
                          'smp_name': smp_name,
                          'msg': ex.message})
@@ -318,8 +324,8 @@ class Client(object):
         try:
             lun.detach_snap()
         except storops_ex.VNXSnapNotAttachedError as ex:
-            LOG.warning(_LW("Snapshot mount point %(smp_name)s is not "
-                            "currently attached. Message: %(msg)s"),
+            LOG.warning("Snapshot mount point %(smp_name)s is not "
+                        "currently attached. Message: %(msg)s",
                         {'smp_name': smp_name, 'msg': ex.message})
 
     def modify_snapshot(self, snap_name, allow_rw=None,
@@ -417,7 +423,7 @@ class Client(object):
         try:
             lun.enable_compression(ignore_thresholds=True)
         except storops_ex.VNXCompressionAlreadyEnabledError:
-            LOG.warning(_LW("Compression has already been enabled on %s."),
+            LOG.warning("Compression has already been enabled on %s.",
                         lun.name)
 
     def get_vnx_enabler_status(self):
@@ -433,8 +439,8 @@ class Client(object):
             self.sg_cache[name] = self.vnx.create_sg(name)
         except storops_ex.VNXStorageGroupNameInUseError as ex:
             # Ignore the failure due to retry
-            LOG.warning(_LW('Storage group %(name)s already exists. '
-                            'Message: %(msg)s'),
+            LOG.warning('Storage group %(name)s already exists. '
+                        'Message: %(msg)s',
                         {'name': name, 'msg': ex.message})
             self.sg_cache[name] = self.vnx.get_sg(name=name)
 
@@ -469,8 +475,8 @@ class Client(object):
                     storage_group.connect_hba(port, initiator_id, host.name,
                                               host_ip=host.ip)
                 except storops_ex.VNXStorageGroupError as ex:
-                    LOG.warning(_LW('Failed to set path to port %(port)s for '
-                                    'initiator %(hba_id)s. Message: %(msg)s'),
+                    LOG.warning('Failed to set path to port %(port)s for '
+                                'initiator %(hba_id)s. Message: %(msg)s',
                                 {'port': port, 'hba_id': initiator_id,
                                  'msg': ex.message})
 
@@ -499,9 +505,9 @@ class Client(object):
         except storops_ex.VNXNoHluAvailableError as ex:
             with excutils.save_and_reraise_exception():
                 # Reach the max times of retry, fail the attach action.
-                LOG.error(_LE('Failed to add %(lun)s into %(sg)s after '
-                              '%(tried)s tries. Reach the max retry times. '
-                              'Message: %(msg)s'),
+                LOG.error('Failed to add %(lun)s into %(sg)s after '
+                          '%(tried)s tries. Reach the max retry times. '
+                          'Message: %(msg)s',
                           {'lun': lun.lun_id, 'sg': storage_group.name,
                            'tried': max_retries, 'msg': ex.message})
 
@@ -595,7 +601,125 @@ class Client(object):
         mv = self.vnx.get_mirror_view(mirror_name)
         mv.promote_image()
 
+    def create_mirror_group(self, group_name):
+        try:
+            mg = self.vnx.create_mirror_group(group_name)
+        except storops_ex.VNXMirrorGroupNameInUseError:
+            mg = self.vnx.get_mirror_group(group_name)
+        return mg
+
+    def delete_mirror_group(self, group_name):
+        mg = self.vnx.get_mirror_group(group_name)
+        try:
+            mg.delete()
+        except storops_ex.VNXMirrorGroupNotFoundError:
+            LOG.info('Mirror group %s was already deleted.', group_name)
+
+    def add_mirror(self, group_name, mirror_name):
+        mg = self.vnx.get_mirror_group(group_name)
+        mv = self.vnx.get_mirror_view(mirror_name)
+        try:
+            mg.add_mirror(mv)
+        except storops_ex.VNXMirrorGroupAlreadyMemberError:
+            LOG.info('Mirror %(mirror)s is already a member of %(group)s',
+                     {'mirror': mirror_name, 'group': group_name})
+        return mg
+
+    def remove_mirror(self, group_name, mirror_name):
+        mg = self.vnx.get_mirror_group(group_name)
+        mv = self.vnx.get_mirror_view(mirror_name)
+        try:
+            mg.remove_mirror(mv)
+        except storops_ex.VNXMirrorGroupMirrorNotMemberError:
+            LOG.info('Mirror %(mirror)s is not a member of %(group)s',
+                     {'mirror': mirror_name, 'group': group_name})
+
+    def promote_mirror_group(self, group_name):
+        mg = self.vnx.get_mirror_group(group_name)
+        try:
+            mg.promote_group()
+        except storops_ex.VNXMirrorGroupAlreadyPromotedError:
+            LOG.info('Mirror group %s was already promoted.', group_name)
+        return mg
+
+    def sync_mirror_group(self, group_name):
+        mg = self.vnx.get_mirror_group(group_name)
+        mg.sync_group()
+
+    def fracture_mirror_group(self, group_name):
+        mg = self.vnx.get_mirror_group(group_name)
+        mg.fracture_group()
+
     def get_pool_name(self, lun_name):
         lun = self.get_lun(name=lun_name)
         utils.update_res_without_poll(lun)
         return lun.pool_name
+
+    def get_ioclass(self, qos_specs):
+        ioclasses = []
+        if qos_specs is not None:
+            prefix = qos_specs['id']
+            max_bws = qos_specs[common.QOS_MAX_BWS]
+            max_iops = qos_specs[common.QOS_MAX_IOPS]
+            if max_bws:
+                name = '%(prefix)s-bws-%(max)s' % {
+                    'prefix': prefix, 'max': max_bws}
+                class_bws = self.vnx.get_ioclass(name=name)
+                if not class_bws.existed:
+                    class_bws = self.create_ioclass_bws(name,
+                                                        max_bws)
+                ioclasses.append(class_bws)
+            if max_iops:
+                name = '%(prefix)s-iops-%(max)s' % {
+                    'prefix': prefix, 'max': max_iops}
+                class_iops = self.vnx.get_ioclass(name=name)
+                if not class_iops.existed:
+                    class_iops = self.create_ioclass_iops(name,
+                                                          max_iops)
+                ioclasses.append(class_iops)
+        return ioclasses
+
+    def create_ioclass_iops(self, name, max_iops):
+        """Creates a ioclass by IOPS."""
+        max_iops = int(max_iops)
+        ctrl_method = storops.VNXCtrlMethod(
+            method=storops.VNXCtrlMethod.LIMIT_CTRL,
+            metric='tt', value=max_iops)
+        ioclass = self.vnx.create_ioclass(name=name, iotype='rw',
+                                          ctrlmethod=ctrl_method)
+        return ioclass
+
+    def create_ioclass_bws(self, name, max_bws):
+        """Creates a ioclass by bandwidth in MiB."""
+        max_bws = int(max_bws)
+        ctrl_method = storops.VNXCtrlMethod(
+            method=storops.VNXCtrlMethod.LIMIT_CTRL,
+            metric='bw', value=max_bws)
+        ioclass = self.vnx.create_ioclass(name=name, iotype='rw',
+                                          ctrlmethod=ctrl_method)
+        return ioclass
+
+    def create_policy(self, policy_name):
+        """Creates the policy and starts it."""
+        policy = self.vnx.get_policy(name=policy_name)
+        if not policy.existed:
+            LOG.info('Creating the policy: %s', policy_name)
+            policy = self.vnx.create_policy(name=policy_name)
+        return policy
+
+    def get_running_policy(self):
+        """Returns the only running/measuring policy on VNX.
+
+        .. note: VNX only allows one running policy.
+        """
+        policies = self.vnx.get_policy()
+        policies = list(filter(lambda p: p.state == "Running" or p.state ==
+                        "Measuring", policies))
+        if len(policies) >= 1:
+            return policies[0], False
+        else:
+            return self.create_policy("vnx_policy"), True
+
+    def add_lun_to_ioclass(self, ioclass_name, lun_id):
+        ioclass = self.vnx.get_ioclass(name=ioclass_name)
+        ioclass.add_lun(lun_id)

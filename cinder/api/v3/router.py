@@ -21,7 +21,6 @@ WSGI middleware for OpenStack Volume API.
 
 from cinder.api import extensions
 import cinder.api.openstack
-from cinder.api.v2 import limits
 from cinder.api.v2 import snapshot_metadata
 from cinder.api.v2 import types
 from cinder.api.v3 import attachments
@@ -32,7 +31,9 @@ from cinder.api.v3 import group_snapshots
 from cinder.api.v3 import group_specs
 from cinder.api.v3 import group_types
 from cinder.api.v3 import groups
+from cinder.api.v3 import limits
 from cinder.api.v3 import messages
+from cinder.api.v3 import resource_filters
 from cinder.api.v3 import snapshot_manage
 from cinder.api.v3 import snapshots
 from cinder.api.v3 import volume_manage
@@ -186,3 +187,8 @@ class APIRouter(cinder.api.openstack.APIRouter):
         mapper.resource('worker', 'workers',
                         controller=self.resources['workers'],
                         collection={'cleanup': 'POST'})
+
+        self.resources['resource_filters'] = resource_filters.create_resource(
+            ext_mgr)
+        mapper.resource('resource_filter', 'resource_filters',
+                        controller=self.resources['resource_filters'])

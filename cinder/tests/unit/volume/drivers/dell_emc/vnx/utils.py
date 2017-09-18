@@ -34,13 +34,19 @@ def load_yaml(file_name):
     yaml_file = '{}/{}'.format(path.dirname(
         path.abspath(__file__)), file_name)
     with open(yaml_file) as f:
-        res = yaml.load(f)
+        res = yaml.safe_load(f)
     return res
 
 
 def patch_extra_specs(specs):
     return _build_patch_decorator(
         'cinder.volume.volume_types.get_volume_type_extra_specs',
+        return_value=specs)
+
+
+def patch_group_specs(specs):
+    return _build_patch_decorator(
+        'cinder.volume.group_types.get_group_type_specs',
         return_value=specs)
 
 
@@ -82,4 +88,5 @@ def get_replication_device():
         'san_password': 'admin',
         'storage_vnx_authentication_type': 'global',
         'storage_vnx_security_file_dir': None,
+        'pool_name': 'remote_pool',
     }

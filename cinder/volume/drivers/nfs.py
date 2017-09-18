@@ -25,14 +25,15 @@ from oslo_log import log as logging
 from oslo_utils import units
 import six
 
+from cinder import coordination
 from cinder import exception
-from cinder.i18n import _, _LE, _LI, _LW
+from cinder.i18n import _
 from cinder.image import image_utils
 from cinder import interface
 from cinder import utils
+from cinder.volume import configuration
 from cinder.volume import driver
 from cinder.volume.drivers import remotefs
-from cinder.volume.drivers.remotefs import locked_volume_id_operation
 
 VERSION = '1.4.0'
 
@@ -71,11 +72,11 @@ nfs_opts = [
 ]
 
 CONF = cfg.CONF
-CONF.register_opts(nfs_opts)
+CONF.register_opts(nfs_opts, group=configuration.SHARED_CONF_GROUP)
 
 
 @interface.volumedriver
-class NfsDriver(remotefs.RemoteFSSnapDriver, driver.ExtendVD):
+class NfsDriver(remotefs.RemoteFSSnapDriverDistributed, driver.ExtendVD):
     """NFS based cinder driver.
 
     Creates file on NFS share for using it as block device on hypervisor.
@@ -96,12 +97,10 @@ class NfsDriver(remotefs.RemoteFSSnapDriver, driver.ExtendVD):
         root_helper = utils.get_root_helper()
         # base bound to instance is used in RemoteFsConnector.
         self.base = getattr(self.configuration,
-                            'nfs_mount_point_base',
-                            CONF.nfs_mount_point_base)
+                            'nfs_mount_point_base')
         self.base = os.path.realpath(self.base)
         opts = getattr(self.configuration,
-                       'nfs_mount_options',
-                       CONF.nfs_mount_options)
+                       'nfs_mount_options')
 
         nas_mount_options = getattr(self.configuration,
                                     'nas_mount_options',
@@ -209,23 +208,23 @@ class NfsDriver(remotefs.RemoteFSSnapDriver, driver.ExtendVD):
                 return
             except Exception as e:
                 if attempt == (num_attempts - 1):
-                    LOG.error(_LE('Mount failure for %(share)s after '
-                                  '%(count)d attempts.'), {
-                              'share': nfs_share,
-                              'count': num_attempts})
+                    LOG.error('Mount failure for %(share)s after '
+                              '%(count)d attempts.',
+                              {'share': nfs_share,
+                               'count': num_attempts})
                     raise exception.NfsException(six.text_type(e))
                 LOG.debug('Mount attempt %(attempt)d failed: %(exc)s.\n'
                           'Retrying mount ...',
                           {'attempt': attempt, 'exc': e})
                 time.sleep(1)
 
-    def _find_share(self, volume_size_in_gib):
+    def _find_share(self, volume):
         """Choose NFS share among available ones for given volume size.
 
         For instances with more than one share that meets the criteria, the
         share with the least "allocated" space will be selected.
 
-        :param volume_size_in_gib: int size in GB
+        :param volume: the volume to be created.
         """
 
         if not self._mounted_shares:
@@ -241,7 +240,8 @@ class NfsDriver(remotefs.RemoteFSSnapDriver, driver.ExtendVD):
                           'total_available': total_available,
                           'total_allocated': total_allocated,
                           }
-            if not self._is_share_eligible(nfs_share, volume_size_in_gib,
+            if not self._is_share_eligible(nfs_share,
+                                           volume.size,
                                            share_info):
                 continue
             if target_share is not None:
@@ -254,7 +254,7 @@ class NfsDriver(remotefs.RemoteFSSnapDriver, driver.ExtendVD):
 
         if target_share is None:
             raise exception.NfsNoSuitableShareFound(
-                volume_size=volume_size_in_gib)
+                volume_size=volume.size)
 
         LOG.debug('Selected %s as target NFS share.', target_share)
 
@@ -355,7 +355,7 @@ class NfsDriver(remotefs.RemoteFSSnapDriver, driver.ExtendVD):
 
     def extend_volume(self, volume, new_size):
         """Extend an existing volume to the new size."""
-        LOG.info(_LI('Extending volume %s.'), volume.id)
+        LOG.info('Extending volume %s.', volume.id)
         extend_by = int(new_size) - volume.size
         if not self._is_share_eligible(volume.provider_location,
                                        extend_by):
@@ -363,7 +363,7 @@ class NfsDriver(remotefs.RemoteFSSnapDriver, driver.ExtendVD):
                                               ' extend volume %s to %sG'
                                               % (volume.id, new_size))
         path = self.local_path(volume)
-        LOG.info(_LI('Resizing file to %sG...'), new_size)
+        LOG.info('Resizing file to %sG...', new_size)
         image_utils.resize_image(path, new_size,
                                  run_as_root=self._execute_as_root)
         if not self._is_file_size_equal(path, new_size):
@@ -405,11 +405,11 @@ class NfsDriver(remotefs.RemoteFSSnapDriver, driver.ExtendVD):
                   self.configuration.nas_secure_file_permissions)
 
         if self.configuration.nas_secure_file_permissions == 'false':
-            LOG.warning(_LW("The NAS file permissions mode will be 666 "
-                            "(allowing other/world read & write access). "
-                            "This is considered an insecure NAS environment. "
-                            "Please see %s for information on a secure "
-                            "NFS configuration."),
+            LOG.warning("The NAS file permissions mode will be 666 "
+                        "(allowing other/world read & write access). "
+                        "This is considered an insecure NAS environment. "
+                        "Please see %s for information on a secure "
+                        "NFS configuration.",
                         doc_html)
 
         self.configuration.nas_secure_file_operations = \
@@ -431,11 +431,11 @@ class NfsDriver(remotefs.RemoteFSSnapDriver, driver.ExtendVD):
                   self.configuration.nas_secure_file_operations)
 
         if self.configuration.nas_secure_file_operations == 'false':
-            LOG.warning(_LW("The NAS file operations will be run as "
-                            "root: allowing root level access at the storage "
-                            "backend. This is considered an insecure NAS "
-                            "environment. Please see %s "
-                            "for information on a secure NAS configuration."),
+            LOG.warning("The NAS file operations will be run as "
+                        "root: allowing root level access at the storage "
+                        "backend. This is considered an insecure NAS "
+                        "environment. Please see %s "
+                        "for information on a secure NAS configuration.",
                         doc_html)
 
     def update_migrated_volume(self, ctxt, volume, new_volume,
@@ -463,8 +463,8 @@ class NfsDriver(remotefs.RemoteFSSnapDriver, driver.ExtendVD):
             try:
                 os.rename(current_path, original_path)
             except OSError:
-                LOG.error(_LE('Unable to rename the logical volume '
-                              'for volume: %s'), volume.id)
+                LOG.error('Unable to rename the logical volume '
+                          'for volume: %s', volume.id)
                 # If the rename fails, _name_id should be set to the new
                 # volume id and provider_location should be set to the
                 # one from the new volume as well.
@@ -499,13 +499,13 @@ class NfsDriver(remotefs.RemoteFSSnapDriver, driver.ExtendVD):
 
         self._stats = data
 
-    @locked_volume_id_operation
+    @coordination.synchronized('{self.driver_prefix}-{volume[id]}')
     def create_volume(self, volume):
         """Apply locking to the create volume operation."""
 
         return super(NfsDriver, self).create_volume(volume)
 
-    @locked_volume_id_operation
+    @coordination.synchronized('{self.driver_prefix}-{volume[id]}')
     def delete_volume(self, volume):
         """Deletes a logical volume."""
 
@@ -513,8 +513,8 @@ class NfsDriver(remotefs.RemoteFSSnapDriver, driver.ExtendVD):
                   {'vol': volume.id, 'loc': volume.provider_location})
 
         if not volume.provider_location:
-            LOG.warning(_LW('Volume %s does not have provider_location '
-                            'specified, skipping'), volume.name)
+            LOG.warning('Volume %s does not have provider_location '
+                        'specified, skipping', volume.name)
             return
 
         info_path = self._local_path_volume_info(volume)
@@ -531,7 +531,10 @@ class NfsDriver(remotefs.RemoteFSSnapDriver, driver.ExtendVD):
 
     def _qemu_img_info(self, path, volume_name):
         return super(NfsDriver, self)._qemu_img_info_base(
-            path, volume_name, self.configuration.nfs_mount_point_base)
+            path,
+            volume_name,
+            self.configuration.nfs_mount_point_base,
+            run_as_root=True)
 
     def _check_snapshot_support(self, setup_checking=False):
         """Ensure snapshot support is enabled in config."""
@@ -550,14 +553,14 @@ class NfsDriver(remotefs.RemoteFSSnapDriver, driver.ExtendVD):
             LOG.error(msg)
             raise exception.VolumeDriverException(message=msg)
 
-    @locked_volume_id_operation
+    @coordination.synchronized('{self.driver_prefix}-{snapshot.volume.id}')
     def create_snapshot(self, snapshot):
         """Apply locking to the create snapshot operation."""
 
         self._check_snapshot_support()
         return self._create_snapshot(snapshot)
 
-    @locked_volume_id_operation
+    @coordination.synchronized('{self.driver_prefix}-{snapshot.volume.id}')
     def delete_snapshot(self, snapshot):
         """Apply locking to the delete snapshot operation."""
 

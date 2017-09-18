@@ -1,4 +1,4 @@
-# Copyright 2015 Datera
+# Copyright 2017 Datera
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -14,17 +14,20 @@
 #    under the License.
 
 import mock
+import six
 
 from cinder import context
 from cinder import exception
 from cinder import test
 from cinder.volume import configuration as conf
+from cinder.volume.drivers.datera import datera_common as datc
 from cinder.volume.drivers.datera import datera_iscsi as datera
 from cinder.volume import volume_types
 
 
-datera.datc.DEFAULT_SI_SLEEP = 0
-datera.datc.DEFAULT_SNAP_SLEEP = 0
+datc.DEFAULT_SI_SLEEP = 0
+datc.DEFAULT_SI_SLEEP_API_2 = 0
+datc.DEFAULT_SNAP_SLEEP = 0
 URL_TEMPLATES = datera.datc.URL_TEMPLATES
 OS_PREFIX = datera.datc.OS_PREFIX
 UNMANAGE_PREFIX = datera.datc.UNMANAGE_PREFIX
@@ -50,6 +53,8 @@ class DateraVolumeTestCasev2(test.TestCase):
         self.cfg.datera_tenant_id = 'test-tenant'
         self.cfg.driver_client_cert = None
         self.cfg.driver_client_cert_key = None
+        self.cfg.datera_disable_profiler = False
+        self.cfg.driver_use_ssl = False
 
         mock_exec = mock.Mock()
         mock_exec.return_value = ('', '')
@@ -59,18 +64,16 @@ class DateraVolumeTestCasev2(test.TestCase):
         self.driver.set_initialized()
         self.driver.configuration.get = _config_getter
         self.volume = _stub_volume()
-        self.api_patcher = mock.patch('cinder.volume.drivers.datera.'
-                                      'datera_iscsi.DateraDriver.'
-                                      '_issue_api_request')
         self.driver._request = mock.Mock()
         m = mock.Mock()
         m.json.return_value = {'api_versions': ['v2']}
         self.driver._request.return_value = m
-        self.mock_api = self.api_patcher.start()
+        self.mock_api = mock.Mock()
+        self.driver._issue_api_request = self.mock_api
         self._apiv = "2"
         self._tenant = None
 
-        self.addCleanup(self.api_patcher.stop)
+        # self.addCleanup(self.api_patcher.stop)
 
     def test_volume_create_success(self):
         self.mock_api.return_value = stub_single_ai
@@ -164,6 +167,31 @@ class DateraVolumeTestCasev2(test.TestCase):
                           source_volume)
 
     def test_delete_volume_success(self):
+        if self._apiv == '2':
+            self.mock_api.side_effect = [
+                {},
+                self._generate_fake_api_request()(
+                    "acl_policy", api_version=self._apiv, tenant=self._tenant),
+                self._generate_fake_api_request()(
+                    "ig_group", api_version=self._apiv, tenant=self._tenant),
+                {},
+                {},
+                {},
+                {},
+                {}]
+        else:
+            self.mock_api.side_effect = [
+                {},
+                {},
+                self._generate_fake_api_request()(
+                    "acl_policy", api_version=self._apiv, tenant=self._tenant),
+                self._generate_fake_api_request()(
+                    "ig_group", api_version=self._apiv, tenant=self._tenant),
+                {},
+                {},
+                {},
+                {},
+                {}]
         self.assertIsNone(self.driver.delete_volume(self.volume))
 
     def test_delete_volume_not_found(self):
@@ -312,6 +340,10 @@ class DateraVolumeTestCasev2(test.TestCase):
                           self.driver.create_snapshot, snapshot)
 
     def test_delete_snapshot_success(self):
+        if self._apiv == '2':
+            self.mock_api.return_value = stub_return_snapshots
+        else:
+            self.mock_api.return_value = stub_return_snapshots_21
         snapshot = _stub_snapshot(volume_id=self.volume['id'])
         self.assertIsNone(self.driver.delete_snapshot(snapshot))
 
@@ -350,6 +382,32 @@ class DateraVolumeTestCasev2(test.TestCase):
         self.assertIsNone(
             self.driver.create_volume_from_snapshot(self.volume, snapshot))
 
+    @mock.patch.object(datera.DateraDriver, 'extend_volume')
+    def test_create_volume_from_snapshot_success_larger(self, mock_extend):
+        snapshot = _stub_snapshot(volume_id=self.volume['id'])
+        extend_volume = _stub_volume(size=2)
+
+        mock_extend = mock.Mock()
+        if self._apiv == '2':
+            self.driver._extend_volume_2 = mock_extend
+            self.mock_api.side_effect = [
+                stub_return_snapshots,
+                list(stub_return_snapshots.values())[0],
+                None]
+            self.driver.create_volume_from_snapshot(extend_volume, snapshot)
+            mock_extend.assert_called_once_with(extend_volume,
+                                                extend_volume['size'])
+        else:
+            self.driver._extend_volume_2_1 = mock_extend
+            self.mock_api.side_effect = [
+                self._generate_fake_api_request("tenant"),
+                stub_return_snapshots_21,
+                {'data': stub_return_snapshots_21['data'][0]},
+                None]
+            self.driver.create_volume_from_snapshot(extend_volume, snapshot)
+            mock_extend.assert_called_once_with(extend_volume,
+                                                extend_volume['size'])
+
     def test_create_volume_from_snapshot_fails(self):
         self.mock_api.side_effect = exception.DateraAPIException
         snapshot = _stub_snapshot(volume_id=self.volume['id'])
@@ -359,6 +417,17 @@ class DateraVolumeTestCasev2(test.TestCase):
 
     def test_extend_volume_success(self):
         volume = _stub_volume(size=1)
+        self.mock_api.side_effect = [
+            stub_get_export,
+            {'data': stub_get_export},
+            self._generate_fake_api_request()(
+                "acl_policy", api_version=self._apiv, tenant=self._tenant),
+            self._generate_fake_api_request()(
+                "ig_group", api_version=self._apiv, tenant=self._tenant),
+            self._generate_fake_api_request()(
+                "acl_policy", api_version=self._apiv, tenant=self._tenant),
+            {}, {}, {}, {}, {}, {}, stub_get_export,
+            {'data': stub_get_export}]
         self.assertIsNone(self.driver.extend_volume(volume, 2))
 
     def test_extend_volume_fails(self):
@@ -447,7 +516,8 @@ class DateraVolumeTestCasev2(test.TestCase):
     def test_get_manageable_volumes(self):
         if self._apiv == '2':
             self.mock_api.return_value = non_cinder_ais
-            self.assertEqual(
+            six.assertCountEqual(
+                self,
                 self.driver.get_manageable_volumes(
                     {}, "", 10, 0, "", ""),
                 [{'cinder_id': None,
@@ -1152,9 +1222,11 @@ def _stub_volume(*args, **kwargs):
 def _stub_snapshot(*args, **kwargs):
     uuid = u'0bb34f0c-fea4-48e0-bf96-591120ac7e3c'
     name = u'snapshot-00000001'
+    size = 1
     volume = {}
     volume['id'] = kwargs.get('id', uuid)
     volume['display_name'] = kwargs.get('display_name', name)
+    volume['volume_size'] = kwargs.get('size', size)
     volume['volume_id'] = kwargs.get('volume_id', None)
     return volume
 

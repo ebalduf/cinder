@@ -16,6 +16,7 @@
 import base64
 import json
 import random
+import six
 import time
 import uuid
 
@@ -25,7 +26,7 @@ from oslo_utils import units
 from six.moves import http_client
 
 from cinder import exception
-from cinder.i18n import _, _LI, _LW
+from cinder.i18n import _
 
 FSS_BATCH = 'batch'
 FSS_PHYSICALRESOURCE = 'physicalresource'
@@ -75,7 +76,7 @@ LOG = logging.getLogger(__name__)
 class RESTProxy(object):
     def __init__(self, config):
         self.fss_host = config.san_ip
-        self.fss_defined_pool = config.fss_pool
+        self.fss_defined_pools = config.fss_pools
         if config.additional_retry_list:
             RETRY_LIST.append(config.additional_retry_list)
 
@@ -117,15 +118,17 @@ class RESTProxy(object):
     def _get_pools_info(self):
         qpools = []
         poolinfo = {}
+        total_capacity_gb = 0
+        used_gb = 0
         try:
             output = self.list_pool_info()
             if output and "storagepools" in output['data']:
                 for item in output['data']['storagepools']:
                     if item['name'].startswith(GROUP_PREFIX) and (
-                            self.fss_defined_pool == item['id']):
+                            six.text_type(item['id']) in
+                            self.fss_defined_pools.values()):
                         poolid = int(item['id'])
                         qpools.append(poolid)
-                        break
 
             if not qpools:
                 msg = _('The storage pool information is empty or not correct')
@@ -134,17 +137,19 @@ class RESTProxy(object):
             # Query pool detail information
             for poolid in qpools:
                 output = self.list_pool_info(poolid)
-                poolinfo['pool_name'] = output['data']['name']
-                poolinfo['total_capacity_gb'] = (
+                total_capacity_gb += (
                     self._convert_size_to_gb(output['data']['size']))
-                poolinfo['used_gb'] = (
-                    self._convert_size_to_gb(output['data']['used']))
-                poolinfo['QoS_support'] = False
-                poolinfo['reserved_percentage'] = 0
+                used_gb += (self._convert_size_to_gb(output['data']['used']))
+
         except Exception:
             msg = (_('Unexpected exception during get pools info.'))
             LOG.exception(msg)
             raise exception.VolumeBackendAPIException(data=msg)
+
+        poolinfo['total_capacity_gb'] = total_capacity_gb
+        poolinfo['used_gb'] = used_gb
+        poolinfo['QoS_support'] = False
+        poolinfo['reserved_percentage'] = 0
 
         return poolinfo
 
@@ -163,13 +168,26 @@ class RESTProxy(object):
                 adapter_type = physicaladapters['type']
         return adapter_type
 
+    def _selected_pool_id(self, pool_info, pool_type=None):
+        _pool_id = 0
+        if len(pool_info) == 1 and "A" in pool_info:
+            _pool_id = pool_info['A']
+        elif len(pool_info) == 2 and "P" in pool_info and "O" in pool_info:
+            if pool_type:
+                if pool_type == "P":
+                    _pool_id = pool_info['P']
+                elif pool_type == "O":
+                    _pool_id = pool_info['O']
+        return _pool_id
+
     def create_vdev(self, volume):
         sizemb = self._convert_size_to_mb(volume["size"])
         volume_name = self._get_fss_volume_name(volume)
-        params = dict(storagepoolid=self.fss_defined_pool,
-                      category="virtual",
+        params = dict(category="virtual",
                       sizemb=sizemb,
                       name=volume_name)
+        pool_id = self._selected_pool_id(self.fss_defined_pools, "P")
+        params.update(storagepoolid=pool_id)
         return volume_name, self.FSS.create_vdev(params)
 
     def create_tv_from_cdp_tag(self, volume_metadata, volume):
@@ -186,13 +204,13 @@ class RESTProxy(object):
         volume_name = self._get_fss_volume_name(volume)
         sizemb = self._convert_size_to_mb(volume['size'])
         params = dict(name=volume_name,
-                      storage=dict(storagepoolid=self.fss_defined_pool,
-                                   sizemb=sizemb),
                       automaticexpansion=dict(enabled=False),
                       timeviewcopy=True)
         if cdp_tag:
             params.update(cdpjournaltag=cdp_tag)
 
+        pool_id = self._selected_pool_id(self.fss_defined_pools, "O")
+        params.update(storage={'storagepoolid': pool_id, 'sizemb': sizemb})
         metadata = self.FSS.create_timeview(tv_vid, params)
         return volume_name, metadata
 
@@ -200,8 +218,7 @@ class RESTProxy(object):
         thin_size = 0
         size = volume["size"]
         sizemb = self._convert_size_to_mb(size)
-        params = dict(storagepoolid=self.fss_defined_pool,
-                      category="virtual")
+        params = {'category': 'virtual'}
 
         if 'thinprovisioned' in volume_metadata:
             if volume_metadata['thinprovisioned'] is False:
@@ -232,9 +249,39 @@ class RESTProxy(object):
             params.update(thinprovisioning=thin_disk)
             params.update(sizemb=thin_size)
 
+        pool_id = self._selected_pool_id(self.fss_defined_pools, "P")
+        params.update(storagepoolid=pool_id)
         volume_name = self._get_fss_volume_name(volume)
         params.update(name=volume_name)
         return volume_name, self.FSS.create_vdev(params)
+
+    def create_vdev_with_mirror(self, volume_metadata, volume):
+
+        if 'mirrored' in volume_metadata:
+            if volume_metadata['mirrored'] is False:
+                msg = _('If you want to create a mirrored volume, this param '
+                        'must be True.')
+                raise exception.VolumeBackendAPIException(data=msg)
+
+        sizemb = self._convert_size_to_mb(volume["size"])
+        volume_name = self._get_fss_volume_name(volume)
+        params = {'category': 'virtual', 'sizemb': sizemb, 'name': volume_name}
+
+        pool_id = self._selected_pool_id(self.fss_defined_pools, "P")
+        params.update(storagepoolid=pool_id)
+        metadata = self.FSS.create_vdev(params)
+        if metadata:
+            vid = self._get_fss_vid_from_name(volume_name, FSS_SINGLE_TYPE)
+            mirror_params = {'category': 'virtual',
+                             'selectioncriteria': 'anydrive',
+                             'mirrortarget': "virtual"}
+
+            pool_id = self._selected_pool_id(self.fss_defined_pools, "O")
+            mirror_params.update(storagepoolid=pool_id)
+
+            ret = self.FSS.create_mirror(vid, mirror_params)
+            if ret:
+                return volume_name, metadata
 
     def _get_fss_vid_from_name(self, volume_name, fss_type=None):
         vid = []
@@ -282,7 +329,6 @@ class RESTProxy(object):
         return vidlist
 
     def clone_volume(self, new_vol_name, source_volume_name):
-        params = dict(storagepoolid=self.fss_defined_pool)
         volume_metadata = {}
         new_vid = ''
         vid = self._get_fss_vid_from_name(source_volume_name, FSS_SINGLE_TYPE)
@@ -291,7 +337,8 @@ class RESTProxy(object):
             selectioncriteria='anydrive',
             mirrortarget="virtual"
         )
-        mirror_params.update(params)
+        pool_id = self._selected_pool_id(self.fss_defined_pools, "O")
+        mirror_params.update(storagepoolid=pool_id)
         ret1 = self.FSS.create_mirror(vid, mirror_params)
 
         if ret1:
@@ -331,12 +378,11 @@ class RESTProxy(object):
 
         (snap, tm_policy, vdev_size) = (self.FSS.
                                         _check_if_snapshot_tm_exist(vid))
-
         if not snap:
             self.create_vdev_snapshot(vid, self._convert_size_to_mb(size))
         if not tm_policy:
-            self.FSS.create_timemark_policy(
-                vid, storagepoolid=self.fss_defined_pool)
+            pool_id = self._selected_pool_id(self.fss_defined_pools, "O")
+            self.FSS.create_timemark_policy(vid, storagepoolid=pool_id)
         if not snap_name:
             snap_name = "snap-%s" % time.strftime('%Y%m%d%H%M%S')
 
@@ -409,8 +455,9 @@ class RESTProxy(object):
             raise exception.VolumeBackendAPIException(data=msg)
 
         timestamp = '%s_%s' % (vid, rawtimestamp)
+        pool_id = self._selected_pool_id(self.fss_defined_pools, "P")
         output = self.FSS.copy_timemark(
-            timestamp, storagepoolid=self.fss_defined_pool, name=new_vol_name)
+            timestamp, storagepoolid=pool_id, name=new_vol_name)
         if output['rc'] == 0:
             vid = output['id']
             self.FSS._random_sleep()
@@ -468,12 +515,13 @@ class RESTProxy(object):
         return self.create_vdev_snapshot(vid, self._convert_size_to_mb(size))
 
     def create_vdev_snapshot(self, vid, size):
+        pool_id = self._selected_pool_id(self.fss_defined_pools, "O")
         params = dict(
             idlist=[vid],
             selectioncriteria='anydrive',
-            policy='alwayswrite',
+            policy='preserveall',
             sizemb=size,
-            storagepoolid=self.fss_defined_pool
+            storagepoolid=pool_id
         )
         return self.FSS.create_vdev_snapshot(params)
 
@@ -518,6 +566,7 @@ class RESTProxy(object):
         gsnap_name = self._encode_name(cgsnapshot['id'])
         gid = self._get_fss_gid_from_name(group_name)
         vidlist = self._get_vdev_id_from_group_id(gid)
+        pool_id = self._selected_pool_id(self.fss_defined_pools, "O")
 
         for vid in vidlist:
             (snap, tm_policy, sizemb) = (self.FSS.
@@ -525,8 +574,7 @@ class RESTProxy(object):
             if not snap:
                 self.create_vdev_snapshot(vid, sizemb)
             if not tm_policy:
-                self.FSS.create_timemark_policy(
-                    vid, storagepoolid=self.fss_defined_pool)
+                self.FSS.create_timemark_policy(vid, storagepoolid=pool_id)
 
         group_tm_policy = self.FSS._check_if_group_tm_enabled(gid)
         if not group_tm_policy:
@@ -760,7 +808,7 @@ class RESTProxy(object):
                 if (err.code == 2415984845 and "XML_ERROR_CLIENT_EXIST"
                                                in err.text):
                     ctxt.reraise = False
-                LOG.warning(_LW('Assign volume failed with message: %(msg)s.'),
+                LOG.warning('Assign volume failed with message: %(msg)s.',
                             {"msg": err.reason})
         finally:
             lun = self.FSS._get_fc_client_info(client_id, vid)
@@ -804,8 +852,8 @@ class RESTProxy(object):
                         "XML_ERROR_VIRTUAL_DEV_NOT_ASSIGNED_TO_iSCSI_TARGET"
                         in err.text):
                     ctxt.reraise = False
-                LOG.warning(_LW('Disconnection failed with message: '
-                                "%(msg)s."), {"msg": err.reason})
+                LOG.warning('Disconnection failed with message: %(msg)s.',
+                            {"msg": err.reason})
         return client_id
 
     def initialize_connection_iscsi(self, volume, connector, fss_hosts):
@@ -842,7 +890,7 @@ class RESTProxy(object):
                         "XML_ERROR_VIRTUAL_DEV_ASSIGNED_TO_iSCSI_TARGET" in
                         err.text):
                     ctxt.reraise = False
-                LOG.warning(_LW("Assign volume failed with message: %(msg)s."),
+                LOG.warning("Assign volume failed with message: %(msg)s.",
                             {"msg": err.reason})
         finally:
             (lun, target_name) = self.FSS._get_iscsi_target_info(client_id,
@@ -872,8 +920,8 @@ class RESTProxy(object):
                         "XML_ERROR_VIRTUAL_DEV_NOT_ASSIGNED_TO_iSCSI_TARGET"
                         in err.text):
                     ctxt.reraise = False
-                LOG.warning(_LW("Disconnection failed with message: "
-                                "%(msg)s."), {"msg": err.reason})
+                LOG.warning("Disconnection failed with message: %(msg)s.",
+                            {"msg": err.reason})
         finally:
             is_empty = self.FSS._check_host_mapping_status(client_id,
                                                            target_id)
@@ -914,8 +962,8 @@ class RESTProxy(object):
         except FSSHTTPError as err:
             with excutils.save_and_reraise_exception() as ctxt:
                 ctxt.reraise = False
-            LOG.warning(_LW("Volume manage_existing_volume was unable "
-                            "to rename the volume, error message: %s."),
+            LOG.warning("Volume manage_existing_volume was unable "
+                        "to rename the volume, error message: %s.",
                         err.reason)
 
     def unmanage(self, volume):
@@ -925,8 +973,8 @@ class RESTProxy(object):
             vid = self._get_fss_vid_from_name(volume_name, FSS_SINGLE_TYPE)
             self.rename_vdev(vid, unmanaged_vol_name)
         except FSSHTTPError as err:
-            LOG.warning(_LW("Volume unmanage was unable to rename the volume,"
-                            " error message: %(msg)s."), {"msg": err.reason})
+            LOG.warning("Volume unmanage was unable to rename the volume,"
+                        " error message: %(msg)s.", {"msg": err.reason})
 
 
 class FSSRestCommon(object):
@@ -956,11 +1004,11 @@ class FSSRestCommon(object):
         connection = http_client.HTTPConnection(self.hostip, 80, timeout=60)
 
         if self.fss_debug:
-            LOG.info(_LI("[FSS_RESTAPI]====%(method)s@url=%(url)s ===="
-                         "@request_body=%(body)s===") % {
-                     "method": method,
-                     "url": url,
-                     "body": request_body})
+            LOG.info("[FSS_RESTAPI]====%(method)s@url=%(url)s ===="
+                     "@request_body=%(body)s===",
+                     {"method": method,
+                      "url": url,
+                      "body": request_body})
 
         attempt = 1
         while True:
@@ -976,12 +1024,12 @@ class FSSRestCommon(object):
                     pass
 
             if self.fss_debug:
-                LOG.info(_LI("[FSS_RESTAPI]==@json_data: %s =="), json_data)
+                LOG.info("[FSS_RESTAPI]==@json_data: %s ==", json_data)
 
             if response.status == 200:
                 return json_data
             elif response.status == 404:
-                msg = (_('FSS rest api return failed, method=%(method)s, '
+                msg = (_('FSS REST API return failed, method=%(method)s, '
                          'uri=%(url)s, response=%(response)s') % {
                        "method": method,
                        "url": url,
@@ -1002,7 +1050,7 @@ class FSSRestCommon(object):
                     )
                     raise FSSHTTPError(err_target, err)
                 attempt += 1
-                LOG.warning(_LW("Retry with rc: %s."), err_code)
+                LOG.warning("Retry with rc: %s.", err_code)
                 self._random_sleep(RETRY_INTERVAL)
                 if err_code == 107:
                     self.fss_login()
@@ -1146,7 +1194,8 @@ class FSSRestCommon(object):
         params = dict(
             idlist=[vid],
             automatic=dict(enabled=False),
-            maxtimemarkcount=MAXSNAPSHOTS
+            maxtimemarkcount=MAXSNAPSHOTS,
+            retentionpolicy=dict(mode='all'),
         )
         if kwargs.get('storagepoolid'):
             params.update(kwargs)

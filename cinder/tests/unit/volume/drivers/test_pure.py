@@ -19,6 +19,7 @@ import sys
 import ddt
 import mock
 from oslo_utils import units
+from six.moves import http_client
 
 from cinder import exception
 from cinder import test
@@ -59,7 +60,7 @@ GET_ARRAY_SECONDARY = {"version": "99.9.9",
 
 REPLICATION_TARGET_TOKEN = "12345678-abcd-1234-abcd-1234567890ab"
 REPLICATION_PROTECTION_GROUP = "cinder-group"
-REPLICATION_INTERVAL_IN_SEC = 900
+REPLICATION_INTERVAL_IN_SEC = 3600
 REPLICATION_RETENTION_SHORT_TERM = 14400
 REPLICATION_RETENTION_LONG_TERM = 6
 REPLICATION_RETENTION_LONG_TERM_PER_DAY = 3
@@ -513,9 +514,6 @@ class PureBaseSharedDriverTestCase(PureDriverTestCase):
         self.purestorage_module.FlashArray.side_effect = None
         self.array2.get_rest_version.return_value = '1.4'
 
-    def tearDown(self):
-        super(PureBaseSharedDriverTestCase, self).tearDown()
-
 
 @ddt.ddt
 class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
@@ -790,7 +788,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
         self.array.list_volume_private_connections.return_value = {}
         self.array.destroy_volume.side_effect = \
             self.purestorage_module.PureHTTPError(
-                code=400,
+                code=http_client.BAD_REQUEST,
                 text="Volume does not exist"
             )
         self.driver.delete_volume(VOLUME)
@@ -805,8 +803,8 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
         self.array.assert_has_calls(expected)
         self.assertFalse(self.array.eradicate_volume.called)
         self.array.destroy_volume.side_effect = (
-            self.purestorage_module.PureHTTPError(code=400, text="does not "
-                                                                 "exist"))
+            self.purestorage_module.PureHTTPError(code=http_client.BAD_REQUEST,
+                                                  text="does not exist"))
         self.driver.delete_volume(VOLUME)
         self.array.destroy_volume.side_effect = None
         self.assert_error_propagates([self.array.destroy_volume],
@@ -864,7 +862,8 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
         self.array.assert_has_calls(expected)
         self.assertFalse(self.array.eradicate_volume.called)
         self.array.destroy_volume.side_effect = (
-            self.purestorage_module.PureHTTPError(code=400, text=error_text))
+            self.purestorage_module.PureHTTPError(code=http_client.BAD_REQUEST,
+                                                  text=error_text))
         self.driver.delete_snapshot(SNAPSHOT)
         self.array.destroy_volume.side_effect = None
         self.assert_error_propagates([self.array.destroy_volume],
@@ -917,7 +916,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
         # Branch where connection is missing and the host is still deleted
         self.array.reset_mock()
         self.array.disconnect_host.side_effect = \
-            self.purestorage_module.PureHTTPError(code=400,
+            self.purestorage_module.PureHTTPError(code=http_client.BAD_REQUEST,
                                                   text="is not connected")
         self.driver.terminate_connection(VOLUME, ISCSI_CONNECTOR)
         self.array.disconnect_host.assert_called_with(PURE_HOST_NAME, vol_name)
@@ -928,7 +927,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
         self.array.reset_mock()
         self.array.disconnect_host.side_effect = \
             self.purestorage_module.PureHTTPError(
-                code=500,
+                code=http_client.INTERNAL_SERVER_ERROR,
                 text="Some other error"
             )
         self.assertRaises(self.purestorage_module.PureHTTPError,
@@ -945,7 +944,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
         self.array.reset_mock()
         self.array.list_host_connections.return_value = []
         self.array.delete_host.side_effect = \
-            self.purestorage_module.PureHTTPError(code=400,
+            self.purestorage_module.PureHTTPError(code=http_client.BAD_REQUEST,
                                                   text=error)
         self.driver.terminate_connection(VOLUME, ISCSI_CONNECTOR)
         self.array.disconnect_host.assert_called_with(PURE_HOST_NAME, vol_name)
@@ -964,6 +963,27 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
             mock_host,
             'Host cannot be deleted due to existing connections.'
         )
+
+    def test_terminate_connection_no_connector_with_host(self):
+        # Show the volume having a connection
+        self.array.list_volume_private_connections.return_value = \
+            [VOLUME_CONNECTIONS[0]]
+
+        self.driver.terminate_connection(VOLUME, None)
+        self.array.disconnect_host.assert_called_with(
+            VOLUME_CONNECTIONS[0]["host"],
+            VOLUME_CONNECTIONS[0]["name"]
+        )
+
+    def test_terminate_connection_no_connector_no_host(self):
+        vol = fake_volume.fake_volume_obj(None, name=VOLUME["name"])
+
+        # Show the volume having a connection
+        self.array.list_volume_private_connections.return_value = []
+
+        # Make sure
+        self.driver.terminate_connection(vol, None)
+        self.array.disconnect_host.assert_not_called()
 
     def test_extend_volume(self):
         vol_name = VOLUME["name"] + "-cinder"
@@ -1145,7 +1165,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
 
         self.array.destroy_pgroup.side_effect = \
             self.purestorage_module.PureHTTPError(
-                code=400,
+                code=http_client.BAD_REQUEST,
                 text="Protection group has been destroyed."
             )
         self.driver.delete_consistencygroup(mock_context,
@@ -1157,7 +1177,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
 
         self.array.destroy_pgroup.side_effect = \
             self.purestorage_module.PureHTTPError(
-                code=400,
+                code=http_client.BAD_REQUEST,
                 text="Protection group does not exist"
             )
         self.driver.delete_consistencygroup(mock_context,
@@ -1169,7 +1189,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
 
         self.array.destroy_pgroup.side_effect = \
             self.purestorage_module.PureHTTPError(
-                code=400,
+                code=http_client.BAD_REQUEST,
                 text="Some other error"
             )
         self.assertRaises(self.purestorage_module.PureHTTPError,
@@ -1180,7 +1200,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
 
         self.array.destroy_pgroup.side_effect = \
             self.purestorage_module.PureHTTPError(
-                code=500,
+                code=http_client.INTERNAL_SERVER_ERROR,
                 text="Another different error"
             )
         self.assertRaises(self.purestorage_module.PureHTTPError,
@@ -1315,7 +1335,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
 
         self.array.destroy_pgroup.side_effect = \
             self.purestorage_module.PureHTTPError(
-                code=400,
+                code=http_client.BAD_REQUEST,
                 text="Protection group snapshot has been destroyed."
             )
         self.driver.delete_cgsnapshot(mock_context, mock_cgsnap, [mock_snap])
@@ -1324,7 +1344,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
 
         self.array.destroy_pgroup.side_effect = \
             self.purestorage_module.PureHTTPError(
-                code=400,
+                code=http_client.BAD_REQUEST,
                 text="Protection group snapshot does not exist"
             )
         self.driver.delete_cgsnapshot(mock_context, mock_cgsnap, [mock_snap])
@@ -1333,7 +1353,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
 
         self.array.destroy_pgroup.side_effect = \
             self.purestorage_module.PureHTTPError(
-                code=400,
+                code=http_client.BAD_REQUEST,
                 text="Some other error"
             )
         self.assertRaises(self.purestorage_module.PureHTTPError,
@@ -1344,7 +1364,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
 
         self.array.destroy_pgroup.side_effect = \
             self.purestorage_module.PureHTTPError(
-                code=500,
+                code=http_client.INTERNAL_SERVER_ERROR,
                 text="Another different error"
             )
         self.assertRaises(self.purestorage_module.PureHTTPError,
@@ -1411,7 +1431,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
         self.array.get_volume.side_effect = \
             self.purestorage_module.PureHTTPError(
                 text="Volume does not exist.",
-                code=400
+                code=http_client.BAD_REQUEST
             )
         self.assertRaises(exception.ManageExistingInvalidReference,
                           self.driver.manage_existing,
@@ -1479,7 +1499,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
         self.array.rename_volume.side_effect = \
             self.purestorage_module.PureHTTPError(
                 text="Volume does not exist.",
-                code=400
+                code=http_client.BAD_REQUEST
             )
 
         self.driver.unmanage(VOLUME)
@@ -1537,7 +1557,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
         self.array.get_volume.side_effect = \
             self.purestorage_module.PureHTTPError(
                 text="Volume does not exist.",
-                code=400
+                code=http_client.BAD_REQUEST
             )
         self.assertRaises(exception.ManageExistingInvalidReference,
                           self.driver.manage_existing_snapshot,
@@ -1596,7 +1616,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
         self.array.get_volume.side_effect = \
             self.purestorage_module.PureHTTPError(
                 text="Volume does not exist.",
-                code=400
+                code=http_client.BAD_REQUEST
             )
         self.assertRaises(exception.ManageExistingInvalidReference,
                           self.driver.manage_existing_snapshot_get_size,
@@ -1624,7 +1644,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
         self.array.rename_volume.side_effect = \
             self.purestorage_module.PureHTTPError(
                 text="Snapshot does not exist.",
-                code=400
+                code=http_client.BAD_REQUEST
             )
 
         self.driver.unmanage_snapshot(SNAPSHOT)
@@ -1853,7 +1873,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
 
     def test_does_pgroup_exist_not_exists(self):
         self.array.get_pgroup.side_effect = (
-            self.purestorage_module.PureHTTPError(code=400,
+            self.purestorage_module.PureHTTPError(code=http_client.BAD_REQUEST,
                                                   text="does not exist"))
         exists = self.driver._does_pgroup_exist(self.array, "some_pgroup")
         self.assertFalse(exists)
@@ -2045,7 +2065,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
             self, mock_get_volume_type):
         mock_get_volume_type.return_value = REPLICATED_VOL_TYPE
         self.array.set_pgroup.side_effect = FakePureStorageHTTPError(
-            code=400, text='already belongs to')
+            code=http_client.BAD_REQUEST, text='already belongs to')
         self.driver._enable_replication_if_needed(self.array, VOLUME)
         self.array.set_pgroup.assert_called_with(
             self.driver._replication_pg_name,
@@ -2088,10 +2108,11 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
         array2_v1_3.get_volume.return_value = REPLICATED_VOLUME_SNAPS
 
         context = mock.MagicMock()
-        new_active_id, volume_updates = self.driver.failover_host(
+        new_active_id, volume_updates, __ = self.driver.failover_host(
             context,
             REPLICATED_VOLUME_OBJS,
-            None
+            None,
+            []
         )
 
         self.assertEqual(secondary_device_id, new_active_id)
@@ -2148,7 +2169,7 @@ class PureBaseVolumeDriverTestCase(PureBaseSharedDriverTestCase):
 
     def test_disable_replication_already_disabled(self):
         self.array.set_pgroup.side_effect = FakePureStorageHTTPError(
-            code=400, text='could not be found')
+            code=http_client.BAD_REQUEST, text='could not be found')
         self.driver._disable_replication(VOLUME)
         self.array.set_pgroup.assert_called_with(
             self.driver._replication_pg_name,
@@ -2375,7 +2396,7 @@ class PureISCSIDriverTestCase(PureDriverTestCase):
             [expected, {"host": "extra", "lun": 2}]
         self.array.connect_host.side_effect = \
             self.purestorage_module.PureHTTPError(
-                code=400,
+                code=http_client.BAD_REQUEST,
                 text="Connection already exists"
             )
         actual = self.driver._connect(VOLUME, ISCSI_CONNECTOR)
@@ -2389,7 +2410,7 @@ class PureISCSIDriverTestCase(PureDriverTestCase):
         self.array.list_volume_private_connections.return_value = {}
         self.array.connect_host.side_effect = \
             self.purestorage_module.PureHTTPError(
-                code=400,
+                code=http_client.BAD_REQUEST,
                 text="Connection already exists"
             )
         self.assertRaises(exception.PureDriverException, self.driver._connect,
@@ -2401,10 +2422,11 @@ class PureISCSIDriverTestCase(PureDriverTestCase):
     def test_connect_already_connected_list_hosts_exception(self, mock_host):
         mock_host.return_value = PURE_HOST
         self.array.list_volume_private_connections.side_effect = \
-            self.purestorage_module.PureHTTPError(code=400, text="")
+            self.purestorage_module.PureHTTPError(code=http_client.BAD_REQUEST,
+                                                  text="")
         self.array.connect_host.side_effect = \
             self.purestorage_module.PureHTTPError(
-                code=400,
+                code=http_client.BAD_REQUEST,
                 text="Connection already exists"
             )
         self.assertRaises(self.purestorage_module.PureHTTPError,
@@ -2422,7 +2444,7 @@ class PureISCSIDriverTestCase(PureDriverTestCase):
 
         self.array.set_host.side_effect = (
             self.purestorage_module.PureHTTPError(
-                code=400, text='Host does not exist.'))
+                code=http_client.BAD_REQUEST, text='Host does not exist.'))
 
         # Because we mocked out retry make sure we are raising the right
         # exception to allow for retries to happen.
@@ -2436,7 +2458,8 @@ class PureISCSIDriverTestCase(PureDriverTestCase):
 
         self.array.create_host.side_effect = (
             self.purestorage_module.PureHTTPError(
-                code=400, text='The specified IQN is already in use.'))
+                code=http_client.BAD_REQUEST,
+                text='The specified IQN is already in use.'))
 
         # Because we mocked out retry make sure we are raising the right
         # exception to allow for retries to happen.
@@ -2450,7 +2473,7 @@ class PureISCSIDriverTestCase(PureDriverTestCase):
 
         self.array.create_host.side_effect = (
             self.purestorage_module.PureHTTPError(
-                code=400, text='Host already exists.'))
+                code=http_client.BAD_REQUEST, text='Host already exists.'))
 
         # Because we mocked out retry make sure we are raising the right
         # exception to allow for retries to happen.
@@ -2578,7 +2601,7 @@ class PureFCDriverTestCase(PureDriverTestCase):
             [expected, {"host": "extra", "lun": 2}]
         self.array.connect_host.side_effect = \
             self.purestorage_module.PureHTTPError(
-                code=400,
+                code=http_client.BAD_REQUEST,
                 text="Connection already exists"
             )
         actual = self.driver._connect(VOLUME, FC_CONNECTOR)
@@ -2592,7 +2615,7 @@ class PureFCDriverTestCase(PureDriverTestCase):
         self.array.list_volume_private_connections.return_value = {}
         self.array.connect_host.side_effect = \
             self.purestorage_module.PureHTTPError(
-                code=400,
+                code=http_client.BAD_REQUEST,
                 text="Connection already exists"
             )
         self.assertRaises(exception.PureDriverException, self.driver._connect,
@@ -2604,10 +2627,11 @@ class PureFCDriverTestCase(PureDriverTestCase):
     def test_connect_already_connected_list_hosts_exception(self, mock_host):
         mock_host.return_value = PURE_HOST
         self.array.list_volume_private_connections.side_effect = \
-            self.purestorage_module.PureHTTPError(code=400, text="")
+            self.purestorage_module.PureHTTPError(code=http_client.BAD_REQUEST,
+                                                  text="")
         self.array.connect_host.side_effect = \
             self.purestorage_module.PureHTTPError(
-                code=400,
+                code=http_client.BAD_REQUEST,
                 text="Connection already exists"
             )
         self.assertRaises(self.purestorage_module.PureHTTPError,
@@ -2621,7 +2645,8 @@ class PureFCDriverTestCase(PureDriverTestCase):
 
         self.array.create_host.side_effect = (
             self.purestorage_module.PureHTTPError(
-                code=400, text='The specified WWN is already in use.'))
+                code=http_client.BAD_REQUEST,
+                text='The specified WWN is already in use.'))
 
         # Because we mocked out retry make sure we are raising the right
         # exception to allow for retries to happen.
@@ -2698,7 +2723,7 @@ class PureVolumeUpdateStatsTestCase(PureBaseSharedDriverTestCase):
             'storage_protocol': None,
             'consistencygroup_support': True,
             'thin_provisioning_support': True,
-            'multiattach': True,
+            'multiattach': False,
             'QoS_support': False,
             'total_capacity_gb': TOTAL_CAPACITY,
             'free_capacity_gb': TOTAL_CAPACITY - USED_SPACE,

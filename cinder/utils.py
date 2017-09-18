@@ -53,7 +53,7 @@ import six
 import webob.exc
 
 from cinder import exception
-from cinder.i18n import _, _LE, _LW
+from cinder.i18n import _
 from cinder import keymgr
 
 
@@ -163,21 +163,24 @@ def check_metadata_properties(metadata=None):
 
     if not metadata:
         metadata = {}
+    if not isinstance(metadata, dict):
+        msg = _("Metadata should be a dict.")
+        raise exception.InvalidInput(msg)
 
     for k, v in metadata.items():
-        if len(k) == 0:
-            msg = _("Metadata property key blank.")
-            LOG.debug(msg)
-            raise exception.InvalidVolumeMetadata(reason=msg)
+        try:
+            check_string_length(k, "Metadata key: %s" % k, min_length=1)
+            check_string_length(v, "Value for metadata key: %s" % k)
+        except exception.InvalidInput as exc:
+            raise exception.InvalidVolumeMetadata(reason=exc)
+        # for backward compatibility
         if len(k) > 255:
             msg = _("Metadata property key %s greater than 255 "
                     "characters.") % k
-            LOG.debug(msg)
             raise exception.InvalidVolumeMetadataSize(reason=msg)
         if len(v) > 255:
             msg = _("Metadata property key %s value greater than "
                     "255 characters.") % k
-            LOG.debug(msg)
             raise exception.InvalidVolumeMetadataSize(reason=msg)
 
 
@@ -289,7 +292,7 @@ def monkey_patch():
     Example: 'cinder.api.ec2.cloud:' \
      cinder.openstack.common.notifier.api.notify_decorator'
 
-    Parameters of the decorator is as follows.
+    Parameters of the decorator are as follows.
     (See cinder.openstack.common.notifier.api.notify_decorator)
 
     :param name: name of the function
@@ -347,8 +350,8 @@ def sanitize_hostname(hostname):
         if isinstance(hostname, six.text_type):
             hostname = hostname.encode('latin-1', 'ignore')
 
-    hostname = re.sub('[ _]', '-', hostname)
-    hostname = re.sub('[^\w.-]+', '', hostname)
+    hostname = re.sub(r'[ _]', '-', hostname)
+    hostname = re.sub(r'[^\w.-]+', '', hostname)
     hostname = hostname.lower()
     hostname = hostname.strip('.-')
 
@@ -398,7 +401,7 @@ def robust_file_write(directory, filename, data):
             os.fsync(dirfd)
     except OSError:
         with excutils.save_and_reraise_exception():
-            LOG.error(_LE("Failed to write persistence file: %(path)s."),
+            LOG.error("Failed to write persistence file: %(path)s.",
                       {'path': os.path.join(directory, filename)})
             if os.path.isfile(tempname):
                 os.unlink(tempname)
@@ -535,7 +538,7 @@ def require_driver_initialized(driver):
     # we can't do anything if the driver didn't init
     if not driver.initialized:
         driver_name = driver.__class__.__name__
-        LOG.error(_LE("Volume driver %s not initialized"), driver_name)
+        LOG.error("Volume driver %s not initialized", driver_name)
         raise exception.DriverNotInitialized()
     else:
         log_unsupported_driver_warning(driver)
@@ -545,9 +548,9 @@ def log_unsupported_driver_warning(driver):
     """Annoy the log about unsupported drivers."""
     if not driver.supported:
         # Check to see if the driver is flagged as supported.
-        LOG.warning(_LW("Volume driver (%(driver_name)s %(version)s) is "
-                        "currently unsupported and may be removed in the "
-                        "next release of OpenStack.  Use at your own risk."),
+        LOG.warning("Volume driver (%(driver_name)s %(version)s) is "
+                    "currently unsupported and may be removed in the "
+                    "next release of OpenStack.  Use at your own risk.",
                     {'driver_name': driver.__class__.__name__,
                      'version': driver.get_version()},
                     resource={'type': 'driver',
@@ -578,7 +581,7 @@ def _get_disk_of_partition(devpath, st=None):
     for '/dev/disk1p1' ('p' is prepended to the partition number if the disk
     name ends with numbers).
     """
-    diskpath = re.sub('(?:(?<=\d)p)?\d+$', '', devpath)
+    diskpath = re.sub(r'(?:(?<=\d)p)?\d+$', '', devpath)
     if diskpath != devpath:
         try:
             st_disk = os.stat(diskpath)
@@ -592,11 +595,11 @@ def _get_disk_of_partition(devpath, st=None):
     return (devpath, st)
 
 
-def get_bool_param(param_string, params):
-    param = params.get(param_string, False)
+def get_bool_param(param_string, params, default=False):
+    param = params.get(param_string, default)
     if not strutils.is_valid_boolstr(param):
-        msg = _('Value %(param)s for %(param_string)s is not a '
-                'boolean.') % {'param': param, 'param_string': param_string}
+        msg = _("Value '%(param)s' for '%(param_string)s' is not "
+                "a boolean.") % {'param': param, 'param_string': param_string}
         raise exception.InvalidParameterValue(err=msg)
 
     return strutils.bool_from_string(param, strict=True)
@@ -933,7 +936,7 @@ def setup_tracing(trace_flags):
     """Set global variables for each trace flag.
 
     Sets variables TRACE_METHOD and TRACE_API, which represent
-    whether to log method and api traces.
+    whether to log methods or api traces.
 
     :param trace_flags: a list of strings
     """
@@ -944,7 +947,7 @@ def setup_tracing(trace_flags):
     except TypeError:  # Handle when trace_flags is None or a test mock
         trace_flags = []
     for invalid_flag in (set(trace_flags) - VALID_TRACE_FLAGS):
-        LOG.warning(_LW('Invalid trace flag: %s'), invalid_flag)
+        LOG.warning('Invalid trace flag: %s', invalid_flag)
     TRACE_METHOD = 'method' in trace_flags
     TRACE_API = 'api' in trace_flags
 
@@ -1035,11 +1038,10 @@ def validate_integer(value, name, min_value=None, max_value=None):
     :param max_length: the max_length of the integer
     :returns: integer
     """
-    try:
-        value = int(value)
-    except (TypeError, ValueError, UnicodeEncodeError):
+    if not strutils.is_int_like(value):
         raise webob.exc.HTTPBadRequest(explanation=(
             _('%s must be an integer.') % name))
+    value = int(value)
 
     if min_value is not None and value < min_value:
         raise webob.exc.HTTPBadRequest(
@@ -1103,3 +1105,35 @@ def if_notifications_enabled(f):
             return f(*args, **kwargs)
         return DO_NOTHING
     return wrapped
+
+
+LOG_LEVELS = ('INFO', 'WARNING', 'ERROR', 'DEBUG')
+
+
+def get_log_method(level_string):
+    level_string = level_string or ''
+    upper_level_string = level_string.upper()
+    if upper_level_string not in LOG_LEVELS:
+        raise exception.InvalidInput(
+            reason=_('%s is not a valid log level.') % level_string)
+    return getattr(logging, upper_level_string)
+
+
+def set_log_levels(prefix, level_string):
+    level = get_log_method(level_string)
+    prefix = prefix or ''
+
+    for k, v in logging.get_loggers().items():
+        if k and k.startswith(prefix):
+            v.logger.setLevel(level)
+
+
+def get_log_levels(prefix):
+    prefix = prefix or ''
+    return {k: logging.logging.getLevelName(v.logger.getEffectiveLevel())
+            for k, v in logging.get_loggers().items()
+            if k and k.startswith(prefix)}
+
+
+def paths_normcase_equal(path_a, path_b):
+    return os.path.normcase(path_a) == os.path.normcase(path_b)

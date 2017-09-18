@@ -22,7 +22,7 @@ from keystoneclient import exceptions
 
 from cinder import db
 from cinder import exception
-from cinder.i18n import _, _LW
+from cinder.i18n import _
 
 CONF = cfg.CONF
 CONF.import_opt('auth_uri', 'keystonemiddleware.auth_token.__init__',
@@ -147,6 +147,7 @@ def update_alloc_to_next_hard_limit(context, resources, deltas, res,
                                     expire, project_id):
     from cinder import quota
     QUOTAS = quota.QUOTAS
+    GROUP_QUOTAS = quota.GROUP_QUOTAS
     reservations = []
     projects = get_project_hierarchy(context, project_id,
                                      parents_as_ids=True).parents
@@ -156,8 +157,12 @@ def update_alloc_to_next_hard_limit(context, resources, deltas, res,
     while projects and not hard_limit_found:
         cur_proj_id = list(projects)[0]
         projects = projects[cur_proj_id]
-        cur_quota_lim = QUOTAS.get_by_project_or_default(
-            context, cur_proj_id, res)
+        if res == 'groups':
+            cur_quota_lim = GROUP_QUOTAS.get_by_project_or_default(
+                context, cur_proj_id, res)
+        else:
+            cur_quota_lim = QUOTAS.get_by_project_or_default(
+                context, cur_proj_id, res)
         hard_limit_found = (cur_quota_lim != -1)
         cur_quota = {res: cur_quota_lim}
         cur_delta = {res: deltas[res]}
@@ -265,9 +270,9 @@ def process_reserve_over_quota(context, over_quota_exception,
 
     for over in overs:
         if 'gigabytes' in over:
-            msg = _LW("Quota exceeded for %(s_pid)s, tried to create "
-                      "%(s_size)dG %(s_resource)s (%(d_consumed)dG of "
-                      "%(d_quota)dG already consumed).")
+            msg = ("Quota exceeded for %(s_pid)s, tried to create "
+                   "%(s_size)dG %(s_resource)s (%(d_consumed)dG of "
+                   "%(d_quota)dG already consumed).")
             LOG.warning(msg, {'s_pid': context.project_id,
                               's_size': size,
                               's_resource': resource[:-1],
@@ -284,9 +289,9 @@ def process_reserve_over_quota(context, over_quota_exception,
                 quota=quotas[over])
         if (resource in OVER_QUOTA_RESOURCE_EXCEPTIONS.keys() and
                 resource in over):
-            msg = _LW("Quota exceeded for %(s_pid)s, tried to create "
-                      "%(s_resource)s (%(d_consumed)d %(s_resource)ss "
-                      "already consumed).")
+            msg = ("Quota exceeded for %(s_pid)s, tried to create "
+                   "%(s_resource)s (%(d_consumed)d %(s_resource)ss "
+                   "already consumed).")
             LOG.warning(msg, {'s_pid': context.project_id,
                               'd_consumed': _consumed(over),
                               's_resource': resource[:-1]})

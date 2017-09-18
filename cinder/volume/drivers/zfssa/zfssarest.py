@@ -20,7 +20,7 @@ from oslo_log import log
 from oslo_service import loopingcall
 
 from cinder import exception
-from cinder.i18n import _, _LE, _LW
+from cinder.i18n import _
 from cinder.volume.drivers.zfssa import restclient
 from cinder.volume.drivers.zfssa import webdavclient
 
@@ -730,7 +730,18 @@ class ZFSSAApi(object):
         svc = '/api/storage/v1/pools/' + pool + '/projects/' + \
             project + "/luns/" + lun
         ret = self.rclient.get(svc)
-        if ret.status != restclient.Status.OK:
+        if ret.status == restclient.Status.NOT_FOUND:
+            # Sometimes a volume exists in cinder for which there is no
+            # corresponding LUN (e.g. LUN create failed). In this case,
+            # allow deletion to complete (without doing anything on the
+            # ZFSSA). Any other exception should be passed up.
+            LOG.warning('LUN with name %(lun)s not found in project '
+                        '%(project)s, pool %(pool)s.',
+                        {'lun': lun,
+                         'project': project,
+                         'pool': pool})
+            raise exception.VolumeNotFound(volume_id=lun)
+        elif ret.status != restclient.Status.OK:
             exception_msg = (_('Error Getting '
                                'Volume: %(lun)s on '
                                'Pool: %(pool)s '
@@ -743,14 +754,29 @@ class ZFSSAApi(object):
                                 'ret.status': ret.status,
                                 'ret.data': ret.data})
             LOG.error(exception_msg)
-            raise exception.VolumeNotFound(volume_id=lun)
+            raise exception.VolumeBackendAPIException(data=exception_msg)
 
         val = json.loads(ret.data)
+
+        # For backward-compatibility with 2013.1.2.x, convert initiatorgroup
+        # and number to lists if they're not already
+        def _listify(item):
+            return item if isinstance(item, list) else [item]
+
+        initiatorgroup = _listify(val['lun']['initiatorgroup'])
+        number = _listify(val['lun']['assignednumber'])
+
+        # Hide special maskAll value when LUN is not currently presented to
+        # any initiatorgroups:
+        if 'com.sun.ms.vss.hg.maskAll' in initiatorgroup:
+            initiatorgroup = []
+            number = []
+
         ret = {
             'name': val['lun']['name'],
             'guid': val['lun']['lunguid'],
-            'number': val['lun']['assignednumber'],
-            'initiatorgroup': val['lun']['initiatorgroup'],
+            'number': number,
+            'initiatorgroup': initiatorgroup,
             'size': val['lun']['volsize'],
             'nodestroy': val['lun']['nodestroy'],
             'targetgroup': val['lun']['targetgroup']
@@ -772,13 +798,13 @@ class ZFSSAApi(object):
 
         ret = self.rclient.get(svc)
         if ret.status != restclient.Status.OK:
-            exception_msg = (_LE('Error Getting '
-                                 'Snapshot: %(snapshot)s of '
-                                 'Volume: %(lun)s in '
-                                 'Pool: %(pool)s, '
-                                 'Project: %(project)s  '
-                                 'Return code: %(ret.status)d, '
-                                 'Message: %(ret.data)s.'),
+            exception_msg = ('Error Getting '
+                             'Snapshot: %(snapshot)s of '
+                             'Volume: %(lun)s in '
+                             'Pool: %(pool)s, '
+                             'Project: %(project)s  '
+                             'Return code: %(ret.status)d, '
+                             'Message: %(ret.data)s.',
                              {'snapshot': snapshot,
                               'lun': lun,
                               'pool': pool,
@@ -797,8 +823,15 @@ class ZFSSAApi(object):
 
     def set_lun_initiatorgroup(self, pool, project, lun, initiatorgroup):
         """Set the initiatorgroup property of a LUN."""
-        if initiatorgroup == '':
+
+        # For backward-compatibility with 2013.1.2.x, set initiatorgroup
+        # to a single string if there's only one item in the list.
+        # Live-migration won't work, but existing functionality should still
+        # work. If the list is empty, substitute the special "maskAll" value.
+        if len(initiatorgroup) == 0:
             initiatorgroup = 'com.sun.ms.vss.hg.maskAll'
+        elif len(initiatorgroup) == 1:
+            initiatorgroup = initiatorgroup[0]
 
         svc = '/api/storage/v1/pools/' + pool + '/projects/' + \
             project + '/luns/' + lun
@@ -806,12 +839,20 @@ class ZFSSAApi(object):
             'initiatorgroup': initiatorgroup
         }
 
+        LOG.debug('Setting LUN initiatorgroup. pool=%(pool)s, '
+                  'project=%(project)s, lun=%(lun)s, '
+                  'initiatorgroup=%(initiatorgroup)s',
+                  {'project': project,
+                   'pool': pool,
+                   'lun': lun,
+                   'initiatorgroup': initiatorgroup})
+
         ret = self.rclient.put(svc, arg)
         if ret.status != restclient.Status.ACCEPTED:
-            LOG.error(_LE('Error Setting Volume: %(lun)s to InitiatorGroup: '
-                          '%(initiatorgroup)s Pool: %(pool)s Project: '
-                          '%(project)s  Return code: %(ret.status)d Message: '
-                          '%(ret.data)s.'),
+            LOG.error('Error Setting Volume: %(lun)s to InitiatorGroup: '
+                      '%(initiatorgroup)s Pool: %(pool)s Project: '
+                      '%(project)s  Return code: %(ret.status)d Message: '
+                      '%(ret.data)s.',
                       {'lun': lun,
                        'initiatorgroup': initiatorgroup,
                        'pool': pool,
@@ -889,7 +930,8 @@ class ZFSSAApi(object):
             LOG.error(exception_msg)
             raise exception.VolumeBackendAPIException(data=exception_msg)
 
-    def clone_snapshot(self, pool, project, lun, snapshot, clone_proj, clone):
+    def clone_snapshot(self, pool, project, lun, snapshot, clone_proj, clone,
+                       specs):
         """clone 'snapshot' to a lun named 'clone' in project 'clone_proj'."""
         svc = '/api/storage/v1/pools/' + pool + '/projects/' + \
             project + '/luns/' + lun + '/snapshots/' + snapshot + '/clone'
@@ -898,6 +940,10 @@ class ZFSSAApi(object):
             'share': clone,
             'nodestroy': True
         }
+        if specs:
+            arg.update(specs)
+        # API fails if volblocksize is specified when cloning
+        arg.pop('volblocksize', '')
 
         ret = self.rclient.put(svc, arg)
         if ret.status != restclient.Status.CREATED:
@@ -995,7 +1041,7 @@ class ZFSSAApi(object):
         svc = "%(base)s/%(prop)s" % {'base': base, 'prop': schema['property']}
         ret = self.rclient.get(svc)
         if ret.status == restclient.Status.OK:
-            LOG.warning(_LW('Property %s already exists.'), schema['property'])
+            LOG.warning('Property %s already exists.', schema['property'])
             return
 
         ret = self.rclient.post(base, schema)
@@ -1265,7 +1311,7 @@ class ZFSSANfsApi(ZFSSAApi):
         try:
             self.webdavclient.request(src_file=filename, method='DELETE')
         except Exception:
-            exception_msg = (_LE('Cannot delete file %s.'), filename)
+            exception_msg = ('Cannot delete file %s.', filename)
             LOG.error(exception_msg)
 
     def set_file_props(self, file, specs):

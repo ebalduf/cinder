@@ -232,14 +232,17 @@ class Volume(cleanable.CinderCleanableObject, base.CinderObject,
 
     def obj_make_compatible(self, primitive, target_version):
         """Make a Volume representation compatible with a target version."""
+        added_fields = (((1, 4), ('cluster', 'cluster_name')),
+                        ((1, 5), ('group', 'group_id')))
+
         # Convert all related objects
         super(Volume, self).obj_make_compatible(primitive, target_version)
 
         target_version = versionutils.convert_version_to_tuple(target_version)
-        # Before v1.4 we didn't have cluster fields so we have to remove them.
-        if target_version < (1, 4):
-            for obj_field in ('cluster', 'cluster_name'):
-                primitive.pop(obj_field, None)
+        for version, remove_fields in added_fields:
+            if target_version < version:
+                for obj_field in remove_fields:
+                    primitive.pop(obj_field, None)
 
     @classmethod
     def _from_db_object(cls, context, volume, db_volume, expected_attrs=None):
@@ -339,12 +342,16 @@ class Volume(cleanable.CinderCleanableObject, base.CinderObject,
     def save(self):
         updates = self.cinder_obj_get_changes()
         if updates:
-            if 'consistencygroup' in updates:
-                # NOTE(xyang): Allow this to pass if 'consistencygroup' is
-                # set to None. This is to support backward compatibility.
-                if updates.get('consistencygroup'):
-                    raise exception.ObjectActionError(
-                        action='save', reason=_('consistencygroup changed'))
+            # NOTE(xyang): Allow this to pass if 'consistencygroup' is
+            # set to None. This is to support backward compatibility.
+            # Also remove 'consistencygroup' from updates because
+            # consistencygroup is the name of a relationship in the ORM
+            # Volume model, so SQLA tries to do some kind of update of
+            # the foreign key based on the provided updates if
+            # 'consistencygroup' is in updates.
+            if updates.pop('consistencygroup', None):
+                raise exception.ObjectActionError(
+                    action='save', reason=_('consistencygroup changed'))
             if 'group' in updates:
                 raise exception.ObjectActionError(
                     action='save', reason=_('group changed'))
@@ -507,6 +514,13 @@ class Volume(cleanable.CinderCleanableObject, base.CinderObject,
         dest_volume.save()
         return dest_volume
 
+    def get_latest_snapshot(self):
+        """Get volume's latest snapshot"""
+        snapshot_db = db.snapshot_get_latest_for_volume(self._context, self.id)
+        snapshot = objects.Snapshot(self._context)
+        return snapshot._from_db_object(self._context,
+                                        snapshot, snapshot_db)
+
     @staticmethod
     def _is_cleanable(status, obj_version):
         # Before 1.6 we didn't have workers table, so cleanup wasn't supported.
@@ -544,6 +558,9 @@ class Volume(cleanable.CinderCleanableObject, base.CinderObject,
         self.obj_reset_changes(
             list(volume_updates.keys()) +
             ['volume_attachment', 'admin_metadata'])
+
+    def is_replicated(self):
+        return self.volume_type and self.volume_type.is_replicated()
 
 
 @base.CinderObjectRegistry.register
@@ -628,13 +645,8 @@ class VolumeList(base.ObjectListBase, base.CinderObject):
                                   volumes, expected_attrs=expected_attrs)
 
     @classmethod
-    def get_volume_summary_all(cls, context):
-        volumes = db.get_volume_summary_all(context)
-        return volumes
-
-    @classmethod
-    def get_volume_summary_by_project(cls, context, project_id):
-        volumes = db.get_volume_summary_by_project(context, project_id)
+    def get_volume_summary(cls, context, project_only):
+        volumes = db.get_volume_summary(context, project_only)
         return volumes
 
     @classmethod

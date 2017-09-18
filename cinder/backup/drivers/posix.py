@@ -23,6 +23,7 @@ import stat
 
 from oslo_config import cfg
 from oslo_log import log as logging
+from oslo_utils import timeutils
 
 from cinder.backup import chunkeddriver
 from cinder import exception
@@ -68,7 +69,7 @@ CONF.register_opts(posixbackup_service_opts)
 class PosixBackupDriver(chunkeddriver.ChunkedBackupDriver):
     """Provides backup, restore and delete using a Posix file system."""
 
-    def __init__(self, context, db_driver=None, backup_path=None):
+    def __init__(self, context, db=None, backup_path=None):
         chunk_size_bytes = CONF.backup_file_size
         sha_block_size_bytes = CONF.backup_sha_block_size_bytes
         backup_default_container = CONF.backup_container
@@ -77,7 +78,7 @@ class PosixBackupDriver(chunkeddriver.ChunkedBackupDriver):
                                                 sha_block_size_bytes,
                                                 backup_default_container,
                                                 enable_progress_timer,
-                                                db_driver)
+                                                db)
         self.backup_path = backup_path
         if not backup_path:
             self.backup_path = CONF.backup_posix_path
@@ -129,7 +130,11 @@ class PosixBackupDriver(chunkeddriver.ChunkedBackupDriver):
         os.remove(path)
 
     def _generate_object_name_prefix(self, backup):
-        return 'backup'
+        timestamp = timeutils.utcnow().strftime("%Y%m%d%H%M%S")
+        prefix = 'volume_%s_%s_backup_%s' % (backup.volume_id, timestamp,
+                                             backup.id)
+        LOG.debug('_generate_object_name_prefix: %s', prefix)
+        return prefix
 
     def get_extra_metadata(self, backup, volume):
         return None

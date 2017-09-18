@@ -57,6 +57,7 @@ from __future__ import print_function
 
 import logging as python_logging
 import os
+import prettytable
 import sys
 import time
 
@@ -66,9 +67,6 @@ from oslo_db.sqlalchemy import migration
 from oslo_log import log as logging
 import oslo_messaging as messaging
 from oslo_utils import timeutils
-
-from cinder import i18n
-i18n.enable_lazy()
 
 # Need to register global_opts
 from cinder.common import config  # noqa
@@ -207,17 +205,24 @@ class HostCommands(object):
 class DbCommands(object):
     """Class for managing the database."""
 
-    online_migrations = (db.migrate_consistencygroups_to_groups,
-                         db.migrate_add_message_prefix)
+    online_migrations = ()
 
     def __init__(self):
         pass
 
-    @args('version', nargs='?', default=None,
+    @args('version', nargs='?', default=None, type=int,
           help='Database version')
     def sync(self, version=None):
         """Sync the database up to the most recent version."""
-        return db_migration.db_sync(version)
+        if version is not None and version > db.MAX_INT:
+            print(_('Version should be less than or equal to '
+                    '%(max_version)d.') % {'max_version': db.MAX_INT})
+            sys.exit(1)
+        try:
+            return db_migration.db_sync(version)
+        except db_exc.DbMigrationError as ex:
+            print("Error during database migration: %s" % ex)
+            sys.exit(1)
 
     def version(self):
         """Print the current database version."""
@@ -247,6 +252,7 @@ class DbCommands(object):
 
     def _run_migration(self, ctxt, max_count, ignore_state):
         ran = 0
+        migrations = {}
         for migration_meth in self.online_migrations:
             count = max_count - ran
             try:
@@ -256,16 +262,24 @@ class DbCommands(object):
                       {'method': migration_meth.__name__})
                 found = done = 0
 
+            name = migration_meth.__name__
+            remaining = found - done
             if found:
-                print(_('%(total)i rows matched query %(meth)s, %(done)i '
-                        'migrated') % {'total': found,
-                                       'meth': migration_meth.__name__,
-                                       'done': done})
+                print(_('%(found)i rows matched query %(meth)s, %(done)i '
+                        'migrated, %(remaining)i remaining') % {'found': found,
+                                                                'meth': name,
+                                                                'done': done,
+                                                                'remaining':
+                                                                remaining})
+            migrations.setdefault(name, (0, 0, 0))
+            migrations[name] = (migrations[name][0] + found,
+                                migrations[name][1] + done,
+                                migrations[name][2] + remaining)
             if max_count is not None:
                 ran += done
                 if ran >= max_count:
                     break
-        return ran
+        return migrations
 
     @args('--max_count', metavar='<number>', dest='max_count', type=int,
           help='Maximum number of objects to consider.')
@@ -287,10 +301,22 @@ class DbCommands(object):
             print(_('Running batches of %i until complete.') % max_count)
 
         ran = None
+        migration_info = {}
         while ran is None or ran != 0:
-            ran = self._run_migration(ctxt, max_count, ignore_state)
+            migrations = self._run_migration(ctxt, max_count, ignore_state)
+            migration_info.update(migrations)
+            ran = sum([done for found, done, remaining in migrations.values()])
             if not unlimited:
                 break
+
+        t = prettytable.PrettyTable([_('Migration'),
+                                     _('Found'),
+                                     _('Done'),
+                                     _('Remaining')])
+        for name in sorted(migration_info.keys()):
+            info = migration_info[name]
+            t.add_row([name, info[0], info[1], info[2]])
+        print(t)
 
         sys.exit(1 if ran else 0)
 
@@ -525,7 +551,7 @@ class ServiceCommands(BaseCommand):
             rpc_version = svc.rpc_current_version
             object_version = svc.object_current_version
             cluster = svc.cluster_name or ''
-            print(print_format % (svc.binary, svc.host.partition('.')[0],
+            print(print_format % (svc.binary, svc.host,
                                   svc.availability_zone, status, art,
                                   updated_at, rpc_version, object_version,
                                   cluster))
@@ -699,7 +725,7 @@ def methods_of(obj):
 
 
 def add_command_parsers(subparsers):
-    for category in CATEGORIES:
+    for category in sorted(CATEGORIES):
         command_object = CATEGORIES[category]()
 
         parser = subparsers.add_parser(category)
