@@ -136,7 +136,35 @@ class PrimaryDataNfsDriver(
         and setup replication between the newly created volume and
         the secondary volume.
         """
-        return
+
+        src_provider = snapshot.volume.provider_location
+        share = src_provider.rsplit(':')[1]
+        volume.provider_location = src_provider
+        if 'data-portal' in share:
+            # on the portal the path is /mnt/data-portal so strip it off
+            share = share.rsplit(os.sep)[3:]
+        else:
+            # on DataSphere the path simply has a '/' at the beginning
+            share = share.rsplit(os.sep)[1:]
+        base_path = os.path.join(self.DATASPHERE_PDFS_PATH, *share )
+        src_path = os.path.join(base_path, snapshot.name )
+        dst_path = os.path.join(base_path, 'volume-' + volume.id )
+        pd_apis.filesnapshots_api.FilesnapshotsApi().clone(src_path, dst_path,_preload_content=False).data
+
+        LOG.debug('Checking file for resize')
+        new_size = volume.size
+        local_path = self.local_path(volume)
+        if self._is_file_size_equal(local_path, new_size):
+            return { 'provider_location' : src_provider }
+        else:
+            LOG.info('Resizing file to %sG', new_size)
+            image_utils.resize_image(local_path, new_size,
+                                     run_as_root=self._execute_as_root)
+            if self._is_file_size_equal(local_path, new_size):
+                return { 'provider_location' : src_provider }
+            else:
+                raise exception.InvalidResults(
+                    _('Resizing image file failed.'))
 
     def _delete_file(self, file_id, file_name):
         volume = self.db.volume_get(self._context, volume_id)
@@ -154,4 +182,14 @@ class PrimaryDataNfsDriver(
         path = os.path.join(self._get_mount_point_for_share(nfs_share),
                             file_name)
         self._delete(path)
+
+        def _is_file_size_equal(self, path, size):
+            """Checks if file size at path is equal to size."""
+            data = image_utils.qemu_img_info(path,
+                                             run_as_root=self._execute_as_root)
+            virt_size = data.virtual_size / units.Gi
+            if virt_size == size:
+                return True
+            else:
+                return False
 
