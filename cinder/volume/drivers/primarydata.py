@@ -22,6 +22,7 @@ import re
 import shutil
 import threading
 import time
+import json
 
 from oslo_concurrency import processutils
 from oslo_config import cfg
@@ -30,6 +31,7 @@ from oslo_utils import units
 import six
 from six.moves import urllib
 
+from cinder import context
 from cinder import exception
 from cinder.i18n import _, _LE, _LI, _LW
 from cinder.image import image_utils
@@ -37,6 +39,7 @@ from cinder import utils
 from cinder.volume import driver
 from cinder.volume.drivers import nfs
 from cinder.volume import utils as volume_utils
+from cinder.volume import volume_types
 
 from pd_client import configuration as pd_config
 from pd_client.api_client import ApiClient as pd_ApiClient
@@ -70,7 +73,7 @@ CONF = cfg.CONF
 class PrimaryDataNfsDriver(
 #                      driver.ManageableVD,
 #                      driver.CloneableImageVD,
-#                      driver.SnapshotVD,
+                      driver.SnapshotVD,
                       nfs.NfsDriver):
     """Base class for Primary Data NFS driver for DataSphere."""
 
@@ -113,7 +116,7 @@ class PrimaryDataNfsDriver(
     def create_snapshot(self, snapshot):
         """Creates a snapshot."""
         share = snapshot.volume.provider_location.rsplit(':')[1]
-	if 'data-portal' in share:
+        if 'data-portal' in share:
             # on the portal the path is /mnt/data-portal so strip it off
             share = share.rsplit(os.sep)[3:]
         else:
@@ -126,7 +129,12 @@ class PrimaryDataNfsDriver(
 
     def delete_snapshot(self, snapshot):
         """Deletes a snapshot."""
-        self._delete_file(snapshot.volume_id, snapshot.name)
+        try:
+            self._delete_file(snapshot.volume_id, snapshot.name)
+        except:
+            LOG.debug('Snapshot %(snapshot)s not found when attempting to delete.',
+                      {'snapshot': snapshot.name})
+        return
 
     def create_volume_from_snapshot(self, volume, snapshot):
         """Creates a volume from a snapshot.
@@ -154,6 +162,7 @@ class PrimaryDataNfsDriver(
         LOG.debug('Checking file for resize')
         new_size = volume.size
         local_path = self.local_path(volume)
+        self._set_rw_permissions(local_path)
         if self._is_file_size_equal(local_path, new_size):
             return { 'provider_location' : src_provider }
         else:
@@ -166,30 +175,27 @@ class PrimaryDataNfsDriver(
                 raise exception.InvalidResults(
                     _('Resizing image file failed.'))
 
-    def _delete_file(self, file_id, file_name):
+    def _delete_file(self, volume_id, file_name):
         volume = self.db.volume_get(self._context, volume_id)
         nfs_share = volume.provider_location
 
-        try:
-            self._try_execute('ls', self._get_volume_path(nfs_mount,
-                                                          file_name))
-        except processutils.ProcessExecutionError:
-            LOG.debug('File %(file_name)s not found when attempting to delete '
-                      'from share %(share)s',
-                      {'file_name': file_name, 'share': nfs_share})
-            return
-
         path = os.path.join(self._get_mount_point_for_share(nfs_share),
                             file_name)
+        try:
+            self._try_execute('ls', path)
+        except processutils.ProcessExecutionError:
+            LOG.debug('File %(file_path)s not found when attempting to delete '
+                      'from share %(share)s',
+                      {'file_path': path})
+            return
         self._delete(path)
 
-        def _is_file_size_equal(self, path, size):
-            """Checks if file size at path is equal to size."""
-            data = image_utils.qemu_img_info(path,
-                                             run_as_root=self._execute_as_root)
-            virt_size = data.virtual_size / units.Gi
-            if virt_size == size:
-                return True
-            else:
-                return False
-
+    def _is_file_size_equal(self, path, size):
+        """Checks if file size at path is equal to size."""
+        data = image_utils.qemu_img_info(path,
+                                         run_as_root=self._execute_as_root)
+        virt_size = data.virtual_size / units.Gi
+        if virt_size == size:
+            return True
+        else:
+            return False
