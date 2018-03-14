@@ -38,6 +38,7 @@ from cinder.image import image_utils
 from cinder import utils
 from cinder.volume import driver
 from cinder.volume.drivers import nfs
+from cinder.volume import qos_specs
 from cinder.volume import utils as volume_utils
 from cinder.volume import volume_types
 
@@ -126,6 +127,8 @@ class PrimaryDataNfsDriver(
         src_path = os.path.join(base_path, 'volume-' + snapshot.volume.id )
         dst_path = os.path.join(base_path, snapshot.name )
         pd_apis.filesnapshots_api.FilesnapshotsApi().clone(src_path, dst_path,_preload_content=False).data
+        # work around bug whereby clone doesn't get a copy of permissions
+        self._execute('chmod', '0660', dst_path, run_as_root=True)
 
     def delete_snapshot(self, snapshot):
         """Deletes a snapshot."""
@@ -148,6 +151,8 @@ class PrimaryDataNfsDriver(
         src_provider = snapshot.volume.provider_location
         share = src_provider.rsplit(':')[1]
         volume.provider_location = src_provider
+        qos_specs = self._get_volume_qos_specs(volume)
+        objective_uuid = self._get_objective_uuid(qos_specs['PD-objective'])
         if 'data-portal' in share:
             # on the portal the path is /mnt/data-portal so strip it off
             share = share.rsplit(os.sep)[3:]
@@ -158,7 +163,10 @@ class PrimaryDataNfsDriver(
         src_path = os.path.join(base_path, snapshot.name )
         dst_path = os.path.join(base_path, 'volume-' + volume.id )
         pd_apis.filesnapshots_api.FilesnapshotsApi().clone(src_path, dst_path,_preload_content=False).data
+        # work around bug whereby clone doesn't get a copy of permissions
+        self._execute('chmod', '0660', dst_path, run_as_root=True)
 
+        self._set_objective(*share, file=os.path.join(os.sep, 'volume-' + volume.id ) ,objective_uuid=objective_uuid)
         LOG.debug('Checking file for resize')
         new_size = volume.size
         local_path = self.local_path(volume)
@@ -199,3 +207,27 @@ class PrimaryDataNfsDriver(
             return True
         else:
             return False
+
+    def _get_volume_qos_specs(self, volume):
+        """Provides extra specs associated with volume."""
+        ctxt = context.get_admin_context()
+        type_id = volume.get('volume_type_id')
+        if type_id is None:
+            return {}
+        volume_type = volume_types.get_volume_type(ctxt, type_id)
+        if volume_type is None:
+            return {}
+        qos_id = volume_type.get('qos_specs_id', None)
+        if qos_id is None:
+            return None
+        return qos_specs.get_qos_specs(ctxt, qos_id)['specs']
+
+    def _get_objective_uuid(self, name):
+        objectives = json.loads(pd_apis.objectives_api.ObjectivesApi().list(_preload_content=False).data)
+        for objective in objectives:
+            if objective['name'] == name:
+                return objective['uoid']['uuid']
+
+    def _set_objective(self, share, file, objective_uuid):
+        # note file here is path relative to the share root
+        pd_apis.shares_api.SharesApi().profile_set(identifier=share, path=file, objective_identifier=objective_uuid)
